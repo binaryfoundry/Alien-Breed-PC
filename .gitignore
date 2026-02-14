@@ -1,2 +1,5 @@
 
 *.o
+pc/build
+pc/data
+pc/game
