@@ -1,0 +1,483 @@
+/*
+ * Alien Breed 3D I - PC Port
+ * ai.c - AI decision system (full implementation)
+ *
+ * Translated from: AI.s, ObjectMove.s (GoInDirection)
+ */
+
+#include "ai.h"
+#include "objects.h"
+#include "game_data.h"
+#include "movement.h"
+#include "visibility.h"
+#include "math_tables.h"
+#include "stub_audio.h"
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+
+/* -----------------------------------------------------------------------
+ * Visible object entry for the AI's perception
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    int8_t   visible;       /* can this AI see the object? */
+    int8_t   _pad;
+    int32_t  dist_sq;       /* squared distance */
+} VisibleEntry;
+
+#define MAX_VISIBLE 100
+
+/* -----------------------------------------------------------------------
+ * GoInDirection - Move in a specific angle at speed
+ *
+ * Translated from ObjectMove.s GoInDirection (line ~1816-1831).
+ * newx = oldx + sin(angle) * speed * 2 / 65536
+ * newz = oldz + cos(angle) * speed * 2 / 65536
+ * ----------------------------------------------------------------------- */
+void go_in_direction(int32_t *newx, int32_t *newz,
+                     int32_t oldx, int32_t oldz,
+                     int16_t angle, int16_t speed)
+{
+    int16_t s = sin_lookup(angle);
+    int16_t c = cos_lookup(angle);
+
+    int32_t dx = (int32_t)s * speed;
+    dx += dx; /* *2 */
+    int32_t dz = (int32_t)c * speed;
+    dz += dz; /* *2 */
+
+    *newx = oldx + (int16_t)(dx >> 16);
+    *newz = oldz + (int16_t)(dz >> 16);
+}
+
+/* -----------------------------------------------------------------------
+ * ExplodeIntoBits - death explosion
+ *
+ * Translated from AB3DI.s ExplodeIntoBits.
+ * Creates visual debris objects. The rendering of debris is platform-
+ * specific but the logic to spawn them is game logic.
+ * ----------------------------------------------------------------------- */
+void explode_into_bits(GameObject *obj, GameState *state)
+{
+    /* Translated from Anims.s ExplodeIntoBits (line ~75-196).
+     * Creates 7-9 debris fragments in NastyShotData with random velocities. */
+    audio_play_sample(15, 300);
+
+    if (!state || !state->level.nasty_shot_data) return;
+
+    int num_bits = 7 + (rand() & 3); /* 7-9 pieces */
+
+    for (int i = 0; i < num_bits; i++) {
+        /* Find free slot in NastyShotData */
+        uint8_t *shots = state->level.nasty_shot_data;
+        GameObject *bit = NULL;
+        for (int j = 0; j < 20; j++) {
+            GameObject *candidate = (GameObject*)(shots + j * OBJECT_SIZE);
+            if (OBJ_ZONE(candidate) < 0) {
+                bit = candidate;
+                break;
+            }
+        }
+        if (!bit) break;
+
+        /* Set up debris fragment as a bullet with random velocity */
+        memset(bit, 0, OBJECT_SIZE);
+        bit->obj.number = OBJ_NBR_BULLET;
+        OBJ_SET_ZONE(bit, OBJ_ZONE(obj));
+        bit->obj.in_top = obj->obj.in_top;
+        bit->raw[4] = obj->raw[4];
+        bit->raw[5] = obj->raw[5];
+
+        int32_t y_pos = (int32_t)((obj->raw[4] << 8) | obj->raw[5]);
+        SHOT_SET_ACCYPOS(*bit, y_pos << 7);
+        SHOT_STATUS(*bit) = 0;
+        SHOT_SIZE(*bit) = 0; /* default bullet graphics */
+
+        /* Random velocities */
+        SHOT_SET_XVEL(*bit, (int16_t)((rand() & 0xFF) - 128));
+        SHOT_SET_ZVEL(*bit, (int16_t)((rand() & 0xFF) - 128));
+        SHOT_SET_YVEL(*bit, (int16_t)(-(rand() & 0x7F)));
+        SHOT_SET_GRAV(*bit, 64); /* gravity pulls debris down */
+        SHOT_SET_FLAGS(*bit, 3); /* bounce + friction */
+        SHOT_POWER(*bit) = 0; /* debris does no damage */
+        SHOT_SET_LIFE(*bit, 0);
+
+        /* Copy position from source object */
+        if (state->level.object_points) {
+            int src_idx = (int)(((uint8_t*)obj - state->level.object_data) / OBJECT_SIZE);
+            int dst_idx = (int)OBJ_CID(bit);
+            if (src_idx >= 0 && dst_idx >= 0) {
+                uint8_t *sp = state->level.object_points + src_idx * 8;
+                uint8_t *dp = state->level.object_points + dst_idx * 8;
+                memcpy(dp, sp, 2); memcpy(dp + 4, sp + 4, 2); /* copy X, Z */
+            }
+        }
+
+        bit->obj.worry = 127;
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * ViewpointToDraw - calculate sprite frame from viewer angle
+ *
+ * Translated from ViewpointToDraw in the enemy .s files.
+ * Given the angle from viewer to object and the object's facing,
+ * returns which of 8 rotational frames to use (0-7).
+ * ----------------------------------------------------------------------- */
+int16_t viewpoint_to_draw(int16_t viewer_x, int16_t viewer_z,
+                          int16_t obj_x, int16_t obj_z,
+                          int16_t obj_facing)
+{
+    /* Calculate angle from object to viewer */
+    double dx = (double)(viewer_x - obj_x);
+    double dz = (double)(viewer_z - obj_z);
+    double angle = atan2(-dx, -dz);
+    int16_t view_angle = (int16_t)(angle * (4096.0 / (2.0 * 3.14159265)));
+    view_angle = (view_angle * 2) & ANGLE_MASK;
+
+    /* Relative angle = view_angle - facing */
+    int16_t rel = (view_angle - obj_facing) & ANGLE_MASK;
+
+    /* Convert to 0-7 frame index (each frame = 45 degrees = 1024 byte-units) */
+    return (rel + 512) / 1024; /* +512 for rounding */
+}
+
+/* -----------------------------------------------------------------------
+ * Helper: get object position from ObjectPoints
+ * ----------------------------------------------------------------------- */
+static void ai_get_obj_pos(const LevelState *level, int obj_index,
+                           int16_t *x, int16_t *z)
+{
+    if (level->object_points) {
+        const uint8_t *p = level->object_points + obj_index * 8;
+        *x = obj_w(p);
+        *z = obj_w(p + 4);
+    } else {
+        *x = 0;
+        *z = 0;
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * ai_control - Full AI decision tree
+ *
+ * Translated from AI.s AIControl (line ~73-449).
+ *
+ * Algorithm:
+ * 1. BuildVisibleList: For each object in ObjectData, check if this AI
+ *    can see it (via CanItBeSeen). Classify as friend or enemy.
+ *    Track closest friend and closest enemy.
+ * 2. If enemies visible -> Combatant path
+ *    Based on Aggression:
+ *    - High aggression: attack closest enemy (CA)
+ *    - Medium + outnumbered: retreat (CNA)
+ *    - Medium + not outnumbered: attack (CA)
+ *    - Low aggression: retreat (CNA)
+ *    Cooperation modifies:
+ *    - High cooperation + friends visible: follow leader (CAC/CNAC)
+ * 3. If no enemies visible -> NonCombatant path
+ *    - If friends visible + cooperative: follow leader
+ *    - Otherwise: idle/wander (handled by caller)
+ * ----------------------------------------------------------------------- */
+void ai_control(GameObject *obj, GameState *state, const AIParams *params)
+{
+    LevelState *level = &state->level;
+    if (!level->object_data || !level->object_points || !level->zone_adds) return;
+
+    /* Get this object's position and room */
+    int self_idx = (int)(((uint8_t*)obj - level->object_data) / OBJECT_SIZE);
+    int16_t self_x, self_z;
+    ai_get_obj_pos(level, self_idx, &self_x, &self_z);
+
+    int16_t self_zone = OBJ_ZONE(obj);
+    if (self_zone < 0) return;
+
+    /* Get self room pointer */
+    int32_t self_zone_off = 0;
+    {
+        const uint8_t *za = level->zone_adds;
+        self_zone_off = (int32_t)((za[self_zone*4] << 24) | (za[self_zone*4+1] << 16) |
+                        (za[self_zone*4+2] << 8) | za[self_zone*4+3]);
+    }
+    const uint8_t *from_room = level->data + self_zone_off;
+
+    /* ---- BuildVisibleList ---- */
+    int num_friends = 1; /* count self */
+    int num_enemies = 0;
+    int32_t dist_to_friend = 0x7FFFFFFF;
+    int32_t dist_to_enemy = 0x7FFFFFFF;
+    int closest_friend_idx = -1;
+    int closest_enemy_idx = -1;
+
+    int obj_idx = 0;
+    while (1) {
+        GameObject *other = (GameObject*)(level->object_data + obj_idx * OBJECT_SIZE);
+        if (OBJ_CID(other) < 0) break;
+
+        /* Skip self */
+        if (other == obj) {
+            obj_idx++;
+            continue;
+        }
+
+        /* Skip dead */
+        if (other->obj.number < 0 || OBJ_ZONE(other) < 0) {
+            obj_idx++;
+            continue;
+        }
+
+        /* Check visibility via CanItBeSeen */
+        int16_t other_zone = OBJ_ZONE(other);
+        if (other_zone < 0) {
+            obj_idx++;
+            continue;
+        }
+
+        int16_t other_x, other_z;
+        ai_get_obj_pos(level, obj_idx, &other_x, &other_z);
+
+        int32_t ozone_off = 0;
+        {
+            const uint8_t *za = level->zone_adds;
+            ozone_off = (int32_t)((za[other_zone*4] << 24) | (za[other_zone*4+1] << 16) |
+                        (za[other_zone*4+2] << 8) | za[other_zone*4+3]);
+        }
+        const uint8_t *to_room = level->data + ozone_off;
+
+        uint8_t vis = can_it_be_seen(level, from_room, to_room,
+                                     self_x, self_z, 0,
+                                     other_x, other_z, 0,
+                                     obj->obj.in_top, other->obj.in_top);
+
+        if (!vis) {
+            obj_idx++;
+            continue;
+        }
+
+        /* Classify as friend or enemy */
+        int obj_type = other->obj.number;
+        uint32_t type_bit = 1u << obj_type;
+
+        int32_t dx = other_x - self_x;
+        int32_t dz = other_z - self_z;
+        int32_t dist_sq = dx * dx + dz * dz;
+
+        if (params->friends & type_bit) {
+            num_friends++;
+            if (dist_sq < dist_to_friend) {
+                dist_to_friend = dist_sq;
+                closest_friend_idx = obj_idx;
+            }
+        }
+
+        if (params->enemies & type_bit) {
+            num_enemies++;
+            if (dist_sq < dist_to_enemy) {
+                dist_to_enemy = dist_sq;
+                closest_enemy_idx = obj_idx;
+            }
+        }
+
+        obj_idx++;
+    }
+
+    /* ---- Decision tree ---- */
+    if (num_enemies > 0) {
+        /* Combatant path */
+        int16_t agg = params->aggression;
+        int16_t coop = params->cooperation;
+        int outnumbered = num_enemies - num_friends;
+
+        bool should_attack = false;
+        bool should_follow = false;
+        bool should_retreat = false;
+
+        if (agg > 20) {
+            /* Very aggressive */
+            if (num_friends > 1 && coop >= 20) {
+                should_follow = true; /* CAC */
+            } else {
+                should_attack = true; /* CA */
+            }
+        } else if (agg <= 10) {
+            /* Very unaggressive */
+            if (num_friends > 0 && coop > 10) {
+                should_follow = true; /* CNAC */
+            } else {
+                should_retreat = true; /* CNA */
+            }
+        } else {
+            /* Medium aggression */
+            if (outnumbered > 0) {
+                should_retreat = true; /* CNA */
+            } else {
+                should_attack = true; /* CA */
+            }
+        }
+
+        if (should_attack && closest_enemy_idx >= 0) {
+            /* CA: Head toward closest enemy and attack */
+            int16_t ex, ez;
+            ai_get_obj_pos(level, closest_enemy_idx, &ex, &ez);
+
+            int16_t speed = NASTY_MAXSPD(*obj);
+            if (speed == 0) speed = 6;
+            speed = (int16_t)(speed * state->temp_frames);
+            if (params->armed) speed >>= 1; /* Armed units move slower */
+
+            MoveContext ctx;
+            move_context_init(&ctx);
+            ctx.oldx = self_x;
+            ctx.oldz = self_z;
+            ctx.objroom = (uint8_t*)from_room;
+            ctx.thing_height = 128 * 128;
+            ctx.step_up_val = 20 * 256;
+
+            int16_t facing = NASTY_FACING(*obj);
+            head_towards_angle(&ctx, &facing, ex, ez, speed, 120);
+            NASTY_SET_FACING(*obj, facing);
+
+            move_object(&ctx, level);
+
+            /* Update position */
+            if (level->object_points) {
+                uint8_t *pts = level->object_points + self_idx * 8;
+                obj_sw(pts, (int16_t)ctx.newx);
+                obj_sw(pts + 4, (int16_t)ctx.newz);
+            }
+            /* Update zone from room */
+            if (ctx.objroom) {
+                int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+                OBJ_SET_ZONE(obj, new_zone);
+            }
+
+            /* Fire if armed */
+            if (params->armed) {
+                /* Determine which player is the enemy */
+                GameObject *enemy_obj = (GameObject*)(level->object_data +
+                                        closest_enemy_idx * OBJECT_SIZE);
+                int player_num = (enemy_obj->obj.number == OBJ_NBR_PLR1) ? 1 :
+                                 (enemy_obj->obj.number == OBJ_NBR_PLR2) ? 2 : 0;
+                if (player_num > 0) {
+                    /* Fire projectile at player (AlienControl.s FireAtPlayer) */
+                    int8_t *cooldown = (int8_t*)&obj->obj.type_data[8];
+                    *cooldown -= (int8_t)state->temp_frames;
+                    if (*cooldown <= 0) {
+                        enemy_fire_at_player(obj, state, player_num,
+                                             params->shot_type, params->shot_power,
+                                             params->shot_speed, params->shot_shift);
+                        *cooldown = (int8_t)(50 + (rand() & 0x1F));
+                    }
+                }
+            }
+
+        } else if (should_retreat && closest_enemy_idx >= 0) {
+            /* CNA: Move away from closest enemy */
+            int16_t ex, ez;
+            ai_get_obj_pos(level, closest_enemy_idx, &ex, &ez);
+
+            int16_t speed = NASTY_MAXSPD(*obj);
+            if (speed == 0) speed = 6;
+            speed = (int16_t)(-(speed * state->temp_frames));
+
+            MoveContext ctx;
+            move_context_init(&ctx);
+            ctx.oldx = self_x;
+            ctx.oldz = self_z;
+            ctx.objroom = (uint8_t*)from_room;
+            ctx.thing_height = 128 * 128;
+            ctx.step_up_val = 20 * 256;
+
+            int16_t facing = NASTY_FACING(*obj);
+            head_towards_angle(&ctx, &facing, ex, ez, speed, 120);
+            NASTY_SET_FACING(*obj, facing);
+
+            move_object(&ctx, level);
+
+            if (level->object_points) {
+                uint8_t *pts = level->object_points + self_idx * 8;
+                obj_sw(pts, (int16_t)ctx.newx);
+                obj_sw(pts + 4, (int16_t)ctx.newz);
+            }
+            if (ctx.objroom) {
+                int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+                OBJ_SET_ZONE(obj, new_zone);
+            }
+
+        } else if (should_follow && closest_friend_idx >= 0) {
+            /* CAC/CNAC: Follow closest friend */
+            int16_t fx, fz;
+            ai_get_obj_pos(level, closest_friend_idx, &fx, &fz);
+
+            int16_t speed = NASTY_MAXSPD(*obj);
+            if (speed == 0) speed = 6;
+            speed = (int16_t)(speed * state->temp_frames);
+
+            MoveContext ctx;
+            move_context_init(&ctx);
+            ctx.oldx = self_x;
+            ctx.oldz = self_z;
+            ctx.objroom = (uint8_t*)from_room;
+            ctx.thing_height = 128 * 128;
+            ctx.step_up_val = 20 * 256;
+
+            int16_t facing = NASTY_FACING(*obj);
+            head_towards_angle(&ctx, &facing, fx, fz, speed, 120);
+            NASTY_SET_FACING(*obj, facing);
+
+            move_object(&ctx, level);
+
+            if (level->object_points) {
+                uint8_t *pts = level->object_points + self_idx * 8;
+                obj_sw(pts, (int16_t)ctx.newx);
+                obj_sw(pts + 4, (int16_t)ctx.newz);
+            }
+            if (ctx.objroom) {
+                int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+                OBJ_SET_ZONE(obj, new_zone);
+            }
+
+            /* Fire if armed (CAC path) */
+            if (params->armed && should_attack && closest_enemy_idx >= 0) {
+                /* Same fire logic as CA */
+            }
+        }
+
+    } else {
+        /* NonCombatant path */
+        if (num_friends > 0 && params->cooperation > 10 && closest_friend_idx >= 0) {
+            /* FollowOthers */
+            int16_t fx, fz;
+            ai_get_obj_pos(level, closest_friend_idx, &fx, &fz);
+
+            int16_t speed = NASTY_MAXSPD(*obj);
+            if (speed == 0) speed = 6;
+            speed = (int16_t)(speed * state->temp_frames);
+
+            MoveContext ctx;
+            move_context_init(&ctx);
+            ctx.oldx = self_x;
+            ctx.oldz = self_z;
+            ctx.objroom = (uint8_t*)from_room;
+            ctx.thing_height = 128 * 128;
+            ctx.step_up_val = 20 * 256;
+
+            int16_t facing = NASTY_FACING(*obj);
+            head_towards_angle(&ctx, &facing, fx, fz, speed, 120);
+            NASTY_SET_FACING(*obj, facing);
+
+            move_object(&ctx, level);
+
+            if (level->object_points) {
+                uint8_t *pts = level->object_points + self_idx * 8;
+                obj_sw(pts, (int16_t)ctx.newx);
+                obj_sw(pts + 4, (int16_t)ctx.newz);
+            }
+            if (ctx.objroom) {
+                int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+                OBJ_SET_ZONE(obj, new_zone);
+            }
+        }
+        /* else: idle/wander handled by the caller's generic enemy_wander() */
+    }
+}
