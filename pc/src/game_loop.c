@@ -38,10 +38,10 @@
 #define MAX_TEMP_FRAMES 15
 
 /* Minimum VBlanks to accumulate before running a game logic tick.
- * 3 VBlanks ≈ 60ms → ~17Hz game logic, matching a typical Amiga.
- * This gives temp_frames=3 and per-tick movement deltas of ~6 integer
- * units, which the collision system handles correctly. */
-#define GAME_TICK_VBLANKS 3
+ * 1 VBlank = 20ms → 50Hz logic, matching the original game's simulation
+ * rate. Running logic at 50Hz avoids large per-tick jumps that make the
+ * player feel sluggish and can skip/tunnel through collision edges. */
+#define GAME_TICK_VBLANKS 1
 
 /* Number of frames to run in stub mode before auto-exiting */
 /* Max frames before auto-exit (0 = disabled, relies on ESC key) */
