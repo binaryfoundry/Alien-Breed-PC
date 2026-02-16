@@ -44,8 +44,8 @@ RendererState g_renderer;
  * Tunable: floor/ceiling texture camera-offset scale.
  *
  * Controls how much the floor texture scrolls when the camera moves.
- * The Amiga uses <<16 (=65536.0) but our dist uses a 186/256 factor,
- * so the ideal value is somewhere between <<14 (=16384.0) and <<16.
+ * The Amiga uses <<16 (=65536.0).
+ * The ideal value is somewhere between <<14 (=16384.0) and <<16.
  *
  *   Too low  → floor texture drifts behind camera (slides under you)
  *   Too high → floor texture outruns camera (scrolls too fast)
@@ -250,10 +250,9 @@ static void rotate_one_point(RendererState *r, const uint8_t *pts, int idx)
 
     /* Project to screen column.
      * Amiga uses +47 as center (ASM line 4148: add.w #47,d2).
-     * Amiga PAL pixels were ~1.37:1 aspect ratio. To match the visual FOV
-     * on square pixels, scale horizontal projection by 176/128 = 1.375. */
+     * vx_fine already has <<7 (128x) baked in from the rotation above. */
     if (vz16 > 0) {
-        int32_t screen_x = (vx_fine * 176 / 128 / vz16) + 47;
+        int32_t screen_x = (vx_fine / vz16) + 47;
         r->on_screen[idx].screen_x = (int16_t)screen_x;
         r->on_screen[idx].flags = 0;
     } else {
@@ -582,12 +581,10 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
 
     /* Project to screen.
      * Amiga uses +47 as center offset (ASM: add.w #47,d2 in RotateLevelPts).
-     * Amiga PAL pixels were ~1.37:1 (wider than tall). To match the original
-     * visual FOV on square pixels, we need to widen the projection.
-     * Original: << 7 (128). With aspect correction: 128 * 1.37 ≈ 175.
-     * Using 176 (128 + 48) for slight overcorrection to feel more like original. */
-    int scr_x1 = (int)(((int32_t)cx1 * 176) / cz1) + 47;
-    int scr_x2 = (int)(((int32_t)cx2 * 176) / cz2) + 47;
+     * cx1/cx2 are rotated.x >> 7, so multiply back by 128 (<<7) for the
+     * perspective divide, matching the original Amiga projection. */
+    int scr_x1 = (int)(((int32_t)cx1 * 128) / cz1) + 47;
+    int scr_x2 = (int)(((int32_t)cx2 * 128) / cz2) + 47;
 
     /* If endpoints project in reverse order, swap them for left-to-right drawing.
      * This can happen after near-plane clipping. */
@@ -642,11 +639,10 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
 
         /* Project wall top/bottom at this depth.
          * Amiga ASM: screen_y = topofwall / z + 40.
-         * On Amiga, pixels were wider than tall (PAL), so vertical scale was
-         * effectively smaller. Use 186 (~256*128/176) so walls don't look too high
-         * on square-pixel displays. */
-        int y_top = (int)((int32_t)top * 186 / col_z) + (RENDER_HEIGHT / 2);
-        int y_bot = (int)((int32_t)bot * 186 / col_z) + (RENDER_HEIGHT / 2);
+         * top = (topwall - yoff) >> 8, so *256 restores the original scale
+         * for the divs d1,d0 perspective divide. */
+        int y_top = (int)((int32_t)top * 256 / col_z) + (RENDER_HEIGHT / 2);
+        int y_bot = (int)((int32_t)bot * 256 / col_z) + (RENDER_HEIGHT / 2);
 
         /* Perspective-correct texture column: interpolate tex/z, then multiply by z.
          * This matches Amiga ASM which interpolates in world space, not screen space.
@@ -715,7 +711,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     if (abs_row_dist <= 3) {
         dist = 32000;
     } else {
-        dist = (int32_t)((int64_t)fh_8 * 186 / row_dist);
+        dist = (int32_t)((int64_t)fh_8 * 256 / row_dist);
         if (dist < 0) dist = -dist;
         if (dist < 16) dist = 16;
         if (dist > 30000) dist = 30000;
@@ -1419,17 +1415,17 @@ void renderer_draw_zone(GameState *state, int16_t zone_id)
                 int sx1 = r->on_screen[i1].screen_x;
                 int sx2 = r->on_screen[i2].screen_x;
 
-                /* Project Y: use 186 (same as walls) so floor/ceiling edges meet wall bottom/top.
-                 * Span still uses 256 for dist so texture perspective stays correct. */
+                /* Project Y: use 256 (same as walls) so floor/ceiling edges meet
+                 * wall bottom/top exactly. */
                 int32_t rel_h_8 = rel_h >> 8;
                 int sy1_raw, sy2_raw;
                 if (z1 > 0) {
-                    sy1_raw = (int)((int64_t)rel_h_8 * 186 / (int32_t)z1) + center;
+                    sy1_raw = (int)((int64_t)rel_h_8 * 256 / (int32_t)z1) + center;
                 } else {
                     sy1_raw = (floor_y_dist > 0) ? 10000 : -10000;
                 }
                 if (z2 > 0) {
-                    sy2_raw = (int)((int64_t)rel_h_8 * 186 / (int32_t)z2) + center;
+                    sy2_raw = (int)((int64_t)rel_h_8 * 256 / (int32_t)z2) + center;
                 } else {
                     sy2_raw = (floor_y_dist > 0) ? 10000 : -10000;
                 }
