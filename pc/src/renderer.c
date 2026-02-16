@@ -402,12 +402,16 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     if (!buf || !rgb) return;
     if (x < g_renderer.left_clip || x >= g_renderer.right_clip) return;
 
+    /* Short walls (e.g. step risers) can project to same row; ensure at least 1 pixel height */
+    int yt = y_top, yb = y_bot;
+    if (yb <= yt) yb = yt + 1;
+
     /* Clip to screen */
-    int ct = (y_top < g_renderer.top_clip) ? g_renderer.top_clip : y_top;
-    int cb = (y_bot > g_renderer.bot_clip) ? g_renderer.bot_clip : y_bot;
+    int ct = (yt < g_renderer.top_clip) ? g_renderer.top_clip : yt;
+    int cb = (yb > g_renderer.bot_clip) ? g_renderer.bot_clip : yb;
     if (ct > cb) return;
 
-    int wall_height = y_bot - y_top;
+    int wall_height = cb - ct;
     if (wall_height <= 0) return;
 
     /* Clamp d6 to SCALE table range */
@@ -518,7 +522,7 @@ static void draw_wall_column(int x, int y_top, int y_bot,
  * No depth sorting: walls are drawn in stream order (the level
  * compiler already arranges them correctly).
  * ----------------------------------------------------------------------- */
-#define MAX_DEFERRED_WALLS 128
+#define MAX_DEFERRED_WALLS 256
 typedef struct {
     int16_t  x1, z1, x2, z2;
     int16_t  top, bot;
@@ -564,19 +568,23 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
     if (cz1 < NEAR_PLANE) {
         /* Clip left endpoint to near plane */
         int32_t dz = cz2 - cz1;
-        if (dz == 0) return;
-        int32_t t = (NEAR_PLANE - cz1) * 65536 / dz;
-        cx1 = (int16_t)(cx1 + (int32_t)(cx2 - cx1) * t / 65536);
-        cz1 = NEAR_PLANE;
-        ct1 = (int16_t)(ct1 + (int32_t)(ct2 - ct1) * t / 65536);
+        if (dz == 0) { cz1 = NEAR_PLANE; cx1 = (int16_t)((cx1 + cx2) / 2); ct1 = (int16_t)((ct1 + ct2) / 2); }
+        else {
+            int32_t t = (NEAR_PLANE - cz1) * 65536 / dz;
+            cx1 = (int16_t)(cx1 + (int32_t)(cx2 - cx1) * t / 65536);
+            cz1 = NEAR_PLANE;
+            ct1 = (int16_t)(ct1 + (int32_t)(ct2 - ct1) * t / 65536);
+        }
     }
     if (cz2 < NEAR_PLANE) {
         int32_t dz = cz1 - cz2;
-        if (dz == 0) return;
-        int32_t t = (NEAR_PLANE - cz2) * 65536 / dz;
-        cx2 = (int16_t)(cx2 + (int32_t)(cx1 - cx2) * t / 65536);
-        cz2 = NEAR_PLANE;
-        ct2 = (int16_t)(ct2 + (int32_t)(ct1 - ct2) * t / 65536);
+        if (dz == 0) { cz2 = NEAR_PLANE; cx2 = cx1; ct2 = ct1; }
+        else {
+            int32_t t = (NEAR_PLANE - cz2) * 65536 / dz;
+            cx2 = (int16_t)(cx2 + (int32_t)(cx1 - cx2) * t / 65536);
+            cz2 = NEAR_PLANE;
+            ct2 = (int16_t)(ct2 + (int32_t)(ct1 - ct2) * t / 65536);
+        }
     }
 
     /* Project to screen.
@@ -595,13 +603,15 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
         tmp = ct1; ct1 = (int16_t)ct2; ct2 = (int16_t)tmp;
     }
 
-    /* Skip zero-width walls */
-    if (scr_x1 == scr_x2) return;
-
     if (scr_x2 < r->left_clip || scr_x1 >= r->right_clip) return;
 
+    /* Ensure at least one column when both endpoints project to same pixel */
     int num_cols = scr_x2 - scr_x1;
-    if (num_cols <= 0) return;
+    if (num_cols <= 0) {
+        if (scr_x1 < r->left_clip || scr_x1 >= r->right_clip) return;
+        num_cols = 1;
+        scr_x2 = scr_x1 + 1;  /* so interpolation uses one column */
+    }
 
     /* Precompute 1/z values for perspective-correct interpolation.
      * Use 64-bit intermediate to avoid overflow with very small z values. */
@@ -767,8 +777,8 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     uint32_t *row32 = rgb + y * RENDER_WIDTH;
     int16_t *depth = rs->depth_buffer + y * RENDER_WIDTH;
     
-    /* Ceiling (floor_height < 0): use depth slightly in front (dist - 1) so ceiling
-     * wins at the wall/ceiling boundary and we avoid z-fighting. Floor: behind walls. */
+    /* Use actual distance for depth so floor/ceiling correctly occlude walls when
+     * closer. Ceiling: slight bias (dist - 1) at boundary to avoid z-fighting. */
     int16_t floor_z;
     if (floor_height < 0) {
         int32_t ceiling_z = dist - 1;  /* bias so ceiling wins where wall meets ceiling */
@@ -776,7 +786,10 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
         if (ceiling_z > 32767) ceiling_z = 32767;
         floor_z = (int16_t)ceiling_z;
     } else {
-        floor_z = (dist > 16000) ? 32000 : (int16_t)(dist + 16000);  /* floor: behind walls */
+        int32_t d = dist;
+        if (d < 1) d = 1;
+        if (d > 32767) d = 32767;
+        floor_z = (int16_t)d;
     }
 
     for (int x = xl; x <= xr; x++) {
