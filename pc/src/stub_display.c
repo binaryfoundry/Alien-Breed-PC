@@ -19,10 +19,12 @@ static SDL_Window   *g_window   = NULL;
 static SDL_Renderer *g_sdl_ren  = NULL;
 static SDL_Texture  *g_texture  = NULL;
 
-/* Scale factor for the window (the game renders at 96x80) */
-#define WINDOW_SCALE 8
-#define WINDOW_W     (RENDER_WIDTH  * WINDOW_SCALE)
-#define WINDOW_H     (RENDER_HEIGHT * WINDOW_SCALE)
+/* Scale factor for the window (the game renders at 96x80).
+ * Amiga PAL low-res pixels are wider than tall; stretch width to match. */
+#define WINDOW_SCALE  8
+#define AMIGA_ASPECT  11   /* 11/8 ≈ 1.375 */
+#define WINDOW_W      (RENDER_WIDTH  * WINDOW_SCALE * AMIGA_ASPECT / 8)
+#define WINDOW_H      (RENDER_HEIGHT * WINDOW_SCALE)
 
 /* Legacy palette no longer needed - colors come from the .wad LUT data
  * and are written directly to the rgb_buffer as ARGB8888 pixels. */
