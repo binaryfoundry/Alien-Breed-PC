@@ -1447,6 +1447,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id)
                     if (row >= y_min_clamp && row <= y_max_clamp) {
                         int lo = sx1 < sx2 ? sx1 : sx2;
                         int hi = sx1 > sx2 ? sx1 : sx2;
+                        if (lo < r->left_clip) lo = r->left_clip;
+                        if (hi >= r->right_clip) hi = r->right_clip - 1;
                         if (lo < left_edge[row]) left_edge[row] = (int16_t)lo;
                         if (hi > right_edge_tab[row]) right_edge_tab[row] = (int16_t)hi;
                         if (row < poly_top) poly_top = row;
@@ -1476,9 +1478,14 @@ void renderer_draw_zone(GameState *state, int16_t zone_id)
                 
                 for (int row = row_start; row <= row_end; row++) {
                     int x = (int)(x_fp >> 16);
-                    /* Extend edges by 1 pixel to ensure floor meets walls */
-                    if (x - 1 < left_edge[row]) left_edge[row] = (int16_t)(x - 1);
-                    if (x + 1 > right_edge_tab[row]) right_edge_tab[row] = (int16_t)(x + 1);
+                    /* Extend edges by 1 pixel to ensure floor meets walls.
+                     * Clamp to zone clip when off-screen so we don't leave vertical gaps. */
+                    int left_x = x - 1;
+                    int right_x = x + 1;
+                    if (left_x < r->left_clip) left_x = r->left_clip;
+                    if (right_x >= r->right_clip) right_x = r->right_clip - 1;
+                    if (left_x < left_edge[row]) left_edge[row] = (int16_t)left_x;
+                    if (right_x > right_edge_tab[row]) right_edge_tab[row] = (int16_t)right_x;
                     if (row < poly_top) poly_top = row;
                     if (row > poly_bot) poly_bot = row;
                     x_fp += dx_fp;
