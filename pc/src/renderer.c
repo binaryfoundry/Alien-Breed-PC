@@ -1203,7 +1203,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
  * Object entry (2 bytes after type word):
  *   +0: draw_mode (word) - 0=before water, 1=after water, 2=full room
  * ----------------------------------------------------------------------- */
-void renderer_draw_zone(GameState *state, int16_t zone_id)
+void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
 {
     RendererState *r = &g_renderer;
     LevelState *level = &state->level;
@@ -1221,7 +1221,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id)
     /* Get zone graphics data (the polygon list for this zone).
      * zone_graph_adds: 8 bytes per zone = lower gfx offset (long) + upper gfx offset (long). */
     const uint8_t *zgraph = level->zone_graph_adds + zone_id * 8;
-    int32_t gfx_off = rd32(zgraph);
+    int32_t gfx_off = use_upper ? rd32(zgraph + 4) : rd32(zgraph);
     if (gfx_off == 0 || !level->graphics) return;
 
     const uint8_t *gfx_data = level->graphics + gfx_off;
@@ -1240,7 +1240,9 @@ void renderer_draw_zone(GameState *state, int16_t zone_id)
      * Table layout: byte per zone, upper floor at [zone + num_zones]. */
     int16_t zone_bright = 8; /* default mid brightness */
     if (level->zone_bright_table && zone_id >= 0 && zone_id < level->num_zones) {
-        zone_bright = (int16_t)level->zone_bright_table[zone_id];
+        int bright_idx = use_upper && level->num_zones > 0
+            ? zone_id + level->num_zones : zone_id;
+        zone_bright = (int16_t)level->zone_bright_table[bright_idx];
     }
 
     /* Deferred walls: collect during stream parsing, draw AFTER floors/ceilings.
@@ -1784,6 +1786,8 @@ void renderer_draw_display(GameState *state)
         /* Reset clip to full screen for each zone */
         r->left_clip = 0;
         r->right_clip = RENDER_WIDTH;
+        r->top_clip = 0;
+        r->bot_clip = RENDER_HEIGHT - 1;
 
         /* Apply zone clipping from ListOfGraphRooms + LEVELCLIPS.
          * ListOfGraphRooms entries are 8 bytes:
@@ -1849,7 +1853,29 @@ void renderer_draw_display(GameState *state)
             if (r->left_clip >= r->right_clip) continue;
         }
 
-        renderer_draw_zone(state, zone_id);
+        /* Multi-floor zone: draw lower and upper room with vertical clip split */
+        if (state->level.zone_adds && state->level.zone_graph_adds) {
+            int32_t zone_off = rd32(state->level.zone_adds + zone_id * 4);
+            const uint8_t *zgraph = state->level.zone_graph_adds + zone_id * 8;
+            int32_t upper_gfx = rd32(zgraph + 4);
+            if (upper_gfx != 0 && zone_off >= 0 && state->level.data) {
+                const uint8_t *zd = state->level.data + zone_off;
+                int32_t zone_roof = rd32(zd + 6);  /* ToZoneRoof = split height */
+                int32_t rel = zone_roof - r->yoff;
+                /* Split screen Y where lower ceiling / upper floor projects (ref z ~400) */
+                int split_y = (int)((int64_t)(rel >> 8) * 256 / 400) + (RENDER_HEIGHT / 2);
+                if (split_y < 1) split_y = 1;
+                if (split_y >= RENDER_HEIGHT) split_y = RENDER_HEIGHT - 1;
+                r->top_clip = split_y;
+                r->bot_clip = RENDER_HEIGHT - 1;
+                renderer_draw_zone(state, zone_id, 0);  /* lower room */
+                r->top_clip = 0;
+                r->bot_clip = split_y - 1;
+                renderer_draw_zone(state, zone_id, 1);  /* upper room */
+                continue;
+            }
+        }
+        renderer_draw_zone(state, zone_id, 0);
     }
 
     /* Debug: count visible non-zero pixels + histogram */

@@ -178,7 +178,7 @@ void renderer_draw_display(GameState *state);
 /* Sub-routines (called by draw_display) */
 void renderer_rotate_level_pts(GameState *state);
 void renderer_rotate_object_pts(GameState *state);
-void renderer_draw_zone(GameState *state, int16_t zone_id);
+void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper);
 void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
                         int16_t top, int16_t bot,
                         const uint8_t *texture, int16_t tex_start,
