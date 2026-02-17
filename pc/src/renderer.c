@@ -35,6 +35,11 @@
 #include <stdio.h>
 #include <limits.h>
 
+/* Floor/ceiling UV step: Amiga uses d1>>6 per pixel over 96 columns.
+ * At RENDER_SCALE we have 96*RENDER_SCALE columns, so step must be (d1>>6)/RENDER_SCALE
+ * to keep the same total U range = d1>>6 * 96. Integer: use shift 6 + log2(RENDER_SCALE). */
+#define FLOOR_STEP_SHIFT  (6 + (RENDER_SCALE > 1 ? 1 : 0) + (RENDER_SCALE > 2 ? 1 : 0))
+
 /* -----------------------------------------------------------------------
  * Global renderer state
  * ----------------------------------------------------------------------- */
@@ -803,14 +808,14 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     start_v += (int32_t)(rs->zoff * floor_cam_offset_scale);
 
     /* ASM lines 6700-6715: Offset by left edge.
-     * If leftedge != 0, add leftedge * step to start.
-     * Step = d1 >> 6 for U, d2 >> 6 for V */
-    int32_t u_step = d1 >> 6;
-    int32_t v_step = d2 >> 6;
+     * Step per pixel = d1>>6 on Amiga (96 cols). We have RENDER_WIDTH cols so use
+     * FLOOR_STEP_SHIFT so total U range matches (no skew at 2x res). */
+    int32_t u_step = d1 >> FLOOR_STEP_SHIFT;
+    int32_t v_step = d2 >> FLOOR_STEP_SHIFT;
 
     if (xl > 0) {
-        start_u += ((int64_t)xl * d1) >> 6;
-        start_v += ((int64_t)xl * d2) >> 6;
+        start_u += ((int64_t)xl * d1) >> FLOOR_STEP_SHIFT;
+        start_v += ((int64_t)xl * d2) >> FLOOR_STEP_SHIFT;
     }
 
     /* Current UV in 16.16 fixed point */

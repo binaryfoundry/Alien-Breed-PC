@@ -348,6 +348,22 @@ void objects_update(GameState *state)
         }
         obj->obj.worry--;
 
+        /* Update rendering Y position from zone floor height (Anims.s: every handler
+         * writes 4(a0) = (ToZoneFloor >> 7) - 60 so sprites project at the correct
+         * vertical position).  Without this, obj[4] stays at its level-load value. */
+        {
+            int16_t obj_zone = OBJ_ZONE(obj);
+            if (obj_zone >= 0 && state->level.zone_adds && state->level.data) {
+                int32_t zo = be32(state->level.zone_adds + obj_zone * 4);
+                if (zo > 0) {
+                    const uint8_t *zd = state->level.data + zo;
+                    int32_t floor_h = be32(zd + 2);  /* ToZoneFloor */
+                    int16_t render_y = (int16_t)((floor_h >> 7) - 60);
+                    obj_sw(obj->raw + 4, render_y);
+                }
+            }
+        }
+
         /* Dispatch by object type */
         int8_t obj_type = obj->obj.number;
         int param_idx;
