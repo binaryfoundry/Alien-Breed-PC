@@ -42,7 +42,7 @@
  *     256*11/8  = 352, corrects for Amiga 11:8 PAL pixel aspect in 4:3 window
  *     Other values work too -- nothing else is hardcoded to 256 for Y. */
 #define PROJ_X_SCALE     256
-#define PROJ_Y_SCALE     (256 * 11 / 24)   /* change this to taste */
+#define PROJ_Y_SCALE     (256 * 11 / 20)   /* change this to taste */
 
 /* -----------------------------------------------------------------------
  * Rotated point arrays
