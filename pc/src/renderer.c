@@ -690,10 +690,10 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
     int32_t inv_z2 = (int32_t)(65536LL / cz2);
     
     /* Precompute tex/z for perspective-correct texture coordinate interpolation.
-     * This prevents the horizontal warping/swimming effect on angled walls.
-     * Use 64-bit to avoid overflow when texture coords are large and z is small. */
-    int64_t tex_over_z1_64 = (int64_t)ct1 * 256 / cz1;
-    int64_t tex_over_z2_64 = (int64_t)ct2 * 256 / cz2;
+     * Use 16.16 scale (65536) so we keep sub-texel precision when the wall is far (large z);
+     * with scale 256, ct*256/z quantizes badly at distance and horizontal resolution degrades. */
+    int64_t tex_over_z1_64 = (int64_t)ct1 * 65536LL / cz1;
+    int64_t tex_over_z2_64 = (int64_t)ct2 * 65536LL / cz2;
     
     /* Clamp to int32 range to prevent issues in interpolation */
     if (tex_over_z1_64 > INT32_MAX/2) tex_over_z1_64 = INT32_MAX/2;
@@ -726,10 +726,9 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
         int y_bot = (int)((int32_t)bot * PROJ_Y_SCALE * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
 
         /* Perspective-correct texture column: interpolate tex/z, then multiply by z.
-         * This matches Amiga ASM which interpolates in world space, not screen space.
-         * Use 64-bit to avoid overflow when close to walls. */
+         * Scale 65536 matches tex_over_z so result is world-space texture coord (integer). */
         int32_t tex_over_z = tex_over_z1 + (int32_t)((int64_t)(tex_over_z2 - tex_over_z1) * t / 65536);
-        int32_t tex_t = (int32_t)((int64_t)tex_over_z * col_z / 256);
+        int32_t tex_t = (int32_t)((int64_t)tex_over_z * col_z / 65536);
         /* ASM line 167: and.w HORAND,d6 - mask first
          * ASM line 170: add.w fromtile(pc),d6 - then add horizontal offset */
         int tex_col = ((int)(tex_t) & horand) + fromtile;
