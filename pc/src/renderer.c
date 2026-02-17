@@ -253,9 +253,10 @@ static void rotate_one_point(RendererState *r, const uint8_t *pts, int idx)
 
     /* Project to screen column.
      * Amiga uses +47 as center (ASM line 4148: add.w #47,d2).
-     * vx_fine already has <<7 (128x) baked in from the rotation above. */
+     * vx_fine already has <<7 (128x) baked in from the rotation above.
+     * Scale by RENDER_WIDTH/96 so projection fills the doubled screen. */
     if (vz16 > 0) {
-        int32_t screen_x = (vx_fine / vz16) + 47;
+        int32_t screen_x = (vx_fine * RENDER_SCALE / vz16) + (RENDER_WIDTH / 2);
         r->on_screen[idx].screen_x = (int16_t)screen_x;
         r->on_screen[idx].flags = 0;
     } else {
@@ -603,9 +604,9 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
     /* Project to screen.
      * Amiga uses +47 as center offset (ASM: add.w #47,d2 in RotateLevelPts).
      * cx1/cx2 are rotated.x >> 7, so multiply back by 128 (<<7) for the
-     * perspective divide, matching the original Amiga projection. */
-    int scr_x1 = (int)(((int32_t)cx1 * 128) / cz1) + 47;
-    int scr_x2 = (int)(((int32_t)cx2 * 128) / cz2) + 47;
+     * perspective divide. Scale by RENDER_WIDTH/96 for doubled resolution. */
+    int scr_x1 = (int)(((int32_t)cx1 * 128 * RENDER_SCALE) / cz1) + (RENDER_WIDTH / 2);
+    int scr_x2 = (int)(((int32_t)cx2 * 128 * RENDER_SCALE) / cz2) + (RENDER_WIDTH / 2);
 
     /* If endpoints project in reverse order, swap them for left-to-right drawing.
      * This can happen after near-plane clipping. */
@@ -663,9 +664,10 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
         /* Project wall top/bottom at this depth.
          * Amiga ASM: screen_y = topofwall / z + 40.
          * top = (topwall - yoff) >> 8, so *256 restores the original scale
-         * for the divs d1,d0 perspective divide. */
-        int y_top = (int)((int32_t)top * 256 / col_z) + (RENDER_HEIGHT / 2);
-        int y_bot = (int)((int32_t)bot * 256 / col_z) + (RENDER_HEIGHT / 2);
+         * for the divs d1,d0 perspective divide.
+         * Scale by RENDER_HEIGHT/80 for doubled resolution. */
+        int y_top = (int)((int32_t)top * 256 * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
+        int y_bot = (int)((int32_t)bot * 256 * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
 
         /* Perspective-correct texture column: interpolate tex/z, then multiply by z.
          * This matches Amiga ASM which interpolates in world space, not screen space.
@@ -738,7 +740,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     if (abs_row_dist <= 3) {
         dist = 32000;
     } else {
-        dist = (int32_t)((int64_t)fh_8 * 256 / row_dist);
+        dist = (int32_t)((int64_t)fh_8 * 256 * RENDER_SCALE / row_dist);
         if (dist < 0) dist = -dist;
         if (dist < 16) dist = 16;
         if (dist > 30000) dist = 30000;
@@ -1398,14 +1400,14 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
 
         /* Project Y boundaries from room top/bottom
          * ASM: ty3d (top) / by3d (bottom) divided by depth + 40 */
-        int32_t clip_top_y = (top_of_room - y_off) / orp->z + (RENDER_HEIGHT / 2);
-        int32_t clip_bot_y = (bot_of_room - y_off) / orp->z + (RENDER_HEIGHT / 2);
+        int32_t clip_top_y = (top_of_room - y_off) * RENDER_SCALE / orp->z + (RENDER_HEIGHT / 2);
+        int32_t clip_bot_y = (bot_of_room - y_off) * RENDER_SCALE / orp->z + (RENDER_HEIGHT / 2);
         if (clip_top_y >= clip_bot_y) continue;
 
         /* Project to screen X:
          * ASM: divs d1,d0 ; add.w #47,d0 (47 = RENDER_WIDTH/2 - 1) */
         int32_t obj_vx_fine = orp->x_fine;
-        int scr_x = (int)(obj_vx_fine / orp->z) + (RENDER_WIDTH / 2);
+        int scr_x = (int)(obj_vx_fine * RENDER_SCALE / orp->z) + (RENDER_WIDTH / 2);
 
         const uint8_t *obj = level->object_data + i * OBJECT_SIZE;
 
@@ -1429,12 +1431,13 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         int feet_y = (int)obj_world_y - (world_h / 2);  /* feet below center */
         int32_t rel_h = ((int32_t)feet_y << 6) - (int32_t)y_off;
         int center = RENDER_HEIGHT / 2;
-        int scr_y = (int)((int64_t)(rel_h >> 8) * 256 / (int32_t)orp->z) + center;
+        int scr_y = (int)((int64_t)(rel_h >> 8) * 256 * RENDER_SCALE / (int32_t)orp->z) + center;
 
         /* Screen pixel size = world_size * 128 / depth (ASM: lsl.w #7; divs d1).
-         * Then doubled (ASM: add.w d3,d3; add.w d4,d4). */
-        int sprite_w = world_w * 128 / orp->z;
-        int sprite_h = world_h * 128 / orp->z;
+         * Then doubled (ASM: add.w d3,d3; add.w d4,d4).
+         * Scale by RENDER_SCALE for doubled resolution. */
+        int sprite_w = world_w * 128 * RENDER_SCALE / orp->z;
+        int sprite_h = world_h * 128 * RENDER_SCALE / orp->z;
         sprite_w *= 2;
         sprite_h *= 2;
         if (sprite_w < 1) sprite_w = 1;
@@ -1760,12 +1763,12 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 int32_t rel_h_8 = rel_h >> 8;
                 int sy1_raw, sy2_raw;
                 if (z1 > 0) {
-                    sy1_raw = (int)((int64_t)rel_h_8 * 256 / (int32_t)z1) + center;
+                    sy1_raw = (int)((int64_t)rel_h_8 * 256 * RENDER_SCALE / (int32_t)z1) + center;
                 } else {
                     sy1_raw = (floor_y_dist > 0) ? 10000 : -10000;
                 }
                 if (z2 > 0) {
-                    sy2_raw = (int)((int64_t)rel_h_8 * 256 / (int32_t)z2) + center;
+                    sy2_raw = (int)((int64_t)rel_h_8 * 256 * RENDER_SCALE / (int32_t)z2) + center;
                 } else {
                     sy2_raw = (floor_y_dist > 0) ? 10000 : -10000;
                 }
@@ -2210,7 +2213,7 @@ void renderer_draw_display(GameState *state)
                 int32_t zone_roof = rd32(zd + 6);  /* ToZoneRoof = split height */
                 int32_t rel = zone_roof - r->yoff;
                 /* Split screen Y where lower ceiling / upper floor projects (ref z ~400) */
-                int split_y = (int)((int64_t)(rel >> 8) * 256 / 400) + (RENDER_HEIGHT / 2);
+                int split_y = (int)((int64_t)(rel >> 8) * 256 * RENDER_SCALE / 400) + (RENDER_HEIGHT / 2);
                 if (split_y < 1) split_y = 1;
                 if (split_y >= RENDER_HEIGHT) split_y = RENDER_HEIGHT - 1;
                 r->top_clip = (int16_t)split_y;

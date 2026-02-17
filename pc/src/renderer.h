@@ -23,9 +23,10 @@
  * into a buffer that is 104 longwords wide (416 bytes).
  * Screen height is 80 lines.
  * -----------------------------------------------------------------------*/
-#define RENDER_WIDTH     96    /* Visible game columns (0..95) */
-#define RENDER_HEIGHT    80    /* Visible game lines   (0..79) */
-#define RENDER_STRIDE    416   /* Bytes per line (104 longwords * 4) */
+#define RENDER_SCALE     1     /* Resolution multiplier (1 = Amiga, 2 = doubled) */
+#define RENDER_WIDTH     (96  * RENDER_SCALE)   /* Visible game columns */
+#define RENDER_HEIGHT    (80  * RENDER_SCALE)   /* Visible game lines   */
+#define RENDER_STRIDE    RENDER_WIDTH            /* Bytes per line (1 byte per pixel tag) */
 #define RENDER_BUF_SIZE  (RENDER_STRIDE * RENDER_HEIGHT)
 
 /* -----------------------------------------------------------------------
