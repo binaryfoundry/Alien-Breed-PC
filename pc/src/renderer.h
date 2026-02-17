@@ -29,6 +29,21 @@
 #define RENDER_STRIDE    RENDER_WIDTH            /* Bytes per line (1 byte per pixel tag) */
 #define RENDER_BUF_SIZE  (RENDER_STRIDE * RENDER_HEIGHT)
 
+/* Projection scales.
+ *
+ * PROJ_X_SCALE: horizontal projection (256 = Amiga default). The horizontal
+ *   focal length is PROJ_X_SCALE / 2 (= 128). Do not change unless you want
+ *   to alter horizontal FOV.
+ *
+ * PROJ_Y_SCALE: vertical projection. Change this freely to adjust vertical
+ *   FOV / aspect ratio. All vertical code (walls, floor, ceiling, sprites,
+ *   wall texture step) derives from this single constant.
+ *     256       = Amiga native (square-pixel equivalent)
+ *     256*11/8  = 352, corrects for Amiga 11:8 PAL pixel aspect in 4:3 window
+ *     Other values work too -- nothing else is hardcoded to 256 for Y. */
+#define PROJ_X_SCALE     256
+#define PROJ_Y_SCALE     (256 * 11 / 24)   /* change this to taste */
+
 /* -----------------------------------------------------------------------
  * Rotated point arrays
  *

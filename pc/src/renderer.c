@@ -40,6 +40,10 @@
  * to keep the same total U range = d1>>6 * 96. Integer: use shift 6 + log2(RENDER_SCALE). */
 #define FLOOR_STEP_SHIFT  (6 + (RENDER_SCALE > 1 ? 1 : 0) + (RENDER_SCALE > 2 ? 1 : 0))
 
+/* Raise view height for rendering only (gameplay uses plr->yoff unchanged).
+ * Makes the camera draw from higher so the floor appears further away, matching Amiga. */
+#define VIEW_HEIGHT_LIFT  (2 * 1024)
+
 /* -----------------------------------------------------------------------
  * Global renderer state
  * ----------------------------------------------------------------------- */
@@ -477,9 +481,10 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     /* Texture step based on Z distance.
      * The Amiga uses a fixed texture scale in world space - closer walls
      * get more texture detail per screen pixel, farther walls less.
-     * tex_step = z * 256 in 16.16 fixed point.
+     * Amiga: tex_step = z << 8 (= z * 256), which assumes Y projection scale of 256.
+     * We use (z << 16) / PROJ_Y_SCALE so the texture maps correctly at any scale.
      * totalyoff is the starting texture row offset. */
-    int32_t tex_step = col_z << 8;
+    int32_t tex_step = (int32_t)(((int64_t)col_z << 16) / PROJ_Y_SCALE);
     int32_t tex_y = (ct - y_top) * tex_step + ((int32_t)totalyoff << 16);
 
     int16_t *depth = g_renderer.depth_buffer;
@@ -627,10 +632,10 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
 
     /* Project to screen.
      * Amiga uses +47 as center offset (ASM: add.w #47,d2 in RotateLevelPts).
-     * cx1/cx2 are rotated.x >> 7, so multiply back by 128 (<<7) for the
-     * perspective divide. Scale by RENDER_WIDTH/96 for doubled resolution. */
-    int scr_x1 = (int)(((int32_t)cx1 * 128 * RENDER_SCALE) / cz1) + (RENDER_WIDTH / 2);
-    int scr_x2 = (int)(((int32_t)cx2 * 128 * RENDER_SCALE) / cz2) + (RENDER_WIDTH / 2);
+     * cx1/cx2 are rotated.x >> 7, so multiply back by PROJ_X_SCALE/2 (<<7) for the
+     * perspective divide. Scale by RENDER_SCALE for doubled resolution. */
+    int scr_x1 = (int)(((int32_t)cx1 * (PROJ_X_SCALE / 2) * RENDER_SCALE) / cz1) + (RENDER_WIDTH / 2);
+    int scr_x2 = (int)(((int32_t)cx2 * (PROJ_X_SCALE / 2) * RENDER_SCALE) / cz2) + (RENDER_WIDTH / 2);
 
     /* If endpoints project in reverse order, swap them for left-to-right drawing.
      * This can happen after near-plane clipping. */
@@ -687,11 +692,10 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
 
         /* Project wall top/bottom at this depth.
          * Amiga ASM: screen_y = topofwall / z + 40.
-         * top = (topwall - yoff) >> 8, so *256 restores the original scale
-         * for the divs d1,d0 perspective divide.
+         * top = (topwall - yoff) >> 8, so PROJ_Y_SCALE restores scale (matches Amiga 11:8 pixel aspect).
          * Scale by RENDER_HEIGHT/80 for doubled resolution. */
-        int y_top = (int)((int32_t)top * 256 * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
-        int y_bot = (int)((int32_t)bot * 256 * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
+        int y_top = (int)((int32_t)top * PROJ_Y_SCALE * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
+        int y_bot = (int)((int32_t)bot * PROJ_Y_SCALE * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
 
         /* Perspective-correct texture column: interpolate tex/z, then multiply by z.
          * This matches Amiga ASM which interpolates in world space, not screen space.
@@ -764,7 +768,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     if (abs_row_dist <= 3) {
         dist = 32000;
     } else {
-        dist = (int32_t)((int64_t)fh_8 * 256 * RENDER_SCALE / row_dist);
+        dist = (int32_t)((int64_t)fh_8 * PROJ_Y_SCALE * RENDER_SCALE / row_dist);
         if (dist < 0) dist = -dist;
         if (dist < 16) dist = 16;
         if (dist > 30000) dist = 30000;
@@ -1453,19 +1457,14 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         int32_t z_for_size = orp->z;
         if (z_for_size < 1) z_for_size = 1;
 
-        /* Project Y boundaries from room top/bottom
-         * ASM: ty3d/by3d: (room_height - yoff) / z + 40 */
-        int32_t clip_top_amiga = (top_of_room - y_off) / orp->z + 40;
-        int32_t clip_bot_amiga = (bot_of_room - y_off) / orp->z + 40;
-        int32_t clip_top_y = clip_top_amiga * RENDER_SCALE;
-        int32_t clip_bot_y = clip_bot_amiga * RENDER_SCALE;
+        /* Project Y boundaries from room top/bottom (same PROJ_Y_SCALE as walls). */
+        int32_t clip_top_y = (int)((int64_t)((top_of_room - y_off) >> 8) * PROJ_Y_SCALE * RENDER_SCALE / orp->z) + (RENDER_HEIGHT / 2);
+        int32_t clip_bot_y = (int)((int64_t)((bot_of_room - y_off) >> 8) * PROJ_Y_SCALE * RENDER_SCALE / orp->z) + (RENDER_HEIGHT / 2);
         if (clip_top_y >= clip_bot_y) continue;
 
-        /* Project to screen X:
-         * ASM: divs d1,d0 ; add.w #47,d0 */
+        /* Project to screen X (PROJ_X_SCALE/2 = horizontal focal length). */
         int32_t obj_vx_fine = orp->x_fine;
-        int scr_x_amiga = (int)(obj_vx_fine / (int32_t)orp->z) + 47;
-        int scr_x = scr_x_amiga * RENDER_SCALE;
+        int scr_x = (int)(obj_vx_fine * RENDER_SCALE / (int32_t)orp->z) + (RENDER_WIDTH / 2);
 
         /* Get brightness + distance attenuation
          * ASM: asr.w #7,d6 ; add.w (a0)+,d6 (distance>>7 + obj brightness) */
@@ -1485,10 +1484,9 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         if (world_h < 1 || world_h >= 255) world_h = 32;
 
         /* Screen pixel size: ASM lines 620-623.
-         * half_w = world_w * 128 / z, full_w = 2 * half_w = world_w * 256 / z.
-         * Billboard size comes purely from world dimensions + distance. */
-        int sprite_w = (int)((int32_t)world_w * 256 * (int32_t)RENDER_SCALE / z_for_size);
-        int sprite_h = (int)((int32_t)world_h * 256 * (int32_t)RENDER_SCALE / z_for_size);
+         * Horizontal PROJ_X_SCALE; vertical PROJ_Y_SCALE (same as walls). */
+        int sprite_w = (int)((int32_t)world_w * PROJ_X_SCALE * (int32_t)RENDER_SCALE / z_for_size);
+        int sprite_h = (int)((int32_t)world_h * PROJ_Y_SCALE * (int32_t)RENDER_SCALE / z_for_size);
         if (sprite_w < 1) sprite_w = 1;
         if (sprite_h < 1) sprite_h = 1;
         if (sprite_w > RENDER_WIDTH) sprite_w = RENDER_WIDTH;
@@ -1501,10 +1499,9 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         if (src_rows < 1) src_rows = 32;
 
         /* Sprite Y: place base on zone floor so feet sit on the ground.
-         * Floor projects at (floor - y_off) / z + 40 (Amiga) → floor_screen_y in our resolution.
-         * We pass center to renderer_draw_sprite (it does sy = center - half_h), so center = floor_screen_y - half_h. */
+         * Use same PROJ_Y_SCALE as walls so sprite base meets floor. */
         int32_t floor_rel = (int32_t)(bot_of_room - y_off);
-        int floor_screen_y = (int)(floor_rel * (int32_t)RENDER_SCALE / orp->z) + (RENDER_HEIGHT / 2);
+        int floor_screen_y = (int)((int64_t)(floor_rel >> 8) * PROJ_Y_SCALE * (int32_t)RENDER_SCALE / orp->z) + (RENDER_HEIGHT / 2);
         int half_h = sprite_h / 2;
         int scr_y = floor_screen_y - half_h;
 
@@ -1813,17 +1810,17 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 int sx1 = r->on_screen[i1].screen_x;
                 int sx2 = r->on_screen[i2].screen_x;
 
-                /* Project Y: use 256 (same as walls) so floor/ceiling edges meet
+                /* Project Y: use PROJ_Y_SCALE (same as walls) so floor/ceiling edges meet
                  * wall bottom/top exactly. */
                 int32_t rel_h_8 = rel_h >> 8;
                 int sy1_raw, sy2_raw;
                 if (z1 > 0) {
-                    sy1_raw = (int)((int64_t)rel_h_8 * 256 * RENDER_SCALE / (int32_t)z1) + center;
+                    sy1_raw = (int)((int64_t)rel_h_8 * PROJ_Y_SCALE * RENDER_SCALE / (int32_t)z1) + center;
                 } else {
                     sy1_raw = (floor_y_dist > 0) ? 10000 : -10000;
                 }
                 if (z2 > 0) {
-                    sy2_raw = (int)((int64_t)rel_h_8 * 256 * RENDER_SCALE / (int32_t)z2) + center;
+                    sy2_raw = (int)((int64_t)rel_h_8 * PROJ_Y_SCALE * RENDER_SCALE / (int32_t)z2) + center;
                 } else {
                     sy2_raw = (floor_y_dist > 0) ? 10000 : -10000;
                 }
@@ -2140,10 +2137,11 @@ void renderer_draw_display(GameState *state)
     r->cosval = cos_lookup(ang);
 
     /* Extract integer part of 16.16 fixed-point position for rendering.
-     * On Amiga: .w operations on big-endian 32-bit values read the high word. */
+     * On Amiga: .w operations on big-endian 32-bit values read the high word.
+     * Raise camera Y for drawing only so floor appears further away (match Amiga). */
     r->xoff = (int16_t)(plr->xoff >> 16);
     r->zoff = (int16_t)(plr->zoff >> 16);
-    r->yoff = plr->yoff;
+    r->yoff = plr->yoff - VIEW_HEIGHT_LIFT;
 
     /* wallyoff = (yoff >> 8) + 224, masked to 0-255 */
     int32_t y_shifted = r->yoff >> 8;
@@ -2268,7 +2266,7 @@ void renderer_draw_display(GameState *state)
                 int32_t zone_roof = rd32(zd + 6);  /* ToZoneRoof = split height */
                 int32_t rel = zone_roof - r->yoff;
                 /* Split screen Y where lower ceiling / upper floor projects (ref z ~400) */
-                int split_y = (int)((int64_t)(rel >> 8) * 256 * RENDER_SCALE / 400) + (RENDER_HEIGHT / 2);
+                int split_y = (int)((int64_t)(rel >> 8) * PROJ_Y_SCALE * RENDER_SCALE / 400) + (RENDER_HEIGHT / 2);
                 if (split_y < 1) split_y = 1;
                 if (split_y >= RENDER_HEIGHT) split_y = RENDER_HEIGHT - 1;
                 r->top_clip = (int16_t)split_y;
