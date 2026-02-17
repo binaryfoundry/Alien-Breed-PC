@@ -445,7 +445,8 @@ static void draw_wall_column(int x, int y_top, int y_bot,
                              int tex_col, const uint8_t *texture,
                              int amiga_d6,
                              uint8_t valand, uint8_t valshift,
-                             int16_t totalyoff, int32_t col_z)
+                             int16_t totalyoff, int32_t col_z,
+                             int16_t wall_height_world)
 {
     uint8_t *buf = g_renderer.buffer;
     uint32_t *rgb = g_renderer.rgb_buffer;
@@ -498,12 +499,17 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     /* strip_offset = strip_index * 2 << valshift  =  strip_index << (valshift+1) */
     int strip_offset = strip_index << (valshift + 1);
 
-    /* Texture step based on Z distance.
-     * The Amiga uses a fixed texture scale in world space - closer walls
-     * get more texture detail per screen pixel, farther walls less.
-     * Divisor from header so one world-space wall height = one texture repeat at any resolution. */
-    int32_t tex_step = (int32_t)(((int64_t)col_z << 16) / WALL_VERTICAL_TEX_DIVISOR);
-    int32_t tex_y = (ct - y_top) * tex_step + ((int32_t)totalyoff << 16);
+    /* Texture step from world wall height. Repeats = wall_height_world/64.
+     * Step maps (1<<valshift)*(h/64) texel rows over (y_bot-y_top) pixels. */
+    int wall_pixels = yb - yt;
+    if (wall_pixels < 1) wall_pixels = 1;
+    int h = (int)wall_height_world;
+    if (h < 1) h = 1;
+    int rows = 1 << valshift;
+    int32_t tex_step = (int32_t)(((int64_t)rows * (int64_t)h << 16) / (64 * wall_pixels));
+    /* Level totalyoff is in 64-row units; scale so same value gives same visual offset for any texture height. */
+    int32_t yoff = (valshift != 6) ? (int32_t)totalyoff * rows / 64 : (int32_t)totalyoff;
+    int32_t tex_y = (ct - y_top) * tex_step + ((int32_t)yoff << 16);
 
     int16_t *depth = g_renderer.depth_buffer;
     int16_t col_z16 = (col_z > 32767) ? 32767 : (int16_t)col_z;
@@ -585,6 +591,7 @@ typedef struct {
     int16_t  tex_id;    /* for cur_wall_pal when drawing */
     int16_t  totalyoff; /* vertical texture offset */
     int16_t  fromtile;  /* horizontal texture offset (strip base) */
+    int16_t  wall_height_for_tex; /* original level height for texture step (not overridden for doors) */
 } DeferredWall;
 
 /* Deferred water spans: draw after ALL zones' opaque geometry (global list, depth-sorted). */
@@ -619,7 +626,7 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
                         int16_t tex_end, int16_t brightness,
                         uint8_t valand, uint8_t valshift, int16_t horand,
                         int16_t totalyoff, int16_t fromtile,
-                        int16_t tex_id)
+                        int16_t tex_id, int16_t wall_height_for_tex)
 {
     RendererState *r = &g_renderer;
 
@@ -752,7 +759,8 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
         if (tex_id == SWITCHES_WALL_TEX_ID && col_z > 16) depth_z = col_z - 16;
 
         draw_wall_column(screen_x, y_top, y_bot, tex_col, texture,
-                         amiga_d6, valand, valshift, totalyoff, depth_z);
+                         amiga_d6, valand, valshift, totalyoff, depth_z,
+                         wall_height_for_tex);
     }
 }
 
@@ -1835,6 +1843,9 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
 
                 int16_t wall_top = (int16_t)(topwall >> 8);
                 int16_t wall_bot = (int16_t)(botwall >> 8);
+                /* Original level height for texture step (before any door override). */
+                int16_t wall_height_for_tex = (int16_t)((botwall - topwall) >> 8);
+                if (wall_height_for_tex < 1) wall_height_for_tex = 1;
                 if (zone_has_door_flag) {
                     int32_t zone_roof_rel = zone_roof - y_off;
                     int32_t zone_floor_rel = zone_floor - y_off;
@@ -1851,6 +1862,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 dw->x1 = rx1; dw->z1 = rz1; dw->x2 = rx2; dw->z2 = rz2;
                 dw->top        = wall_top;
                 dw->bot        = wall_bot;
+                dw->wall_height_for_tex = wall_height_for_tex;
                 dw->texture    = wall_tex;
                 dw->tex_start  = leftend;
                 dw->tex_end    = rightend;
@@ -2249,6 +2261,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                         dw->tex_id = tex_id;
                         dw->totalyoff = 0;
                         dw->fromtile = 0;
+                        dw->wall_height_for_tex = (int16_t)((botwall - topwall) >> 8);
+                        if (dw->wall_height_for_tex < 1) dw->wall_height_for_tex = 1;
                     }
                     
                     prev_x = new_x;
@@ -2311,7 +2325,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                           dw->top, dw->bot,
                           dw->texture, dw->tex_start, dw->tex_end,
                           dw->brightness, dw->valand, dw->valshift, dw->horand,
-                          dw->totalyoff, dw->fromtile, dw->tex_id);
+                          dw->totalyoff, dw->fromtile, dw->tex_id,
+                          dw->wall_height_for_tex);
     }
 
     /* Draw zone objects after all floor and walls so sprites are on top.
