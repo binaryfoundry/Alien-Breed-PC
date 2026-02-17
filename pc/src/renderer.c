@@ -39,6 +39,10 @@
  * At RENDER_SCALE we have 96*RENDER_SCALE columns, so step must be (d1>>6)/RENDER_SCALE
  * to keep the same total U range = d1>>6 * 96. Integer: use shift 6 + log2(RENDER_SCALE). */
 #define FLOOR_STEP_SHIFT  (6 + (RENDER_SCALE > 1 ? 1 : 0) + (RENDER_SCALE > 2 ? 1 : 0))
+/* Pixels to extend floor/ceiling edges and spans (clamped to zone clip). Use 1 to avoid drawing into portals. */
+#define FLOOR_EDGE_EXTRA  1
+/* Ceiling needs a bit more extension to close gaps at sides (still clamped to clip). */
+#define CEILING_EDGE_EXTRA 2
 
 /* Raise view height for rendering only (gameplay uses plr->yoff unchanged).
  * Makes the camera draw from higher so the floor appears further away, matching Amiga. */
@@ -1810,33 +1814,54 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 y_max_clamp = half_h - 1;
             }
 
-            /* Walk each polygon edge and rasterize into edge tables */
+            /* Walk each polygon edge and rasterize into edge tables (floor and ceiling/roof).
+             * Near-plane clip edges so vertices behind the camera get proper
+             * screen X values (otherwise on_screen[].screen_x is garbage and
+             * the edge table doesn't reach the screen sides). */
+            const int16_t FLOOR_NEAR = 4;
             for (int s = 0; s < sides; s++) {
                 int i1 = pt_indices[s];
                 int i2 = pt_indices[(s + 1) % sides];
                 if (i1 < 0 || i1 >= MAX_POINTS || i2 < 0 || i2 >= MAX_POINTS) continue;
 
-                int16_t z1 = (int16_t)r->rotated[i1].z;
-                int16_t z2 = (int16_t)r->rotated[i2].z;
-                if (z1 <= 0 && z2 <= 0) continue; /* both behind camera */
+                int32_t z1 = r->rotated[i1].z;
+                int32_t z2 = r->rotated[i2].z;
+                int32_t rx1 = r->rotated[i1].x;
+                int32_t rx2 = r->rotated[i2].x;
 
-                int sx1 = r->on_screen[i1].screen_x;
-                int sx2 = r->on_screen[i2].screen_x;
+                /* Near-plane clip: interpolate X at FLOOR_NEAR when behind camera.
+                 * Do this even when both vertices are behind (e.g. ceiling's back edge)
+                 * so we still rasterize that edge and the polygon extends to the screen. */
+                int32_t ez1 = z1, ez2 = z2;
+                int32_t ex1 = rx1, ex2 = rx2;
+                if (ez1 < FLOOR_NEAR) {
+                    int32_t dz = ez2 - ez1;
+                    if (dz != 0) {
+                        int32_t t = ((int32_t)(FLOOR_NEAR - ez1) << 16) / dz;
+                        ex1 = rx1 + (int32_t)((int64_t)(rx2 - rx1) * t / 65536);
+                    }
+                    ez1 = FLOOR_NEAR;
+                }
+                if (ez2 < FLOOR_NEAR) {
+                    int32_t dz = ez1 - ez2;
+                    if (dz != 0) {
+                        int32_t t = ((int32_t)(FLOOR_NEAR - ez2) << 16) / dz;
+                        ex2 = rx2 + (int32_t)((int64_t)(rx1 - rx2) * t / 65536);
+                    }
+                    ez2 = FLOOR_NEAR;
+                }
+                /* Project X: use on_screen only when safely in front (z >= FLOOR_NEAR).
+                 * For z < FLOOR_NEAR (behind or very close) use clipped projection so rotation
+                 * doesn't cause jumps when vertices cross the camera plane or get very close. */
+                int sx1 = (z1 >= FLOOR_NEAR) ? r->on_screen[i1].screen_x
+                        : (int)((int64_t)ex1 * RENDER_SCALE / ez1) + RENDER_WIDTH / 2;
+                int sx2 = (z2 >= FLOOR_NEAR) ? r->on_screen[i2].screen_x
+                        : (int)((int64_t)ex2 * RENDER_SCALE / ez2) + RENDER_WIDTH / 2;
 
-                /* Project Y: use PROJ_Y_SCALE (same as walls) so floor/ceiling edges meet
-                 * wall bottom/top exactly. */
+                /* Project Y: same rule so X and Y stay consistent (no jump when z crosses FLOOR_NEAR). */
                 int32_t rel_h_8 = rel_h >> 8;
-                int sy1_raw, sy2_raw;
-                if (z1 > 0) {
-                    sy1_raw = (int)((int64_t)rel_h_8 * PROJ_Y_SCALE * RENDER_SCALE / (int32_t)z1) + center;
-                } else {
-                    sy1_raw = (floor_y_dist > 0) ? 10000 : -10000;
-                }
-                if (z2 > 0) {
-                    sy2_raw = (int)((int64_t)rel_h_8 * PROJ_Y_SCALE * RENDER_SCALE / (int32_t)z2) + center;
-                } else {
-                    sy2_raw = (floor_y_dist > 0) ? 10000 : -10000;
-                }
+                int sy1_raw = (int)((int64_t)rel_h_8 * PROJ_Y_SCALE * RENDER_SCALE / (int32_t)ez1) + center;
+                int sy2_raw = (int)((int64_t)rel_h_8 * PROJ_Y_SCALE * RENDER_SCALE / (int32_t)ez2) + center;
 
                 /* Clamp for horizontal edge check */
                 int sy1 = sy1_raw;
@@ -1855,6 +1880,9 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     if (row >= y_min_clamp && row <= y_max_clamp) {
                         int lo = sx1 < sx2 ? sx1 : sx2;
                         int hi = sx1 > sx2 ? sx1 : sx2;
+                        int he_extra = (floor_y_dist < 0) ? CEILING_EDGE_EXTRA : FLOOR_EDGE_EXTRA;
+                        lo -= he_extra;
+                        hi += he_extra;
                         if (lo < r->left_clip) lo = r->left_clip;
                         if (hi >= r->right_clip) hi = r->right_clip - 1;
                         if (lo < left_edge[row]) left_edge[row] = (int16_t)lo;
@@ -1884,12 +1912,12 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     x_fp += dx_fp * (row_start - sy2_raw);
                 }
                 
+                int edge_extra = (floor_y_dist < 0) ? CEILING_EDGE_EXTRA : FLOOR_EDGE_EXTRA;
                 for (int row = row_start; row <= row_end; row++) {
                     int x = (int)(x_fp >> 16);
-                    /* Extend edges by 1 pixel to ensure floor meets walls.
-                     * Clamp to zone clip when off-screen so we don't leave vertical gaps. */
-                    int left_x = x - 1;
-                    int right_x = x + 1;
+                    /* Extend edges to close gaps (ceiling needs a bit more). */
+                    int left_x = x - edge_extra;
+                    int right_x = x + edge_extra;
                     if (left_x < r->left_clip) left_x = r->left_clip;
                     if (right_x >= r->right_clip) right_x = r->right_clip - 1;
                     if (left_x < left_edge[row]) left_edge[row] = (int16_t)left_x;
@@ -1915,13 +1943,15 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
              * ASM: move.w (a0)+,d6 / add.w ZoneBright,d6 */
             int16_t bright = zone_bright + floor_bright_off;
 
-            /* Fill between edges for each row.
-             * Clamp span to zone clip only; do not extend beyond the polygon
-             * or we draw this room's floor in columns that belong to other rooms. */
+            /* Fill between edges for each row (floor and ceiling/roof). Clamp to zone clip.
+             * Extend each side to close gaps; ceiling uses a bit more (still clamped to clip). */
+            int span_extra = (floor_y_dist < 0) ? CEILING_EDGE_EXTRA : FLOOR_EDGE_EXTRA;
             for (int row = poly_top; row <= poly_bot; row++) {
                 int16_t le = left_edge[row];
                 int16_t re = right_edge_tab[row];
                 if (le >= RENDER_WIDTH || re < 0) continue;
+                le -= span_extra;
+                re += span_extra;
                 if (le < r->left_clip) le = (int16_t)r->left_clip;
                 if (re >= r->right_clip) re = (int16_t)(r->right_clip - 1);
                 if (le > re) continue;
