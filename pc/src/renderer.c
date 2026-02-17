@@ -43,6 +43,8 @@
 #define FLOOR_EDGE_EXTRA  1
 /* Ceiling needs a bit more extension to close gaps at sides (still clamped to clip). */
 #define CEILING_EDGE_EXTRA 2
+/* In portal view use 1px to close sub-pixel gaps without drawing outside. */
+#define PORTAL_EDGE_EXTRA 1
 
 /* Raise view height for rendering only (gameplay uses plr->yoff unchanged).
  * Makes the camera draw from higher so the floor appears further away, matching Amiga. */
@@ -1814,6 +1816,10 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 y_max_clamp = half_h - 1;
             }
 
+            /* Full screen: use full extension; portal view: use 1px only to avoid drawing outside. */
+            int full_screen_zone = (r->left_clip == 0 && r->right_clip == RENDER_WIDTH);
+            int edge_extra_portal = full_screen_zone ? 0 : PORTAL_EDGE_EXTRA;  /* portal: 1px to close gaps only */
+
             /* Walk each polygon edge and rasterize into edge tables (floor and ceiling/roof).
              * Near-plane clip edges so vertices behind the camera get proper
              * screen X values (otherwise on_screen[].screen_x is garbage and
@@ -1880,7 +1886,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     if (row >= y_min_clamp && row <= y_max_clamp) {
                         int lo = sx1 < sx2 ? sx1 : sx2;
                         int hi = sx1 > sx2 ? sx1 : sx2;
-                        int he_extra = (floor_y_dist < 0) ? CEILING_EDGE_EXTRA : FLOOR_EDGE_EXTRA;
+                        int he_extra = full_screen_zone ? ((floor_y_dist < 0) ? CEILING_EDGE_EXTRA : FLOOR_EDGE_EXTRA) : edge_extra_portal;
                         lo -= he_extra;
                         hi += he_extra;
                         if (lo < r->left_clip) lo = r->left_clip;
@@ -1912,10 +1918,10 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     x_fp += dx_fp * (row_start - sy2_raw);
                 }
                 
-                int edge_extra = (floor_y_dist < 0) ? CEILING_EDGE_EXTRA : FLOOR_EDGE_EXTRA;
+                int edge_extra = full_screen_zone ? ((floor_y_dist < 0) ? CEILING_EDGE_EXTRA : FLOOR_EDGE_EXTRA) : edge_extra_portal;
                 for (int row = row_start; row <= row_end; row++) {
                     int x = (int)(x_fp >> 16);
-                    /* Extend edges to close gaps (ceiling needs a bit more). */
+                    /* Extend edges only when full screen (avoid drawing outside portal). */
                     int left_x = x - edge_extra;
                     int right_x = x + edge_extra;
                     if (left_x < r->left_clip) left_x = r->left_clip;
