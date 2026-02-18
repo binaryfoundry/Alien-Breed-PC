@@ -55,7 +55,10 @@ typedef int32_t fixed16_t;  /* 16.16 fixed point */
 /* -----------------------------------------------------------------------
  * Object constants (from Defs.i)
  * ----------------------------------------------------------------------- */
-#define OBJECT_SIZE     64  /* bytes per object */
+#define OBJECT_SIZE        64  /* bytes per object */
+/* ObjDraw3.ChipRam.s: cmp.b #$ff,6(a0); bne BitMapObj; bsr PolygonObj.
+ * When byte at offset 6 is OBJ_3D_SPRITE the object is a 3D polygon sprite; else billboard. */
+#define OBJ_3D_SPRITE      0xFF
 
 /* Object type numbers (stored at offset 16 in object) */
 typedef enum {
@@ -101,8 +104,8 @@ typedef union {
         /* offset 0 */  int16_t  collision_id;      /* .w - USE OBJ_CID() */
         /* offset 2 */  int16_t  unknown2;          /* .w */
         /* offset 4 */  int16_t  unknown4;          /* .w */
-        /* offset 6 */  int8_t   unknown6;          /* .b */
-        /* offset 7 */  int8_t   unknown7;          /* .b */
+        /* offset 6 */  int8_t   width_or_3d;      /* .b: world_w, or OBJ_3D_SPRITE if 3D polygon */
+        /* offset 7 */  int8_t   world_height;     /* .b: world_h (when billboard) */
         /* offset 8 */  int16_t  dead_frame_h;      /* .w - USE OBJ_DEADH() */
         /* offset 10 */ int16_t  dead_frame_l;      /* .w - USE OBJ_DEADL() */
         /* offset 12 */ int16_t  zone;              /* .w - USE OBJ_ZONE() */

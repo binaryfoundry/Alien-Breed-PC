@@ -36,6 +36,56 @@
 #include <stdio.h>
 #include <limits.h>
 
+/* Default world width/height per sprite graphic (vect_num), not object type.
+ * So we size by which graphic we draw: barrel graphic (vect 7) always gets barrel size, etc.
+ * Values from Amiga .s where type sets move.w #...,6(a0); reduced slightly for other aliens so they don’t look oversized. */
+static const struct { int w; int h; } sprite_world_size_by_vect[MAX_SPRITE_TYPES] = {
+    /*  0 alien       */ { 32,  32 },
+    /*  1 pickups     */ { 40,  40 },   /* medikit, health (ammo overridden to 16×16 below) */
+    /*  2 bigbullet   */ { 16,  16 },
+    /*  3 (unused)    */ { 32,  32 },
+    /*  4 flying      */ { 96,  96 },   /* FlyingScalyBall.s #$6060 */
+    /*  5 keys        */ { 20,  20 },
+    /*  6 rockets     */ { 20,  20 }, /* ammo pickup */
+    /*  7 barrel      */ { 48,  50 },
+    /*  8 explosion   */ { 64,  64 },
+    /*  9 guns        */ { 40,  40 },
+    /* 10 marine      */ { 32,  32 },   /* Robot.s #$2020; MutantMarine vect 10 */
+    /* 11 bigalien    */ { 80,  80 },   /* BigUglyAlien / BIGSCARYALIEN */
+    /* 12 lamps       */ { 40,  40 },
+    /* 13 worm        */ { 90, 100 },   /* HalfWorm.s #90*256+100 */
+    /* 14 bigclaws    */ {128, 128},   /* BigClaws.s #$8080 */
+    /* 15 tree        */ {128, 128},   /* Tree.s #128*256+128; small red same vect */
+    /* 16 tough marine*/ { 69,  69 }, /* ToughMarine.s #$4545 */
+    /* 17 flame marine*/ { 69,  69 }, /* FlameMarine.s #$4545 */
+    /* 18,19         */ { 32,  32 }, { 32,  32 },
+};
+
+/* Per-sprite "feet" anchor: source rows from bottom of graphic to the feet row.
+ * 0 = feet at bottom of image (default). If the art has empty space below the feet,
+ * set this so we place the sprite with that row on the floor (e.g. barrel ~8). */
+static const int sprite_feet_rows_from_bottom_by_vect[MAX_SPRITE_TYPES] = {
+    /*  0 alien       */ 0,
+    /*  1 pickups     */ 4,   /* medikit, ammo etc – slight hover fix */
+    /*  2 bigbullet   */ 0,
+    /*  3 (unused)    */ 0,
+    /*  4 flying      */ 0,
+    /*  5 keys        */ 0,
+    /*  6 rockets     */ 4,   /* ammo pickup – slight hover fix */
+    /*  7 barrel      */ 4,
+    /*  8 explosion   */ 0,
+    /*  9 guns        */ 0,
+    /* 10 marine      */ 0,
+    /* 11 bigalien    */ 0,
+    /* 12 lamps       */ 0,
+    /* 13 worm        */ 0,
+    /* 14 bigclaws    */ 0,
+    /* 15 tree        */ 0,
+    /* 16 tough marine*/ 0,
+    /* 17 flame marine*/ 0,
+    /* 18,19         */ 0, 0,
+};
+
 /* Floor/ceiling UV step: Amiga uses d1>>6 per pixel over 96 columns.
  * At RENDER_SCALE we have 96*RENDER_SCALE columns, so step must be (d1>>6)/RENDER_SCALE
  * to keep the same total U range. Integer: use shift 6 + RENDER_SCALE_LOG2. */
@@ -1549,6 +1599,9 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
     for (int oi = 0; oi < obj_count; oi++) {
         int obj_idx = objs[oi].idx;
         const uint8_t *obj = level->object_data + obj_idx * OBJECT_SIZE;
+        /* ObjDraw3: cmp.b #$ff,6(a0); bne BitMapObj → 3D/polygon objects have obj[6]==OBJ_3D_SPRITE. Skip for now. */
+        if ((uint8_t)obj[6] == (uint8_t)OBJ_3D_SPRITE) continue;
+
         int16_t pt_num = rd16(obj);
         if ((unsigned)pt_num >= (unsigned)num_pts) continue;
         ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
@@ -1574,55 +1627,29 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         int bright = (orp->z >> 7) + obj_bright;
         if (bright < 0) bright = 0;
 
-        /* Read world-space width/height bytes from object data (offsets 6, 7).
-         * ASM: move.b (a0)+,d3; move.b (a0)+,d4; lsl.w #7; divs d1
-         * 0xFF (255) in level data often means "default" not 255 units - use 32 so
-         * sprites (e.g. keys) scale with distance instead of staying huge. */
-        int world_w = (int)obj[6];
-        int world_h = (int)obj[7];
-        if (world_w < 1 || world_w >= 255) world_w = 32;
-        if (world_h < 1 || world_h >= 255) world_h = 32;
+        int8_t obj_number = (int8_t)obj[16];
+        if (obj_number == OBJ_NBR_DEAD) continue;
 
-        /* Screen pixel size: ASM lines 620-623.
-         * Horizontal PROJ_X_SCALE; vertical PROJ_Y_SCALE (same as walls). */
-        int sprite_w = (int)((int32_t)world_w * PROJ_X_SCALE * (int32_t)RENDER_SCALE / z_for_size);
-        int sprite_h = (int)((int32_t)world_h * PROJ_Y_SCALE * (int32_t)RENDER_SCALE / z_for_size);
-        if (sprite_w < 1) sprite_w = 1;
-        if (sprite_h < 1) sprite_h = 1;
-        if (sprite_w > RENDER_WIDTH) sprite_w = RENDER_WIDTH;
-        if (sprite_h > RENDER_HEIGHT) sprite_h = RENDER_HEIGHT;
-
-        /* Source dimensions: columns and rows from object data offsets 14, 15. */
-        int src_cols = (int)obj[14];
-        int src_rows = (int)obj[15];
-        if (src_cols < 1) src_cols = 32;
-        if (src_rows < 1) src_rows = 32;
-
-        /* Sprite Y: place base on zone floor so feet sit on the ground.
-         * Use same PROJ_Y_SCALE as walls so sprite base meets floor. */
-        int32_t floor_rel = (int32_t)(bot_of_room - y_off);
-        int floor_screen_y = (int)((int64_t)(floor_rel >> 8) * PROJ_Y_SCALE * (int32_t)RENDER_SCALE / orp->z) + (RENDER_HEIGHT / 2);
-        int half_h = sprite_h / 2;
-        int scr_y = floor_screen_y - half_h;
-
-        /* objVectNumber (offset 8) = sprite type; objVectFrameNumber (offset 10) = frame.
-         * At runtime offset 8/10 can be overwritten (e.g. dead_frame_h/l), so fall back to
-         * object type (offset 16) when vect is invalid or sprite missing. */
+        /* Resolve sprite graphic (vect_num). Fallback by obj_number when vect missing/invalid
+         * or when level left vect 0 for a non-alien (so all enemies don't draw as alien). */
         int16_t vect_num = rd16(obj + 8);
         int16_t frame_num = rd16(obj + 10);
-        int8_t obj_number = obj[16];
-        if (obj_number == OBJ_NBR_DEAD) continue;
-        if (vect_num < 0 || vect_num >= MAX_SPRITE_TYPES ||
-            !r->sprite_wad[vect_num] || !r->sprite_ptr[vect_num]) {
-            /* Use object type -> sprite mapping (matches stub_io sprite order) */
+        int use_fallback = (vect_num < 0 || vect_num >= MAX_SPRITE_TYPES ||
+                            !r->sprite_wad[vect_num] || !r->sprite_ptr[vect_num]);
+        if (!use_fallback && vect_num == 0 && obj_number != OBJ_NBR_ALIEN &&
+            obj_number >= OBJ_NBR_ROBOT && obj_number <= OBJ_NBR_FLAME_MARINE)
+            use_fallback = 1;
+        if (use_fallback) {
             switch ((ObjNumber)obj_number) {
                 case OBJ_NBR_ALIEN:           vect_num = 0;  break;
                 case OBJ_NBR_MEDIKIT:         vect_num = 1;  break;
                 case OBJ_NBR_BULLET:          vect_num = 2;  break;
+                case OBJ_NBR_BIG_GUN:         vect_num = 9;  break;
                 case OBJ_NBR_KEY:             vect_num = 5;  break;
                 case OBJ_NBR_PLR1:
                 case OBJ_NBR_PLR2:
                 case OBJ_NBR_MARINE:          vect_num = 10; break;
+                case OBJ_NBR_ROBOT:           vect_num = 10; break;
                 case OBJ_NBR_BIG_NASTY:       vect_num = 11; break;
                 case OBJ_NBR_FLYING_NASTY:    vect_num = 4;  break;
                 case OBJ_NBR_AMMO:            vect_num = 6;  break;
@@ -1631,13 +1658,45 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
                 case OBJ_NBR_HUGE_RED_THING:  vect_num = 14; break;
                 case OBJ_NBR_SMALL_RED_THING: vect_num = 15; break;
                 case OBJ_NBR_TREE:            vect_num = 15; break;
+                case OBJ_NBR_EYEBALL:         vect_num = 0;  break;
                 case OBJ_NBR_TOUGH_MARINE:    vect_num = 16; break;
                 case OBJ_NBR_FLAME_MARINE:    vect_num = 17; break;
                 default:                      vect_num = 0;  break;
             }
-            frame_num = 0; /* safe default when using type fallback */
+            frame_num = 0;
         }
         if (vect_num < 0 || vect_num >= MAX_SPRITE_TYPES) continue;
+
+        /* World size from table by vect_num. Ammo pickup often uses vect 1 (pickups) from level
+         * data, so use a smaller size when we know it's ammo to avoid huge ammo sprites. */
+        int v = vect_num;
+        int world_w = sprite_world_size_by_vect[v].w;
+        int world_h = sprite_world_size_by_vect[v].h;
+        if (v == 1 && obj_number == OBJ_NBR_AMMO) {
+            world_w = 16;
+            world_h = 16;
+        }
+
+        /* Screen size: (world * SPRITE_SIZE_SCALE / z) * SPRITE_SIZE_MULTIPLIER. Do not clamp
+         * to RENDER_WIDTH/HEIGHT: that stops scaling when very close. Let size grow; draw loop clips to screen. */
+        int sprite_w = (int)((int32_t)world_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+        int sprite_h = (int)((int32_t)world_h * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+        if (sprite_w < 1) sprite_w = 1;
+        if (sprite_h < 1) sprite_h = 1;
+
+        /* Source dimensions: columns and rows from object data offsets 14, 15. */
+        int src_cols = (int)obj[14];
+        int src_rows = (int)obj[15];
+        if (src_cols < 1) src_cols = 32;
+        if (src_rows < 1) src_rows = 32;
+
+        /* Sprite Y: place feet on zone floor. Use per-vect feet anchor (rows from bottom of graphic). */
+        int32_t floor_rel = (int32_t)(bot_of_room - y_off);
+        int floor_screen_y = (int)((int64_t)(floor_rel >> 8) * PROJ_Y_SCALE * (int32_t)RENDER_SCALE / orp->z) + (RENDER_HEIGHT / 2);
+        int half_h = sprite_h / 2;
+        int feet_rows = sprite_feet_rows_from_bottom_by_vect[vect_num];
+        int feet_screen = (feet_rows > 0 && src_rows > 0) ? (feet_rows * sprite_h) / src_rows : 0;
+        int scr_y = floor_screen_y - half_h + feet_screen;
 
         /* Look up frame info from FRAMES table */
         uint32_t ptr_off = 0;

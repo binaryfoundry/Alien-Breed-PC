@@ -48,6 +48,11 @@
 #define PROJ_X_SCALE     256
 #define PROJ_Y_SCALE     (256 * 11 / 20)   /* change this to taste */
 
+/* Sprite size: (world * SPRITE_SIZE_SCALE / z) * SPRITE_SIZE_MULTIPLIER. Resolution via RENDER_SCALE.
+ * 128 so sprites keep scaling when very close. Multiplier doubles apparent size; set to 1 to disable. */
+#define SPRITE_SIZE_SCALE      (128 * RENDER_SCALE)
+#define SPRITE_SIZE_MULTIPLIER 2
+
 /* -----------------------------------------------------------------------
  * Rotated point arrays
  *
