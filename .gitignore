@@ -1,5 +1,5 @@
 
 *.o
-pc/build
-pc/data
-pc/game
+build
+data
+game
