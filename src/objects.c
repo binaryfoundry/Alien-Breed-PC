@@ -1464,6 +1464,8 @@ void do_water_anims(GameState *state)
 }
 
 #define BRIGHT_ANIM_SENTINEL 999
+/* Advance anim tables only every N logic ticks to slow the cycle (~25 Hz with N=2). */
+#define BRIGHT_ANIM_TICK_DIVIDER 2
 
 /* Advance one brightness animation; returns current value, updates index. */
 static int16_t bright_anim_advance(const int16_t *table, unsigned int *idx)
@@ -1494,11 +1496,15 @@ static int16_t bright_anim_advance(const int16_t *table, unsigned int *idx)
 void bright_anim_handler(GameState *state)
 {
     LevelState *lev = &state->level;
+    static unsigned int bright_anim_tick_count = 0;
 
-    /* Advance the three global anims (Amiga brightAnimTable). */
-    lev->bright_anim_values[0] = bright_anim_advance(pulse_anim, &lev->bright_anim_indices[0]);
-    lev->bright_anim_values[1] = bright_anim_advance(flicker_anim, &lev->bright_anim_indices[1]);
-    lev->bright_anim_values[2] = bright_anim_advance(fire_flicker_anim, &lev->bright_anim_indices[2]);
+    bright_anim_tick_count++;
+    /* Advance the three global anims only every N ticks so the cycle is slower and smoother. */
+    if (bright_anim_tick_count % BRIGHT_ANIM_TICK_DIVIDER == 0) {
+        lev->bright_anim_values[0] = bright_anim_advance(pulse_anim, &lev->bright_anim_indices[0]);
+        lev->bright_anim_values[1] = bright_anim_advance(flicker_anim, &lev->bright_anim_indices[1]);
+        lev->bright_anim_values[2] = bright_anim_advance(fire_flicker_anim, &lev->bright_anim_indices[2]);
+    }
 
     /* Optional: per-zone list from level (if present). */
     if (!lev->bright_anim_list) return;
