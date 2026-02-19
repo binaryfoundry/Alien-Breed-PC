@@ -761,10 +761,11 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
     int scr_x2 = (int)(((int32_t)cx2 * (PROJ_X_SCALE / 2) * RENDER_SCALE) / cz2) + (RENDER_WIDTH / 2);
 
     /* If endpoints project in reverse order, swap them for left-to-right drawing.
-     * This can happen after near-plane clipping. */
+     * This can happen after near-plane clipping. All endpoint data must stay in sync. */
     if (scr_x1 > scr_x2) {
         int tmp;
         tmp = scr_x1; scr_x1 = scr_x2; scr_x2 = tmp;
+        tmp = cx1; cx1 = cx2; cx2 = (int16_t)tmp;
         tmp = cz1; cz1 = (int16_t)cz2; cz2 = (int16_t)tmp;
         tmp = ct1; ct1 = (int16_t)ct2; ct2 = (int16_t)tmp;
     }
@@ -784,65 +785,39 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
     int span = scr_x2 - scr_x1;
     if (span <= 0) span = 1;
 
-    /* Precompute 1/z values for perspective-correct interpolation.
-     * Use 64-bit intermediate to avoid overflow with very small z values. */
+    /* Perspective-correct: interpolate 1/z and tex/z linearly in screen space (stable, no jitter).
+     * Then col_z = 65536/inv_z and tex = (tex_over_z)*col_z/65536. */
     int32_t inv_z1 = (int32_t)(65536LL / cz1);
     int32_t inv_z2 = (int32_t)(65536LL / cz2);
-    
-    /* Precompute tex/z for perspective-correct texture coordinate interpolation.
-     * Use 16.16 scale (65536) so we keep sub-texel precision when the wall is far (large z);
-     * with scale 256, ct*256/z quantizes badly at distance and horizontal resolution degrades. */
     int64_t tex_over_z1_64 = (int64_t)ct1 * 65536LL / cz1;
     int64_t tex_over_z2_64 = (int64_t)ct2 * 65536LL / cz2;
-    
-    /* Clamp to int32 range to prevent issues in interpolation */
-    if (tex_over_z1_64 > INT32_MAX/2) tex_over_z1_64 = INT32_MAX/2;
-    if (tex_over_z1_64 < INT32_MIN/2) tex_over_z1_64 = INT32_MIN/2;
-    if (tex_over_z2_64 > INT32_MAX/2) tex_over_z2_64 = INT32_MAX/2;
-    if (tex_over_z2_64 < INT32_MIN/2) tex_over_z2_64 = INT32_MIN/2;
-    
-    int32_t tex_over_z1 = (int32_t)tex_over_z1_64;
-    int32_t tex_over_z2 = (int32_t)tex_over_z2_64;
 
-    /* Zone brightness offset (Amiga: zone_bright added to d6 before clamping).
-     * Level 0..15 *2; animated zones use -10..10 from bright_anim_values, *2 gives -20..20. */
     int zone_d6 = brightness * 2;
 
-    /* Draw only visible columns; interpolate t from screen position (64-bit to avoid overflow). */
     for (int screen_x = draw_start; screen_x <= draw_end; screen_x++) {
-        /* Perspective interpolation: t in [0, 65536) along the wall segment */
-        int32_t t = (int32_t)((int64_t)(screen_x - scr_x1) * 65536LL / span);
-        if (t < 0) t = 0;
-        if (t > 65535) t = 65535;
-        
-        /* Perspective-correct depth: interpolate 1/z, then invert */
-        int32_t inv_z = inv_z1 + (int32_t)(inv_z2 - inv_z1) * t / 65536;
+        /* t linear in screen x, 0..65535 (stable, no sensitive denominator) */
+        int64_t t_fp = (int64_t)(screen_x - scr_x1) * 65536LL / span;
+        if (t_fp < 0) t_fp = 0;
+        if (t_fp > 65535) t_fp = 65535;
+
+        int32_t inv_z = inv_z1 + (int32_t)((int64_t)(inv_z2 - inv_z1) * t_fp / 65536);
         if (inv_z <= 0) inv_z = 1;
-        int32_t col_z = 65536 / inv_z;
+        int32_t col_z = (int32_t)(65536LL / inv_z);
         if (col_z < 1) col_z = 1;
 
-        /* Amiga formula: d6 = (col_z >> 7) + zone_bright. Higher d6 = darker. */
         int amiga_d6 = (col_z >> 7) + zone_d6;
         if (amiga_d6 < 0) amiga_d6 = 0;
         if (amiga_d6 > 64) amiga_d6 = 64;
 
-        /* Project wall top/bottom at this depth.
-         * Amiga ASM: screen_y = topofwall / z + 40.
-         * top = (topwall - yoff) >> 8, so PROJ_Y_SCALE restores scale (matches Amiga 11:8 pixel aspect).
-         * Scale by RENDER_HEIGHT/80 for doubled resolution. */
         int y_top = (int)((int32_t)top * PROJ_Y_SCALE * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
         int y_bot = (int)((int32_t)bot * PROJ_Y_SCALE * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
-        /* Extend wall top up by 3 pixels so it meets ceiling (closes rounding gaps). */
         int ext = (y_top >= 3) ? 3 : (y_top >= 2) ? 2 : (y_top >= 1) ? 1 : 0;
         int y_top_draw = y_top - ext;
 
-        /* Perspective-correct texture column: interpolate tex/z, then multiply by z.
-         * Scale 65536 matches tex_over_z so result is world-space texture coord (integer). */
-        int32_t tex_over_z = tex_over_z1 + (int32_t)((int64_t)(tex_over_z2 - tex_over_z1) * t / 65536);
-        int32_t tex_t = (int32_t)((int64_t)tex_over_z * col_z / 65536);
-        /* ASM line 167: and.w HORAND,d6 - mask first
-         * ASM line 170: add.w fromtile(pc),d6 - then add horizontal offset */
-        int tex_col = ((int)(tex_t) & horand) + fromtile;
+        /* tex = (tex/z) * z: interpolate tex_over_z in screen space, then multiply by col_z */
+        int64_t tex_over_z_64 = tex_over_z1_64 + (tex_over_z2_64 - tex_over_z1_64) * t_fp / 65536;
+        int64_t tex_t64 = tex_over_z_64 * (int64_t)col_z / 65536;
+        int tex_col = ((int32_t)(tex_t64 & 0xFFFFFFFFu) & horand) + fromtile;
 
         /* Switch walls: depth bias so they draw in front of the wall behind them. */
         int32_t depth_z = col_z;
