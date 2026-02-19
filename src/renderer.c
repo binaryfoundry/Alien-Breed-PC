@@ -66,7 +66,7 @@ static const struct { int w; int h; } sprite_world_size_by_vect[MAX_SPRITE_TYPES
  * set this so we place that row on the floor. Y position itself comes from obj[4]/obj[7]. */
 static const int sprite_feet_rows_from_bottom_by_vect[MAX_SPRITE_TYPES] = {
     /*  0 alien       */ -10,
-    /*  1 pickups     */ 0,   /* medikit, ammo etc – slight hover fix */
+    /*  1 pickups     */ -3,   /* medikit, ammo etc – slight hover fix */
     /*  2 bigbullet   */ 0,
     /*  3 (unused)    */ 0,
     /*  4 flying      */ 0,
@@ -1712,13 +1712,17 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         if (vect_num < 0 || vect_num >= MAX_SPRITE_TYPES) continue;
 
         /* World size from table by vect_num. Ammo pickup often uses vect 1 (pickups) from level
-         * data, so use a smaller size when we know it's ammo to avoid huge ammo sprites. */
+         * data, so use a smaller size when we know it's ammo to avoid huge ammo sprites.
+         * Medikit (vect 1) is drawn at half size. */
         int v = vect_num;
         int world_w = sprite_world_size_by_vect[v].w;
         int world_h = sprite_world_size_by_vect[v].h;
         if (v == 1 && obj_number == OBJ_NBR_AMMO) {
             world_w = 16;
             world_h = 16;
+        } else if (v == 1 && obj_number == OBJ_NBR_MEDIKIT) {
+            world_w /= 2;
+            world_h /= 2;
         }
 
         /* Screen size: (world * SPRITE_SIZE_SCALE / z) * SPRITE_SIZE_MULTIPLIER. Do not clamp
