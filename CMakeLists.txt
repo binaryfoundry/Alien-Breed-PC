@@ -16,6 +16,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal")
 endif()
 
 # -----------------------------------------------------------------------
+# Data: ensure data/vectorobjects exists and copy from amiga/vectorobjects
+# -----------------------------------------------------------------------
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/vectorobjects")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
+endif()
+
+# -----------------------------------------------------------------------
 # SDL2 (auto-download via FetchContent)
 # -----------------------------------------------------------------------
 include(FetchContent)
