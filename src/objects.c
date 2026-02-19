@@ -1378,7 +1378,7 @@ void switch_routine(GameState *state)
             *(int8_t*)(sw + 3) = cooldown;
         }
 
-        /* Check if player is near and pressing space.
+        /* Check if player is near, facing the switch, and pressing use (space).
          * Switch record is 14 bytes (Anims.s adda.w #14): zone(2), bit_mask(2), cooldown(1),
          * pad(1), gfx_offset(4) = offset into level->graphics to the switch wall entry,
          * position(4) = x(2), z(2). */
@@ -1390,14 +1390,33 @@ void switch_routine(GameState *state)
             bool near_plr2 = (state->plr2.zone == zone_id);
 
             if (near_plr1 && sw_x != 0) {
-                int32_t dx = state->plr1.p_xoff - sw_x;
-                int32_t dz = state->plr1.p_zoff - sw_z;
+                int32_t dx = (int32_t)sw_x - state->plr1.p_xoff;
+                int32_t dz = (int32_t)sw_z - state->plr1.p_zoff;
                 near_plr1 = (dx * dx + dz * dz) < 3600;
+                /* Facing check: view direction dot (to switch) > 0.5 * dist (within ~60°) */
+                if (near_plr1) {
+                    int32_t dist_sq = dx * dx + dz * dz;
+                    if (dist_sq > 0) {
+                        int16_t sang = sin_lookup((int)state->plr1.p_angpos & ANGLE_MASK);
+                        int16_t cang = cos_lookup((int)state->plr1.p_angpos & ANGLE_MASK);
+                        int32_t dot = (int32_t)dx * sang + (int32_t)dz * cang;
+                        near_plr1 = (dot > 0 && (int64_t)dot * dot > (int64_t)dist_sq / 4);
+                    }
+                }
             }
             if (near_plr2 && sw_x != 0) {
-                int32_t dx = state->plr2.p_xoff - sw_x;
-                int32_t dz = state->plr2.p_zoff - sw_z;
+                int32_t dx = (int32_t)sw_x - state->plr2.p_xoff;
+                int32_t dz = (int32_t)sw_z - state->plr2.p_zoff;
                 near_plr2 = (dx * dx + dz * dz) < 3600;
+                if (near_plr2) {
+                    int32_t dist_sq = dx * dx + dz * dz;
+                    if (dist_sq > 0) {
+                        int16_t sang = sin_lookup((int)state->plr2.p_angpos & ANGLE_MASK);
+                        int16_t cang = cos_lookup((int)state->plr2.p_angpos & ANGLE_MASK);
+                        int32_t dot = (int32_t)dx * sang + (int32_t)dz * cang;
+                        near_plr2 = (dot > 0 && (int64_t)dot * dot > (int64_t)dist_sq / 4);
+                    }
+                }
             }
 
             if (state->plr1.p_spctap && near_plr1) {

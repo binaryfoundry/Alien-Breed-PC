@@ -2006,13 +2006,12 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 }
 
                 /* Switch walls (tex_id 11): same texture has on/off states.
-                 * Amiga stores state in wall first word bit 1 (Anims.s: or.w #2,d3 for "on").
-                 * Texture is arranged horizontally: off = left half, on = right half (64 cols → add 32).
-                 * Use V offset 0 for switches so full texture maps consistently (no position-dependent offset). */
+                 * State is in wall first word bit 1 (p1 & 2): set = on, clear = off.
+                 * Texture layout: off = left half (fromtile), on = right half (fromtile + 32).
+                 * Use V offset 0 for switches so full texture maps consistently. */
                 int16_t eff_totalyoff = (tex_id == SWITCHES_WALL_TEX_ID) ? 0 : (int16_t)(totalyoff + door_yoff_add);
-                /* Texture layout: off = left half, on = right half. Add 32 to show right when switch is on. */
                 int16_t eff_fromtile   = fromtile;
-                if (tex_id == SWITCHES_WALL_TEX_ID && !(p1 & 2))
+                if (tex_id == SWITCHES_WALL_TEX_ID && (p1 & 2))
                     eff_fromtile = (int16_t)(fromtile + 32);
 
                 DeferredWall *dw = &deferred[num_deferred++];
