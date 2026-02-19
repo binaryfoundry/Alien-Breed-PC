@@ -2156,7 +2156,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
              * Near-plane clip edges so vertices behind the camera get proper
              * screen X values (otherwise on_screen[].screen_x is garbage and
              * the edge table doesn't reach the screen sides). */
-            const int16_t FLOOR_NEAR = 4;
+            const int32_t FLOOR_NEAR = 4;  /* minimum z for projection; vertices behind are clipped to this */
             for (int s = 0; s < sides; s++) {
                 int i1 = pt_indices[s];
                 int i2 = pt_indices[(s + 1) % sides];
@@ -2167,9 +2167,13 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 int32_t rx1 = r->rotated[i1].x;
                 int32_t rx2 = r->rotated[i2].x;
 
-                /* Near-plane clip: interpolate X at FLOOR_NEAR when behind camera.
-                 * Do this even when both vertices are behind (e.g. ceiling's back edge)
-                 * so we still rasterize that edge and the polygon extends to the screen. */
+                /* Skip edge entirely when both vertices are behind the near plane.
+                 * Otherwise we would rasterize a fabricated edge at z=FLOOR_NEAR and extend the polygon incorrectly. */
+                if (z1 < FLOOR_NEAR && z2 < FLOOR_NEAR)
+                    continue;
+
+                /* Near-plane clip: interpolate X at FLOOR_NEAR when vertex is behind camera.
+                 * Clipped (ex,ez) are used for projection so we never divide by z < FLOOR_NEAR. */
                 int32_t ez1 = z1, ez2 = z2;
                 int32_t ex1 = rx1, ex2 = rx2;
                 if (ez1 < FLOOR_NEAR) {
@@ -2177,6 +2181,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     if (dz != 0) {
                         int32_t t = ((int32_t)(FLOOR_NEAR - ez1) << 16) / dz;
                         ex1 = rx1 + (int32_t)((int64_t)(rx2 - rx1) * t / 65536);
+                    } else {
+                        ex1 = (rx1 + rx2) / 2;  /* degenerate edge: use midpoint */
                     }
                     ez1 = FLOOR_NEAR;
                 }
@@ -2185,16 +2191,14 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     if (dz != 0) {
                         int32_t t = ((int32_t)(FLOOR_NEAR - ez2) << 16) / dz;
                         ex2 = rx2 + (int32_t)((int64_t)(rx1 - rx2) * t / 65536);
+                    } else {
+                        ex2 = (rx1 + rx2) / 2;
                     }
                     ez2 = FLOOR_NEAR;
                 }
-                /* Project X: use on_screen only when safely in front (z >= FLOOR_NEAR).
-                 * For z < FLOOR_NEAR (behind or very close) use clipped projection so rotation
-                 * doesn't cause jumps when vertices cross the camera plane or get very close. */
-                int sx1 = (z1 >= FLOOR_NEAR) ? r->on_screen[i1].screen_x
-                        : (int)((int64_t)ex1 * RENDER_SCALE / ez1) + RENDER_WIDTH / 2;
-                int sx2 = (z2 >= FLOOR_NEAR) ? r->on_screen[i2].screen_x
-                        : (int)((int64_t)ex2 * RENDER_SCALE / ez2) + RENDER_WIDTH / 2;
+                /* Project X from clipped (ex,ez) so values are consistent and safe (no division by zero or negative z). */
+                int sx1 = (int)((int64_t)ex1 * RENDER_SCALE / ez1) + RENDER_WIDTH / 2;
+                int sx2 = (int)((int64_t)ex2 * RENDER_SCALE / ez2) + RENDER_WIDTH / 2;
 
                 /* Project Y: same rule so X and Y stay consistent (no jump when z crosses FLOOR_NEAR). */
                 int32_t rel_h_8 = rel_h >> WORLD_Y_FRAC_BITS;
