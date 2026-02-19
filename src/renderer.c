@@ -467,16 +467,19 @@ void renderer_rotate_object_pts(GameState *state)
 
         int32_t vz = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
         vz <<= 2;
-        int16_t vz16 = (int16_t)(vz >> 16);  /* for divs-style use; keep 32-bit for size */
+        int16_t vz16 = (int16_t)(vz >> 16);
 
         int32_t vx_fine = (int32_t)vx16 << 7;
         vx_fine += r->xwobble;
 
         r->obj_rotated[pt].x = vx16;
-        r->obj_rotated[pt].z = (int32_t)(vz >> 16);
+        r->obj_rotated[pt].z = (int32_t)vz16;
         r->obj_rotated[pt].x_fine = vx_fine;
     }
 }
+
+/* Wall texture index for switches (stub_io wall_texture_table). Must be before draw_wall_column. */
+#define SWITCHES_WALL_TEX_ID  11
 
 /* -----------------------------------------------------------------------
  * Wall rendering (column-by-column)
@@ -500,7 +503,7 @@ static void draw_wall_column(int x, int y_top, int y_bot,
                              int amiga_d6,
                              uint8_t valand, uint8_t valshift,
                              int16_t totalyoff, int32_t col_z,
-                             int16_t wall_height_world)
+                             int16_t wall_height_world, int16_t tex_id)
 {
     uint8_t *buf = g_renderer.buffer;
     uint32_t *rgb = g_renderer.rgb_buffer;
@@ -562,7 +565,8 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     int rows = 1 << valshift;
     int h = (int)wall_height_world;
     if (h < 1) h = 1;
-    if (rows < 64 && h < 64) h = 64;  /* ensure full texture height visible on short walls */
+    /* Full-height short walls: show full texture. Switch panels: use h=64 so full texture rows map onto panel (fixes half-visible). */
+    if (tex_id == SWITCHES_WALL_TEX_ID || (rows < 64 && h < 64)) h = 64;
     int32_t tex_step = (int32_t)(((int64_t)rows * (int64_t)h << 16) / (64 * wall_pixels));
     /* Amiga: totalyoff is added to row index then masked with VALAND (WallRoutine3 line 1803–1804). */
     int32_t yoff = (int32_t)((unsigned)totalyoff & (unsigned)valand);
@@ -697,9 +701,6 @@ static int s_num_deferred_water;
  * Takes two endpoints in view space, projects them, and draws
  * columns from left to right with perspective-correct texturing.
  * ----------------------------------------------------------------------- */
-/* Wall texture index for switches (stub_io wall_texture_table). */
-#define SWITCHES_WALL_TEX_ID  11
-
 void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
                         int16_t top, int16_t bot,
                         const uint8_t *texture, int16_t tex_start,
@@ -843,7 +844,7 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
 
         draw_wall_column(screen_x, y_top_draw, y_bot, y_top, tex_col, texture,
                          amiga_d6, valand, valshift, totalyoff, depth_z,
-                         wall_height_for_tex);
+                         wall_height_for_tex, tex_id);
     }
 }
 
@@ -1983,7 +1984,10 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 /* Original level height for texture step (before any door override). */
                 int16_t wall_height_for_tex = (int16_t)((botwall - topwall) >> 8);
                 if (wall_height_for_tex < 1) wall_height_for_tex = 1;
-                if (zone_has_door_flag) {
+                /* Door override: clip wall to door opening and add V tex offset. Skip switch walls
+                 * (tex_id 11) so their Y texcoords stay correct; they are panels, not full-height doors. */
+                int32_t door_yoff_add = 0;
+                if (zone_has_door_flag && tex_id != SWITCHES_WALL_TEX_ID) {
                     int32_t zone_roof_rel = zone_roof - y_off;
                     int32_t zone_floor_rel = zone_floor - y_off;
                     int32_t top_abs = topwall + y_off, bot_abs = botwall + y_off;
@@ -1992,15 +1996,24 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                         bot_abs <= zone_floor + zone_match_margin) {
                         wall_top = (int16_t)(zone_roof_rel >> 8);
                         wall_bot = (int16_t)(zone_floor_rel >> 8);
+                        int32_t wall_full_h = botwall - topwall;
+                        if (wall_full_h > 0) {
+                            int32_t door_top_offset = zone_roof - topwall - y_off;
+                            int rows = 1 << use_valshift;
+                            door_yoff_add = (int32_t)((int64_t)door_top_offset * rows / wall_full_h);
+                        }
                     }
                 }
 
                 /* Switch walls (tex_id 11): same texture has on/off states.
                  * Amiga stores state in wall first word bit 1 (Anims.s: or.w #2,d3 for "on").
-                 * Top half of texture (rows 0–15) = off, bottom half (rows 16–31) = on. */
-                int16_t eff_totalyoff = totalyoff;
-                if (tex_id == SWITCHES_WALL_TEX_ID && (p1 & 2))
-                    eff_totalyoff = (int16_t)(totalyoff + 16);
+                 * Texture is arranged horizontally: off = left half, on = right half (64 cols → add 32).
+                 * Use V offset 0 for switches so full texture maps consistently (no position-dependent offset). */
+                int16_t eff_totalyoff = (tex_id == SWITCHES_WALL_TEX_ID) ? 0 : (int16_t)(totalyoff + door_yoff_add);
+                /* Texture layout: off = left half, on = right half. Add 32 to show right when switch is on. */
+                int16_t eff_fromtile   = fromtile;
+                if (tex_id == SWITCHES_WALL_TEX_ID && !(p1 & 2))
+                    eff_fromtile = (int16_t)(fromtile + 32);
 
                 DeferredWall *dw = &deferred[num_deferred++];
                 dw->x1 = rx1; dw->z1 = rz1; dw->x2 = rx2; dw->z2 = rz2;
@@ -2016,7 +2029,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 dw->horand     = horand;
                 dw->tex_id     = tex_id;
                 dw->totalyoff  = eff_totalyoff;
-                dw->fromtile   = fromtile;
+                dw->fromtile   = eff_fromtile;
             }
             ptr += 28;
             break;
