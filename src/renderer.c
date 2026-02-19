@@ -94,6 +94,8 @@ static const int sprite_feet_rows_from_bottom_by_vect[MAX_SPRITE_TYPES] = {
 #define FLOOR_EDGE_EXTRA  0
 #define CEILING_EDGE_EXTRA 3
 #define PORTAL_EDGE_EXTRA 1
+/* Minimum z in view space; vertices behind this are clipped. Used for walls and floor polygons. */
+#define RENDERER_NEAR_PLANE 4
 
 /* Raise view height for rendering only (gameplay uses plr->yoff unchanged).
  * Makes the camera draw from higher so the floor appears further away, matching Amiga. */
@@ -769,13 +771,18 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
 
     if (scr_x2 < r->left_clip || scr_x1 >= r->right_clip) return;
 
-    /* Ensure at least one column when both endpoints project to same pixel */
-    int num_cols = scr_x2 - scr_x1;
-    if (num_cols <= 0) {
-        if (scr_x1 < r->left_clip || scr_x1 >= r->right_clip) return;
-        num_cols = 1;
-        scr_x2 = scr_x1 + 1;  /* so interpolation uses one column */
-    }
+    /* Clamp drawn range to clip region so we only iterate over visible columns.
+     * This avoids int32 overflow in interpolation when the wall extends far off the left
+     * (col = left_clip - scr_x1 can be huge, and col * 65536 overflows). */
+    int draw_start = scr_x1;
+    if (draw_start < r->left_clip) draw_start = r->left_clip;
+    int draw_end = scr_x2;
+    if (draw_end >= r->right_clip) draw_end = r->right_clip - 1;
+    if (draw_start > draw_end) return;
+
+    /* Wall span for interpolation (use at least 1 to avoid division by zero) */
+    int span = scr_x2 - scr_x1;
+    if (span <= 0) span = 1;
 
     /* Precompute 1/z values for perspective-correct interpolation.
      * Use 64-bit intermediate to avoid overflow with very small z values. */
@@ -801,13 +808,12 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
      * Level 0..15 *2; animated zones use -10..10 from bright_anim_values, *2 gives -20..20. */
     int zone_d6 = brightness * 2;
 
-    /* Draw columns left to right with perspective-correct interpolation */
-    for (int col = 0; col < num_cols; col++) {
-        int screen_x = scr_x1 + col;
-        if (screen_x < r->left_clip || screen_x >= r->right_clip) continue;
-
-        /* Interpolate in screen space (linear in 1/z) */
-        int32_t t = (num_cols > 1) ? (col * 65536 / num_cols) : 0;
+    /* Draw only visible columns; interpolate t from screen position (64-bit to avoid overflow). */
+    for (int screen_x = draw_start; screen_x <= draw_end; screen_x++) {
+        /* Perspective interpolation: t in [0, 65536) along the wall segment */
+        int32_t t = (int32_t)((int64_t)(screen_x - scr_x1) * 65536LL / span);
+        if (t < 0) t = 0;
+        if (t > 65535) t = 65535;
         
         /* Perspective-correct depth: interpolate 1/z, then invert */
         int32_t inv_z = inv_z1 + (int32_t)(inv_z2 - inv_z1) * t / 65536;
@@ -1069,14 +1075,14 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             /* Pattern-based refraction: sample background at offset from texture gradient. */
             int refr_x = x, refr_y = y;
             if (texture) {
-                int tu = (u_fp >> 16) & 63;
-                int tv = (v_fp >> 16) & 63;
+                int tu_refr = (u_fp >> 16) & 63;
+                int tv_refr = (v_fp >> 16) & 63;
                 int scroll = (int)(g_water_phase >> 2) & 63;
-                tu = (tu + scroll) & 63;
-                tv = (tv + (scroll * 2)) & 63;
-                uint8_t t0 = texture[((tv << 8) | tu) * 4];
-                uint8_t tu1 = texture[((tv << 8) | ((tu + 1) & 63)) * 4];
-                uint8_t tv1 = texture[(((tv + 1) & 63) << 8 | tu) * 4];
+                tu_refr = (tu_refr + scroll) & 63;
+                tv_refr = (tv_refr + (scroll * 2)) & 63;
+                uint8_t t0 = texture[((tv_refr << 8) | tu_refr) * 4];
+                uint8_t tu1 = texture[((tv_refr << 8) | ((tu_refr + 1) & 63)) * 4];
+                uint8_t tv1 = texture[(((tv_refr + 1) & 63) << 8 | tu_refr) * 4];
                 int dx = (int)(t0 - tu1) / 24;
                 int dy = (int)(t0 - tv1) / 24;
                 refr_x = x + dx;
@@ -1147,8 +1153,9 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
                           const uint8_t *pal, size_t pal_size,
                           uint32_t ptr_offset, uint16_t down_strip,
                           int src_cols, int src_rows,
-                          int16_t brightness)
+                          int16_t brightness, int sprite_type)
 {
+    (void)sprite_type;
     uint8_t *buf = g_renderer.buffer;
     uint32_t *rgb = g_renderer.rgb_buffer;
     int16_t *depth_buf = g_renderer.depth_buffer;
@@ -1192,7 +1199,7 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
      * wad_off==0 with mode!=0 is a VALID column (data at start of WAD). */
     int eff_cols = src_cols * 2;
     int eff_rows = src_rows * 2;
-    uint32_t max_col = (ptr_size > ptr_offset) ? (ptr_size - ptr_offset) / 4u : 0;
+    uint32_t max_col = (uint32_t)((ptr_size > ptr_offset) ? (ptr_size - ptr_offset) / 4u : 0);
 
     sx = screen_x - width / 2;
     sy = screen_y - height / 2;
@@ -1326,7 +1333,6 @@ void renderer_draw_gun(GameState *state)
         uint32_t ptr_off = gun_ptr_frame_offsets[frame_slot];
 
         if (ptr_off != 0 || (gun_type != 5 && gun_type != 6)) {
-            const uint8_t *frame_ptr = gun_ptr + ptr_off;
             /* Draw scaled: each screen pixel (sx,sy) samples source at (sx-gx)/RENDER_SCALE, (sy-gy)/RENDER_SCALE */
             for (int sy = gy; sy < gy + gun_h_draw && sy < RENDER_HEIGHT; sy++) {
                 if (sy < 0) continue;
@@ -1792,7 +1798,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
                              obj_pal, obj_pal_size,
                              ptr_off, down_strip,
                              src_cols, src_rows,
-                             (int16_t)bright);
+                             (int16_t)bright, vect_num);
     }
 }
 
@@ -2636,13 +2642,13 @@ void renderer_draw_display(GameState *state)
                     const uint8_t *clip_ptr = state->level.clips + clip_off * 2;
 
                     /* Left clips: tighten leftclip.
-                     * Each entry is a point index.
-                     * If point is in front, use its OnScreen X as left clip. */
+                     * Each entry is a point index. Only use points in front of near plane,
+                     * otherwise extreme projection can push left_clip and cause left-edge glitches. */
                     while (rd16(clip_ptr) >= 0) {
                         int16_t pt = rd16(clip_ptr);
                         clip_ptr += 2;
                         if (pt >= 0 && pt < MAX_POINTS) {
-                            if (r->rotated[pt].z > 0) {
+                            if (r->rotated[pt].z >= RENDERER_NEAR_PLANE) {
                                 int16_t sx = r->on_screen[pt].screen_x;
                                 if (sx > r->left_clip) {
                                     r->left_clip = sx;
@@ -2652,12 +2658,12 @@ void renderer_draw_display(GameState *state)
                     }
                     clip_ptr += 2; /* Skip -1 terminator */
 
-                    /* Right clips: tighten rightclip */
+                    /* Right clips: tighten rightclip (same: only use points in front of near plane). */
                     while (rd16(clip_ptr) >= 0) {
                         int16_t pt = rd16(clip_ptr);
                         clip_ptr += 2;
                         if (pt >= 0 && pt < MAX_POINTS) {
-                            if (r->rotated[pt].z > 0) {
+                            if (r->rotated[pt].z >= RENDERER_NEAR_PLANE) {
                                 int16_t sx = r->on_screen[pt].screen_x;
                                 if (sx < r->right_clip) {
                                     r->right_clip = sx;
