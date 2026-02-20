@@ -224,7 +224,7 @@ static void allocate_buffers(int w, int h)
     g_renderer.rgb_buffer = (uint32_t*)calloc(1, rgb_size);
     g_renderer.rgb_back_buffer = (uint32_t*)calloc(1, rgb_size);
 
-    g_renderer.depth_buffer = NULL;  /* disabled: rely on painter's algorithm */
+    g_renderer.depth_buffer = NULL;  /* Amiga: no depth buffer; painter's + stream order only */
 
     size_t clip_size = (size_t)w * sizeof(int16_t);
     g_renderer.clip.top = (int16_t*)calloc(1, clip_size);
@@ -679,15 +679,12 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     }
 }
 /* -----------------------------------------------------------------------
- * Deferred wall for stream-order rendering.
+ * Deferred walls: Amiga stream order, painter's only.
  *
- * Walls are collected during stream parsing and drawn AFTER all
- * floor/ceiling entries.  This ensures floors draw on the black
- * framebuffer first, then walls overwrite on top -- matching the
- * original Amiga behaviour where floors fill the gaps left by walls.
- *
- * No depth sorting: walls are drawn in stream order (the level
- * compiler already arranges them correctly).
+ * Type 0/13 (wall) and type 5 (arc) append to deferred[] in stream order.
+ * After the zone stream is parsed, we draw deferred walls in that same order
+ * (no depth sort). Floors/roofs were already drawn as we parsed. Then objects.
+ * Level compiler arranges the stream so draw order is correct.
  * ----------------------------------------------------------------------- */
 #define MAX_DEFERRED_WALLS 256
 /* Reference Z used to project two-level zone split height to screen Y (same scale as orp->z). */
@@ -2330,12 +2327,10 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
 
         case 4: /* Object (sprite) */
         {
-            /* ObjDraw reads 1 word: draw mode (0=before water, 1=after, 2=full)
-             * Then iterates ALL objects in ObjectData for this zone.
-             * We defer drawing to the end of the zone so sprites are always
-             * on top of floor and walls (avoid "partially behind floor"). */
+            /* ObjDraw: type-4 marks that this zone has objects. We draw them after all
+             * deferred walls so sprites are in front of walls (same zone, back-to-front by zone). */
             ptr += 2;
-            objects_drawn_this_zone = 1;  /* will draw after deferred walls */
+            objects_drawn_this_zone = 1;
             break;
         }
 
@@ -2478,23 +2473,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
         }
     }
 
-    /* Sort deferred walls by depth (painter's algorithm: far to near).
-     * Use maximum Z of endpoints as sort key - walls further away draw first,
-     * closer walls overwrite them. Simple insertion sort is fine for small N. */
-    for (int i = 1; i < num_deferred; i++) {
-        DeferredWall tmp = deferred[i];
-        int16_t tmp_z = (tmp.z1 > tmp.z2) ? tmp.z1 : tmp.z2;
-        int j = i - 1;
-        while (j >= 0) {
-            int16_t j_z = (deferred[j].z1 > deferred[j].z2) ? deferred[j].z1 : deferred[j].z2;
-            if (j_z >= tmp_z) break;
-            deferred[j + 1] = deferred[j];
-            j--;
-        }
-        deferred[j + 1] = tmp;
-    }
-
-    /* Draw sorted walls (far to near). */
+    /* Draw walls and arcs in stream order (no sort; painter's by stream order). */
     for (int i = 0; i < num_deferred; i++) {
         DeferredWall *dw = &deferred[i];
         if (dw->tex_id >= 0 && dw->tex_id < MAX_WALL_TILES) {
@@ -2510,8 +2489,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                           dw->wall_height_for_tex);
     }
 
-    /* Draw zone objects after all floor and walls so sprites are on top.
-     * (objects_drawn_this_zone means type-4 was in stream; we still draw once per zone.) */
+    /* Draw this zone's sprites after all floor and walls so they appear in front. */
     draw_zone_objects(state, zone_id, zone_roof, zone_floor);
 }
 
@@ -2570,7 +2548,7 @@ void renderer_draw_display(GameState *state)
     /* xwobble from head bob */
     r->xwobble = 0; /* Would be set from plr->bob_frame */
 
-    /* 3. Initialize column clipping and depth buffer */
+    /* 3. Initialize column clipping (per-column top/bot for floor and sprite clipping) */
     {
         memset(r->clip.top, 0, (size_t)w * sizeof(int16_t));
         int16_t bot_val = (int16_t)(h - 1);
@@ -2582,18 +2560,18 @@ void renderer_draw_display(GameState *state)
     renderer_rotate_level_pts(state);
     renderer_rotate_object_pts(state);
 
-    /* 5. Iterate zones back-to-front (from OrderZones output)
+    /* 5. Amiga replication: painter's algorithm only, no depth buffer.
      *
-     * order_zones produces zone_order_zones[0]=farthest .. [count-1]=nearest.
-     * Draw in array order so far zones are drawn first, near zones last (painter's).
+     * Zones: drawn in OrderZones order (zone_order_zones[0]=farthest .. [n-1]=nearest),
+     * so far zones are drawn first, near zones overwrite (painter's).
      *
-     * Translated from AB3DI.s subroomloop (lines 3456-3643).
+     * Within each zone (AB3DI.s polyloop / DoThisRoom): strict stream order.
+     * Floors/roofs/water are drawn as they appear in the graphics stream.
+     * Walls (and arc segments) are deferred, then drawn in the same stream order
+     * after all floor/ceiling entries so floors sit behind walls. Objects are
+     * drawn last so sprites are on top. No depth sort; level compiler arranges order.
      *
-     * For each zone:
-     *   a) Find it in ListOfGraphRooms to get clip data offset
-     *   b) Apply clipping from LEVELCLIPS using NEWsetlclip/NEWsetrclip
-     *   c) Skip if fully clipped
-     *   d) Render the zone
+     * For each zone: apply LEVELCLIPS, then renderer_draw_zone (stream parse + draw).
      */
     s_num_deferred_water = 0;
     for (int i = 0; i < state->zone_order_count; i++) {

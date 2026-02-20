@@ -108,8 +108,8 @@ void order_zones(ZoneOrder *out, const LevelState *level,
     int16_t sin_v = sin_lookup(viewer_angle);
     int16_t cos_v = cos_lookup(viewer_angle);
 
-    /* Step 2: For each marked zone, use closest extent (min depth over all exit line midpoints).
-     * Order by this so we draw the zone whose *closest* boundary is farthest first (correct when zones overlap). */
+    /* Step 2: For each marked zone, use farthest extent (max depth over exit line midpoints).
+     * Order by this so we draw the zone with farthest geometry first (painter's: far then near). */
     if (!level->floor_lines) return;
 
     for (int z = 0; z < 256; z++) {
@@ -124,8 +124,8 @@ void order_zones(ZoneOrder *out, const LevelState *level,
         if (exit_rel == 0) continue;
         const uint8_t *exit_list = zone_data + exit_rel;
 
-        /* Min depth over all exit line midpoints = zone's closest extent in view space */
-        int32_t min_depth = (int32_t)0x7FFFFFFF; /* INT32_MAX so any real depth is smaller */
+        /* Max depth over all exit line midpoints = zone's farthest extent in view space */
+        int32_t max_depth = (int32_t)0x80000000; /* INT32_MIN so any real depth is larger */
         int exit_count = 0;
         const int max_exits = 32;
         while (exit_count < max_exits) {
@@ -143,20 +143,19 @@ void order_zones(ZoneOrder *out, const LevelState *level,
             int32_t dx = mid_x - viewer_x;
             int32_t dz = mid_z - viewer_z;
             int32_t d = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
-            if (d < min_depth) min_depth = d;
+            if (d > max_depth) max_depth = d;
         }
-        if (min_depth == (int32_t)0x7FFFFFFF) continue; /* no valid exit */
+        if (max_depth == (int32_t)0x80000000) continue; /* no valid exit */
 
         zone_ids[num_zones] = (int16_t)z;
-        distances[num_zones] = min_depth;
+        distances[num_zones] = max_depth;
         num_zones++;
 
         if (num_zones >= MAX_ORDER_ENTRIES) break;
     }
 
-    /* Step 3: Sort by depth descending (farthest first for painter's algorithm).
-     * Larger depth = farther in view space. Using `<` in the comparison so we
-     * shift elements right when they are LESS than the key, producing descending order. */
+    /* Step 3: Sort by depth descending (farthest extent first for painter's algorithm).
+     * Zone with largest max_depth is drawn first; nearer zones overwrite. */
     for (int i = 1; i < num_zones; i++) {
         int32_t key_dist = distances[i];
         int16_t key_zone = zone_ids[i];
