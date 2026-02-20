@@ -94,6 +94,9 @@ endif()
 # Link SDL2 (no SDL2main - we use CONSOLE subsystem for printf output)
 target_link_libraries(ab3d1 PRIVATE SDL2-static)
 
+# Release build: start fullscreen at desktop resolution
+target_compile_definitions(ab3d1 PRIVATE $<$<CONFIG:Release>:AB3D_RELEASE>)
+
 # Platform-specific settings
 if(WIN32)
     # Windows: link winmm for SDL2

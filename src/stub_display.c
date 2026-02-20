@@ -42,6 +42,15 @@ void display_init(void)
     int init_w = renderer_get_width();
     int init_h = renderer_get_height();
 
+#ifdef AB3D_RELEASE
+    /* Release: start fullscreen; use desktop size for initial window size */
+    SDL_DisplayMode dm;
+    if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w >= 96 && dm.h >= 80) {
+        init_w = dm.w;
+        init_h = dm.h;
+    }
+#endif
+
     g_window = SDL_CreateWindow(
         "Alien Breed 3D I",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -53,6 +62,14 @@ void display_init(void)
         return;
     }
 
+#ifdef AB3D_RELEASE
+    if (SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP) != 0) {
+        printf("[DISPLAY] SDL_SetWindowFullscreen failed: %s\n", SDL_GetError());
+    }
+    /* Let the window complete fullscreen transition before querying size */
+    SDL_PumpEvents();
+#endif
+
     g_sdl_ren = SDL_CreateRenderer(g_window, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!g_sdl_ren) {
@@ -60,16 +77,17 @@ void display_init(void)
         return;
     }
 
-    g_texture = SDL_CreateTexture(g_sdl_ren,
-        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-        init_w, init_h);
-    if (!g_texture) {
-        printf("[DISPLAY] SDL_CreateTexture failed: %s\n", SDL_GetError());
-        return;
+    /* Use actual renderer output size; same resize path as SDL_WINDOWEVENT_RESIZED */
+    int out_w = init_w, out_h = init_h;
+    if (SDL_GetRendererOutputSize(g_sdl_ren, &out_w, &out_h) != 0) {
+        out_w = init_w;
+        out_h = init_h;
     }
-    SDL_SetTextureScaleMode(g_texture, SDL_ScaleModeNearest);
+    if (out_w < 96) out_w = 96;
+    if (out_h < 80) out_h = 80;
+    display_on_resize(out_w, out_h);
 
-    printf("[DISPLAY] SDL2 ready: %dx%d window (resizable)\n", init_w, init_h);
+    printf("[DISPLAY] SDL2 ready: %dx%d (resizable)\n", out_w, out_h);
 }
 
 void display_on_resize(int w, int h)

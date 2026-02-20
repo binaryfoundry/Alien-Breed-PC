@@ -43,14 +43,12 @@
  *   focal length is PROJ_X_SCALE / 2 (= 128). Do not change unless you want
  *   to alter horizontal FOV.
  *
- * PROJ_Y_SCALE: vertical projection. Change this freely to adjust vertical
- *   FOV / aspect ratio. All vertical code (walls, floor, ceiling, sprites,
- *   wall texture step) derives from this single constant.
- *     256       = Amiga native (square-pixel equivalent)
- *     256*11/8  = 352, corrects for Amiga 11:8 PAL pixel aspect in 4:3 window
- *     Other values work too -- nothing else is hardcoded to 256 for Y. */
+ * PROJ_Y: vertical projection. PROJ_Y_NUMERATOR / PROJ_Y_DENOM gives base scale;
+ *   the divide by PROJ_Y_DENOM is applied per frame with height scaling. */
 #define PROJ_X_SCALE     256
-#define PROJ_Y_SCALE     (256 * 11 / 20)   /* aspect ratio: vertical FOV vs horizontal; change to taste */
+#define PROJ_Y_NUMERATOR (256 * 11)
+#define PROJ_Y_DENOM     20                /* divisor; factored in per frame with renderer height */
+#define PROJ_Y_SCALE     (PROJ_Y_NUMERATOR / PROJ_Y_DENOM)
 
 /* World Y fixed-point: zone/floor/object heights use this many fractional bits for projection. */
 #define WORLD_Y_FRAC_BITS  8
@@ -125,6 +123,9 @@ typedef struct {
     /* Current framebuffer size (matches window when resizable) */
     int width;
     int height;
+
+    /* Vertical projection scale: numerator / (PROJ_Y_DENOM * width/RENDER_DEFAULT_WIDTH) * height/RENDER_DEFAULT_HEIGHT, recomputed each frame. */
+    int32_t proj_y_scale;
 
     /* Framebuffer (double-buffered) */
     uint8_t *buffer;          /* Current render target (width * height bytes) */

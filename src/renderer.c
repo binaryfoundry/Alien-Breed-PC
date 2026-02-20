@@ -86,10 +86,11 @@ static const int sprite_feet_rows_from_bottom_by_vect[MAX_SPRITE_TYPES] = {
     /* 18,19         */ 0, 0,
 };
 
-/* Floor/ceiling UV step: Amiga uses d1>>6 per pixel over 96 columns.
- * At default width (96*RENDER_SCALE) we use step = d1>>FLOOR_STEP_SHIFT so total U = width*(d1>>9).
- * For resizable window, scale step by default_width/width so total U is unchanged. */
+/* Floor/ceiling UV step per pixel: d1>>FLOOR_STEP_SHIFT (same at any width so texture scale is correct). */
 #define FLOOR_STEP_SHIFT  (6 + RENDER_SCALE_LOG2)  /* d1>>9 at RENDER_SCALE=8 */
+/* UV per world unit for floor/ceiling camera offset. Matches projection: u_step = dist*cosval/512,
+ * world_x_per_pixel = dist/512, so UV_per_world = cosval; sin/cos table scale is 2^14. */
+#define FLOOR_CAM_UV_SCALE  16384  /* 1<<14 */
 /* Extra pixels to extend beyond polygon edge (ceiling needs it at wall join; floor does not). */
 #define FLOOR_EDGE_EXTRA  0
 #define CEILING_EDGE_EXTRA 3
@@ -105,20 +106,6 @@ static const int sprite_feet_rows_from_bottom_by_vect[MAX_SPRITE_TYPES] = {
  * Global renderer state
  * ----------------------------------------------------------------------- */
 RendererState g_renderer;
-
-/* -----------------------------------------------------------------------
- * Tunable: floor/ceiling texture camera-offset scale.
- *
- * Controls how much the floor texture scrolls when the camera moves.
- * The Amiga uses <<16 (=65536.0).
- * The ideal value is somewhere between <<14 (=16384.0) and <<16.
- *
- *   Too low  → floor texture drifts behind camera (slides under you)
- *   Too high → floor texture outruns camera (scrolls too fast)
- *
- * Adjust this until strafing produces no visible texture drift.
- * ----------------------------------------------------------------------- */
-static float floor_cam_offset_scale = 16384.0f;  /* <<14 = 16384 */
 
 /* -----------------------------------------------------------------------
  * Big-endian read helpers (level data is Amiga big-endian)
@@ -662,7 +649,7 @@ static void draw_wall_column(int x, int y_top, int y_bot,
             argb = (argb & 0xFF000000u) | (r << 16) | (g << 8) | b;
         }
 
-        buf[y * RENDER_STRIDE + x] = 2; /* tag: wall */
+        buf[y * g_renderer.width + x] = 2; /* tag: wall */
         rgb[pix_idx] = argb;
         tex_y += tex_step;
     }
@@ -832,8 +819,8 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
         if (amiga_d6 < 0) amiga_d6 = 0;
         if (amiga_d6 > 64) amiga_d6 = 64;
 
-        int y_top = (int)((int32_t)top * PROJ_Y_SCALE * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
-        int y_bot = (int)((int32_t)bot * PROJ_Y_SCALE * RENDER_SCALE / col_z) + (RENDER_HEIGHT / 2);
+        int y_top = (int)((int32_t)top * g_renderer.proj_y_scale * RENDER_SCALE / col_z) + (g_renderer.height / 2);
+        int y_bot = (int)((int32_t)bot * g_renderer.proj_y_scale * RENDER_SCALE / col_z) + (g_renderer.height / 2);
         int ext = (y_top >= 3) ? 3 : (y_top >= 2) ? 2 : (y_top >= 1) ? 1 : 0;
         int y_top_draw = y_top - ext;
 
@@ -879,13 +866,13 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     uint8_t *buf = rs->buffer;
     uint32_t *rgb = rs->rgb_buffer;
     if (!buf || !rgb || !rs->depth_buffer) return;
-    if (y < 0 || y >= RENDER_HEIGHT) return;
+    if (y < 0 || y >= rs->height) return;
 
     int xl = (x_left < rs->left_clip) ? rs->left_clip : x_left;
     int xr = (x_right >= rs->right_clip) ? rs->right_clip - 1 : x_right;
     if (xl > xr) return;
 
-    int center = RENDER_HEIGHT / 2;  /* Match wall/floor projection center */
+    int center = rs->height / 2;  /* Match wall/floor projection center */
     int row_dist = y - center;
     if (row_dist == 0) row_dist = (y < center) ? -1 : 1;
     int abs_row_dist = (row_dist < 0) ? -row_dist : row_dist;
@@ -899,7 +886,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     if (abs_row_dist <= 3) {
         dist = 32000;
     } else {
-        dist = (int32_t)((int64_t)fh_8 * PROJ_Y_SCALE * RENDER_SCALE / row_dist);
+        dist = (int32_t)((int64_t)fh_8 * g_renderer.proj_y_scale * RENDER_SCALE / row_dist);
         if (dist < 0) dist = -dist;
         if (dist < 16) dist = 16;
         if (dist > 30000) dist = 30000;
@@ -919,34 +906,37 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     int32_t d1 = (int32_t)(((int64_t)dist * cos_v));
     int32_t d2 = (int32_t)(-((int64_t)dist * sin_v));
 
-    /* Step per pixel: scale by default_width/w so total U/V across the row is
-     * consistent when resized. Steps are in 16.16 so we use integer step magnitude. */
+    /* Step per pixel: fixed so each pixel = same world extent at any width.
+     * No def_w/w scaling — in widescreen we show more tiles, texture scale stays correct. */
     int w = rs->width;
     if (w < 1) w = 1;
-    int def_w = RENDER_DEFAULT_WIDTH;
-    int32_t u_step = (int32_t)(((int64_t)(d1 >> FLOOR_STEP_SHIFT) * def_w) / w);
-    int32_t v_step = (int32_t)(((int64_t)(d2 >> FLOOR_STEP_SHIFT) * def_w) / w);
+    int32_t u_step = (int32_t)(d1 >> FLOOR_STEP_SHIFT);
+    int32_t v_step = (int32_t)(d2 >> FLOOR_STEP_SHIFT);
 
     /* Center UV at screen middle (pixel w/2): U_center = -d2, V_center = d1.
      * So at pixel 0: start_u = -d2 - (w/2)*u_step, start_v = d1 - (w/2)*v_step.
-     * This keeps parallax correct for any aspect ratio. */
+     * Compute in 64-bit to avoid overflow, then take low 32 bits (UV wraps for tiling). */
     int half_w = w / 2;
-    int32_t start_u = -(d2 + (int32_t)((int64_t)half_w * u_step));
-    int32_t start_v = d1 - (int32_t)((int64_t)half_w * v_step);
+    int64_t start_u64 = -(int64_t)d2 - (int64_t)half_w * u_step;
+    int64_t start_v64 = (int64_t)d1 - (int64_t)half_w * v_step;
 
-    /* Add camera position (tunable scale - see floor_cam_offset_scale). */
-    start_u += (int32_t)(rs->xoff * floor_cam_offset_scale);
-    start_v += (int32_t)(rs->zoff * floor_cam_offset_scale);
+    /* Camera position offset: UV per world unit = FLOOR_CAM_UV_SCALE (matches fixed u_step). */
+    int32_t cam_scale = FLOOR_CAM_UV_SCALE;
+    start_u64 += (int64_t)rs->xoff * cam_scale;
+    start_v64 += (int64_t)rs->zoff * cam_scale;
 
     /* Offset to left edge of span (xl pixels from left of screen). */
     if (xl > 0) {
-        start_u += (int32_t)((int64_t)xl * u_step);
-        start_v += (int32_t)((int64_t)xl * v_step);
+        start_u64 += (int64_t)xl * u_step;
+        start_v64 += (int64_t)xl * v_step;
     }
 
-    /* Current UV in 16.16 fixed point */
-    int32_t u_fp = start_u;
-    int32_t v_fp = start_v;
+    /* UV accumulators: 64-bit so the low 32 bits wrap naturally for texture tiling.
+     * Extract tile coordinate with (low32 >> 16) & 63. */
+    uint64_t u_fp64    = (uint64_t)(uint32_t)(int32_t)start_u64;
+    uint64_t v_fp64    = (uint64_t)(uint32_t)(int32_t)start_v64;
+    int64_t  u_step_64 = (int64_t)u_step;
+    int64_t  v_step_64 = (int64_t)v_step;
 
     uint8_t *row8 = buf + y * g_renderer.width;
     uint32_t *row32 = rgb + y * g_renderer.width;
@@ -962,19 +952,19 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     for (int x = xl; x <= xr; x++) {
         /* Per-pixel depth test: draw only if strictly closer (so bias is consistent) */
         if (floor_z >= depth[x]) {
-            u_fp += u_step;
-            v_fp += v_step;
+            u_fp64 += u_step_64;
+            v_fp64 += v_step_64;
             continue;
         }
 
-        /* ASM lines 6721-6727: Extract 6-bit UV from high word.
-         * swap d4: get integer part of U
-         * asr.l #8,d5: shift V right
-         * and.w #63,d4: U & 63
-         * and.w #63*256,d5: (V >> 8) & 63, in position
-         * move.b d4,d5: combine into d5.w = (V << 8) | U */
-        int tu = (u_fp >> 16) & 63;
-        int tv = (v_fp >> 16) & 63;
+        /* Use low 32 bits of 64-bit accumulator for texture; (>>16)&63 gives 0..63 */
+        int32_t u32 = (int32_t)(u_fp64 & 0xFFFFFFFFu);
+        int32_t v32 = (int32_t)(v_fp64 & 0xFFFFFFFFu);
+        int tu = (u32 >> 16) & 63;
+        int tv = (v32 >> 16) & 63;
+
+        u_fp64 += u_step_64;
+        v_fp64 += v_step_64;
 
         /* Water: slow, smooth scroll only (no noisy ripple). */
         if (is_water) {
@@ -1069,11 +1059,9 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             /* Pattern-based refraction: sample background at offset from texture gradient. */
             int refr_x = x, refr_y = y;
             if (texture) {
-                int tu_refr = (u_fp >> 16) & 63;
-                int tv_refr = (v_fp >> 16) & 63;
                 int scroll = (int)(g_water_phase >> 2) & 63;
-                tu_refr = (tu_refr + scroll) & 63;
-                tv_refr = (tv_refr + (scroll * 2)) & 63;
+                int tu_refr = (tu + scroll) & 63;
+                int tv_refr = (tv + (scroll * 2)) & 63;
                 uint8_t t0 = texture[((tv_refr << 8) | tu_refr) * 4];
                 uint8_t tu1 = texture[((tv_refr << 8) | ((tu_refr + 1) & 63)) * 4];
                 uint8_t tv1 = texture[(((tv_refr + 1) & 63) << 8 | tu_refr) * 4];
@@ -1083,7 +1071,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 refr_y = y + dy;
             }
             refr_x = (refr_x < 0) ? 0 : (refr_x >= g_renderer.width ? g_renderer.width - 1 : refr_x);
-            refr_y = (refr_y < 0) ? 0 : (refr_y >= RENDER_HEIGHT ? RENDER_HEIGHT - 1 : refr_y);
+            refr_y = (refr_y < 0) ? 0 : (refr_y >= g_renderer.height ? g_renderer.height - 1 : refr_y);
             uint32_t bg = rgb[refr_y * g_renderer.width + refr_x];
             uint32_t br = (bg >> 16) & 0xFF, bg_g = (bg >> 8) & 0xFF, bb = bg & 0xFF;
             uint32_t wr = (argb >> 16) & 0xFF, wg = (argb >> 8) & 0xFF, wb = argb & 0xFF;
@@ -1112,8 +1100,6 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
         depth[x] = floor_z;
         row8[x] = 1;
         row32[x] = argb;
-        u_fp += u_step;
-        v_fp += v_step;
     }
 }
 
@@ -1227,7 +1213,7 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
 
         for (int dy = 0; dy < height; dy++) {
             int screen_row = sy + dy;
-            if (screen_row < 0 || screen_row >= RENDER_HEIGHT) continue;
+            if (screen_row < 0 || screen_row >= g_renderer.height) continue;
 
             if (sprite_z_bias >= depth_buf[screen_row * g_renderer.width + screen_col])
                 continue;
@@ -1252,7 +1238,7 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
             }
             if (texel == 0) continue;  /* transparent */
 
-            uint8_t *row8 = buf + screen_row * RENDER_STRIDE;
+            uint8_t *row8 = buf + screen_row * g_renderer.width;
             uint32_t *row32 = rgb + screen_row * g_renderer.width;
             int16_t *depth_row = depth_buf + screen_row * g_renderer.width;
 
@@ -1299,12 +1285,16 @@ void renderer_draw_gun(GameState *state)
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
     if (plr->gun_selected < 0) return;
 
-    /* Amiga: 96 columns, 58 lines. Scale with RENDER_SCALE so gun matches view resolution. */
+    /* Amiga: 96 columns, 58 lines. Scale with RENDER_SCALE then by renderer size so gun matches view and rescales on resize. */
     const int gun_w_src = GUN_COLS;
     const int gun_h_src = GUN_LINES;
-    const int gun_w_draw = gun_w_src * RENDER_SCALE;
-    const int gun_h_draw = gun_h_src * RENDER_SCALE;
-    int gy = RENDER_HEIGHT - gun_h_draw;
+    int gun_w_draw = (int)((int64_t)gun_w_src * (int64_t)RENDER_SCALE * (int64_t)g_renderer.width / RENDER_DEFAULT_WIDTH);
+    int gun_h_draw = (int)((int64_t)gun_h_src * (int64_t)RENDER_SCALE * (int64_t)g_renderer.height / RENDER_DEFAULT_HEIGHT);
+    if (gun_w_draw < 1) gun_w_draw = 1;
+    if (gun_h_draw < 1) gun_h_draw = 1;
+    if (gun_w_draw > g_renderer.width) gun_w_draw = g_renderer.width;
+    if (gun_h_draw > g_renderer.height) gun_h_draw = g_renderer.height;
+    int gy = g_renderer.height - gun_h_draw;
     if (gy < 0) gy = 0;
     int gx = (g_renderer.width - gun_w_draw) / 2;
 
@@ -1327,14 +1317,14 @@ void renderer_draw_gun(GameState *state)
         uint32_t ptr_off = gun_ptr_frame_offsets[frame_slot];
 
         if (ptr_off != 0 || (gun_type != 5 && gun_type != 6)) {
-            /* Draw scaled: each screen pixel (sx,sy) samples source at (sx-gx)/RENDER_SCALE, (sy-gy)/RENDER_SCALE */
-            for (int sy = gy; sy < gy + gun_h_draw && sy < RENDER_HEIGHT; sy++) {
+            /* Draw scaled: map screen pixel to source by (draw size / source size) ratio */
+            for (int sy = gy; sy < gy + gun_h_draw && sy < g_renderer.height; sy++) {
                 if (sy < 0) continue;
-                int src_row = (sy - gy) / RENDER_SCALE;
+                int src_row = (int)((int64_t)(sy - gy) * (int64_t)gun_h_src / gun_h_draw);
                 if (src_row >= gun_h_src) continue;
                 for (int sx = gx; sx < gx + gun_w_draw && sx < g_renderer.width; sx++) {
                     if (sx < 0) continue;
-                    int src_col = (sx - gx) / RENDER_SCALE;
+                    int src_col = (int)((int64_t)(sx - gx) * (int64_t)gun_w_src / gun_w_draw);
                     if (src_col >= gun_w_src) continue;
 
                     const uint8_t *col_ptr = gun_ptr + ptr_off + (uint32_t)src_col * 4;
@@ -1361,7 +1351,7 @@ void renderer_draw_gun(GameState *state)
 
                     uint16_t c12 = (uint16_t)((gun_pal[idx * 2u] << 8) | gun_pal[idx * 2u + 1]);
                     uint32_t c = amiga12_to_argb(c12);
-                    buf[sy * RENDER_STRIDE + sx] = 15;
+                    buf[sy * g_renderer.width + sx] = 15;
                     rgb[sy * g_renderer.width + sx] = c;
                 }
             }
@@ -1370,21 +1360,22 @@ void renderer_draw_gun(GameState *state)
     }
 
     /* Placeholder when gun data not loaded or slot unused (narrower than WAD: 48 logical width) */
-    const int placeholder_gun_w = 48 * RENDER_SCALE;
+    int placeholder_gun_w = (int)((int64_t)48 * (int64_t)RENDER_SCALE * (int64_t)g_renderer.width / RENDER_DEFAULT_WIDTH);
+    if (placeholder_gun_w < 1) placeholder_gun_w = 1;
     int gx_ph = (g_renderer.width - placeholder_gun_w) / 2;
     uint32_t col_barrel = 0xFF808080u;
     uint32_t col_body  = 0xFF606060u;
     uint32_t col_grip  = 0xFF404040u;
     const int mid_logical = 24;  /* 48/2 in source space */
 
-    for (int y = gy; y < gy + gun_h_draw && y < RENDER_HEIGHT; y++) {
+    for (int y = gy; y < gy + gun_h_draw && y < g_renderer.height; y++) {
         if (y < 0) continue;
         int local_y = y - gy;
-        int local_y_logical = local_y / RENDER_SCALE;
+        int local_y_logical = (int)((int64_t)local_y * (int64_t)gun_h_src / gun_h_draw);
         for (int x = gx_ph; x < gx_ph + placeholder_gun_w && x < g_renderer.width; x++) {
             if (x < 0) continue;
             int local_x = x - gx_ph;
-            int local_x_logical = local_x / RENDER_SCALE;
+            int local_x_logical = (int)((int64_t)local_x * 48 / placeholder_gun_w);
 
             int draw = 0;
             uint32_t c = 0;
@@ -1406,7 +1397,7 @@ void renderer_draw_gun(GameState *state)
             }
 
             if (draw) {
-                buf[y * RENDER_STRIDE + x] = 15;
+                buf[y * g_renderer.width + x] = 15;
                 rgb[y * g_renderer.width + x] = c;
             }
         }
@@ -1656,8 +1647,8 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         if (z_for_size < 1) z_for_size = 1;
 
         /* Project Y boundaries from room top/bottom (same PROJ_Y_SCALE as walls). */
-        int32_t clip_top_y = (int)((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * PROJ_Y_SCALE * RENDER_SCALE / orp->z) + (RENDER_HEIGHT / 2);
-        int32_t clip_bot_y = (int)((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * PROJ_Y_SCALE * RENDER_SCALE / orp->z) + (RENDER_HEIGHT / 2);
+        int32_t clip_top_y = (int)((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * g_renderer.proj_y_scale * RENDER_SCALE / orp->z) + (g_renderer.height / 2);
+        int32_t clip_bot_y = (int)((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * g_renderer.proj_y_scale * RENDER_SCALE / orp->z) + (g_renderer.height / 2);
         if (clip_top_y >= clip_bot_y) continue;
 
         /* Project to screen X (PROJ_X_SCALE/2 = horizontal focal length). */
@@ -1726,10 +1717,9 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
             world_h /= 2;
         }
 
-        /* Screen size: (world * SPRITE_SIZE_SCALE / z) * SPRITE_SIZE_MULTIPLIER. Do not clamp
-         * to g_renderer.width/HEIGHT: that stops scaling when very close. Let size grow; draw loop clips to screen. */
+        /* Screen size: width fixed; height uses proj_y_scale so billboard Y stays consistent when PROJ_Y_SCALE is tuned (position uses same scale). */
         int sprite_w = (int)((int32_t)world_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
-        int sprite_h = (int)((int32_t)world_h * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+        int sprite_h = (int)((int64_t)world_h * (int64_t)g_renderer.proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
         if (sprite_w < 1) sprite_w = 1;
         if (sprite_h < 1) sprite_h = 1;
 
@@ -1759,8 +1749,8 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
          * PROJ_Y_SCALE = aspect; RENDER_SCALE = resolution; WORLD_Y_SUBUNITS = world Y fixed-point. No hardcoded constants. */
         int64_t denom = (int64_t)orp->z * (int64_t)WORLD_Y_SUBUNITS;
         if (denom < 1) denom = 1;
-        int center_y = RENDER_HEIGHT / 2;
-        int floor_screen_y = (int)((int64_t)floor_rel * (int64_t)PROJ_Y_SCALE * (int32_t)RENDER_SCALE / denom) + center_y;
+        int center_y = g_renderer.height / 2;
+        int floor_screen_y = (int)((int64_t)floor_rel * (int64_t)g_renderer.proj_y_scale * (int32_t)RENDER_SCALE / denom) + center_y;
         int half_h = sprite_h / 2;
         /* Per-vect feet anchor: shift sprite down so the feet row (not image bottom) sits on the floor. */
         int feet_rows = sprite_feet_rows_from_bottom_by_vect[v];
@@ -2208,8 +2198,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
 
                 /* Project Y: same rule so X and Y stay consistent (no jump when z crosses FLOOR_NEAR). */
                 int32_t rel_h_8 = rel_h >> WORLD_Y_FRAC_BITS;
-                int sy1_raw = (int)((int64_t)rel_h_8 * PROJ_Y_SCALE * RENDER_SCALE / (int32_t)ez1) + center;
-                int sy2_raw = (int)((int64_t)rel_h_8 * PROJ_Y_SCALE * RENDER_SCALE / (int32_t)ez2) + center;
+                int sy1_raw = (int)((int64_t)rel_h_8 * r->proj_y_scale * RENDER_SCALE / (int32_t)ez1) + center;
+                int sy2_raw = (int)((int64_t)rel_h_8 * r->proj_y_scale * RENDER_SCALE / (int32_t)ez2) + center;
 
                 /* Clamp for horizontal edge check */
                 int sy1 = sy1_raw;
@@ -2313,7 +2303,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                         int row_dist = row - half_h;
                         int abs_rd = (row_dist >= 0) ? row_dist : -row_dist;
                         if (abs_rd <= 3) abs_rd = 4;
-                        int32_t dist = (int32_t)((int64_t)(rel_h >> WORLD_Y_FRAC_BITS) * PROJ_Y_SCALE * RENDER_SCALE / abs_rd);
+                        int32_t dist = (int32_t)((int64_t)(rel_h >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE / abs_rd);
                         if (dist < 1) dist = 1;
                         if (dist > 32767) dist = 32767;
                         int32_t span_depth = (floor_y_dist < 0) ? dist - 1 : dist;
@@ -2550,6 +2540,12 @@ void renderer_draw_display(GameState *state)
     if ((++water_tick & 1) == 0) {
         g_water_phase = (g_water_phase + 1) & 255;
     }
+    /* Vertical scale per frame: denominator scaled by screen aspect ratio (w/h vs default). */
+    int w = (r->width  > 0) ? r->width  : 1;
+    int h = (r->height > 0) ? r->height : 1;
+    r->proj_y_scale = (int32_t)((int64_t)PROJ_Y_NUMERATOR * (int64_t)h * (int64_t)RENDER_DEFAULT_WIDTH / ((int64_t)PROJ_Y_DENOM * (int64_t)w * (int64_t)RENDER_DEFAULT_HEIGHT));
+    if (r->proj_y_scale < 1) r->proj_y_scale = 1;
+
     /* 2. Setup view transform (from AB3DI.s DrawDisplay lines 3399-3438) */
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
 
@@ -2692,7 +2688,7 @@ void renderer_draw_display(GameState *state)
                 int32_t zone_roof = rd32(zd + 6);  /* ToZoneRoof = split height */
                 int32_t rel = zone_roof - r->yoff;
                 /* Split screen Y where lower ceiling / upper floor projects (same projection formula, fixed ref Z). */
-                int split_y = (int)((int64_t)(rel >> WORLD_Y_FRAC_BITS) * PROJ_Y_SCALE * RENDER_SCALE / TWO_LEVEL_SPLIT_REF_Z) + (g_renderer.height / 2);
+                int split_y = (int)((int64_t)(rel >> WORLD_Y_FRAC_BITS) * g_renderer.proj_y_scale * RENDER_SCALE / TWO_LEVEL_SPLIT_REF_Z) + (g_renderer.height / 2);
                 if (split_y < 1) split_y = 1;
                 if (split_y >= g_renderer.height) split_y = g_renderer.height - 1;
                 /* Reserve a band above the split for the lower room so the wall can extend up to
@@ -2743,14 +2739,14 @@ void renderer_draw_display(GameState *state)
         if (dbg_frame < 3) {
             int nonzero = 0;
             int histo[16] = {0}; /* buckets for value ranges 0-15, 16-31, etc */
-            for (int y = 0; y < RENDER_HEIGHT; y++) {
+            for (int y = 0; y < g_renderer.height; y++) {
                 for (int x = 0; x < g_renderer.width; x++) {
-                    uint8_t v = r->buffer[y * RENDER_STRIDE + x];
+                    uint8_t v = r->buffer[y * g_renderer.width + x];
                     if (v) { nonzero++; histo[v >> 4]++; }
                 }
             }
             printf("[RENDER] Frame %d: %d zones, %d/%d visible non-zero px\n",
-                   dbg_frame, state->zone_order_count, nonzero, g_renderer.width*RENDER_HEIGHT);
+                   dbg_frame, state->zone_order_count, nonzero, g_renderer.width*g_renderer.height);
             printf("[RENDER] Histo: ");
             for (int i = 0; i < 16; i++) {
                 if (histo[i]) printf("[%d-%d]=%d ", i*16, i*16+15, histo[i]);
