@@ -29,7 +29,7 @@ static int32_t read_be32(const uint8_t *p)
 #define FLINE_Z     2
 #define FLINE_XLEN  4
 #define FLINE_ZLEN  6
-#define FLINE_CONNECT 14
+#define FLINE_CONNECT  8   /* connected zone (other side of line) */
 
 /* Zone data offsets */
 #define ZONE_FLOOR_HEIGHT   2
@@ -42,17 +42,11 @@ static int32_t read_be32(const uint8_t *p)
 #define ZONE_LIST_OF_GRAPH  48
 
 /* -----------------------------------------------------------------------
- * order_zones - Build back-to-front zone draw order
+ * order_zones - Traverse ListOfGraphRooms then sort by depth (back-to-front)
  *
- * Translated from OrderZones.s (full algorithm).
- *
- * Algorithm:
- * 1. Initialize ToDrawTab[256] = 0 and OrderTab[256]
- * 2. Walk ListOfGraphRooms marking rooms to draw
- * 3. For each marked room, calculate view-space depth (same as renderer:
- *    depth = (mid_x - viewer_x)*sin + (mid_z - viewer_z)*cos for first exit line midpoint)
- * 4. Sort descending by depth (largest = farthest first)
- * 5. Build output array (index 0 = farthest, drawn first for painter's algorithm)
+ * 1. Traverse: walk ListOfGraphRooms, build list of zone ids to draw (same as Amiga).
+ * 2. Sort: assign each zone a depth (max view-space depth over its exit line midpoints),
+ *    sort by depth descending so farthest zones are drawn first (painter's).
  * ----------------------------------------------------------------------- */
 void order_zones(ZoneOrder *out, const LevelState *level,
                  int32_t viewer_x, int32_t viewer_z,
@@ -61,79 +55,68 @@ void order_zones(ZoneOrder *out, const LevelState *level,
 {
     out->count = 0;
 
-    if (!level->data || !level->zone_adds) {
+    if (!level->data || !level->zone_adds || !level->floor_lines) {
         return;
     }
 
-    /* State arrays */
     uint8_t to_draw_tab[256];
-    int32_t distances[256];
-    int16_t zone_ids[256];
+    memset(to_draw_tab, 0, sizeof(to_draw_tab));
+
+    /* Step 1: Traverse ListOfGraphRooms – build zone list (8 bytes per entry: zone_id word, then long) */
+    int16_t zone_list[256];
     int num_zones = 0;
 
-    memset(to_draw_tab, 0, sizeof(to_draw_tab));
-    memset(distances, 0, sizeof(distances));
-
-    /* Step 1: Mark rooms to draw.
-     * If list_of_graph_rooms is provided, walk it (format: int16 zone_id per 8-byte entry, -1 terminator).
-     * If NULL or list yields no zones, fallback: mark all zones 0..num_zones-1 so something is drawn.
-     */
     if (list_of_graph_rooms) {
         const uint8_t *lgr = list_of_graph_rooms;
-        while (1) {
+        while (num_zones < MAX_ORDER_ENTRIES) {
             int16_t zone_id = read_be16(lgr);
             if (zone_id < 0) break;
             if (zone_id < 256) {
                 to_draw_tab[zone_id] = 1;
+                zone_list[num_zones++] = zone_id;
             }
-            lgr += 8; /* 8 bytes per entry */
+            lgr += 8;
         }
     }
-    /* Fallback: if no list or no zones marked (e.g. real level format has list at zone+48 that isn't zone IDs), draw all */
-    {
-        int any_marked = 0;
-        for (int z = 0; z < 256; z++) {
-            if (to_draw_tab[z]) { any_marked = 1; break; }
-        }
-        if (!any_marked && level->num_zones > 0) {
-            int n = level->num_zones;
-            if (n > 256) n = 256;
-            for (int z = 0; z < n; z++) {
-                to_draw_tab[z] = 1;
-            }
+    if (num_zones == 0 && level->num_zones > 0) {
+        int n = level->num_zones;
+        if (n > 256) n = 256;
+        for (int z = 0; z < n; z++) {
+            to_draw_tab[z] = 1;
+            zone_list[num_zones++] = (int16_t)z;
+            if (num_zones >= MAX_ORDER_ENTRIES) break;
         }
     }
+    if (num_zones == 0) return;
 
-    /* View-space depth uses same rotation as renderer: view_z = dx*sin + dz*cos */
+    /* Step 2: View-space depth per zone = max over exit line midpoints.
+     * Depth = (mid_x - viewer_x)*sin + (mid_z - viewer_z)*cos; larger = farther from camera. */
     int16_t sin_v = sin_lookup(viewer_angle);
     int16_t cos_v = cos_lookup(viewer_angle);
+    int32_t depths[256];
 
-    /* Step 2: For each marked zone, use farthest extent (max depth over exit line midpoints).
-     * Order by this so we draw the zone with farthest geometry first (painter's: far then near). */
-    if (!level->floor_lines) return;
+    for (int i = 0; i < num_zones; i++) {
+        int16_t z = zone_list[i];
+        int32_t zone_off = read_be32(level->zone_adds + (int)z * 4);
+        int32_t max_d = (int32_t)0x80000000;
 
-    for (int z = 0; z < 256; z++) {
-        if (!to_draw_tab[z]) continue;
-
-        if (!level->zone_adds) continue;
-        int32_t zone_off = read_be32(level->zone_adds + z * 4);
-        if (zone_off == 0) continue;
-
+        if (zone_off == 0) {
+            depths[i] = 0;
+            continue;
+        }
         const uint8_t *zone_data = level->data + zone_off;
         int16_t exit_rel = read_be16(zone_data + ZONE_EXIT_LIST);
-        if (exit_rel == 0) continue;
+        if (exit_rel == 0) {
+            depths[i] = 0;
+            continue;
+        }
         const uint8_t *exit_list = zone_data + exit_rel;
 
-        /* Max depth over all exit line midpoints = zone's farthest extent in view space */
-        int32_t max_depth = (int32_t)0x80000000; /* INT32_MIN so any real depth is larger */
-        int exit_count = 0;
-        const int max_exits = 32;
-        while (exit_count < max_exits) {
-            int16_t line_idx = read_be16(exit_list + exit_count * 2);
+        for (int ei = 0; ei < 64; ei++) {
+            int16_t line_idx = read_be16(exit_list + ei * 2);
             if (line_idx < 0) break;
-            exit_count++;
 
-            const uint8_t *fline = level->floor_lines + line_idx * FLINE_SIZE;
+            const uint8_t *fline = level->floor_lines + (int)line_idx * FLINE_SIZE;
             int16_t lx = read_be16(fline + FLINE_X);
             int16_t lz = read_be16(fline + FLINE_Z);
             int16_t lxlen = read_be16(fline + FLINE_XLEN);
@@ -143,36 +126,29 @@ void order_zones(ZoneOrder *out, const LevelState *level,
             int32_t dx = mid_x - viewer_x;
             int32_t dz = mid_z - viewer_z;
             int32_t d = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
-            if (d > max_depth) max_depth = d;
+            if (d > max_d) max_d = d;
         }
-        if (max_depth == (int32_t)0x80000000) continue; /* no valid exit */
-
-        zone_ids[num_zones] = (int16_t)z;
-        distances[num_zones] = max_depth;
-        num_zones++;
-
-        if (num_zones >= MAX_ORDER_ENTRIES) break;
+        depths[i] = (max_d == (int32_t)0x80000000) ? 0 : max_d;
     }
 
-    /* Step 3: Sort by depth descending (farthest extent first for painter's algorithm).
-     * Zone with largest max_depth is drawn first; nearer zones overwrite. */
+    /* Step 3: Sort towards the camera = far to near. Farthest zone first (index 0), nearest last.
+     * So sort by depth descending: larger depth = farther = earlier in list = drawn first. */
     for (int i = 1; i < num_zones; i++) {
-        int32_t key_dist = distances[i];
-        int16_t key_zone = zone_ids[i];
+        int32_t d = depths[i];
+        int16_t z = zone_list[i];
         int j = i - 1;
-        while (j >= 0 && distances[j] < key_dist) {
-            distances[j + 1] = distances[j];
-            zone_ids[j + 1] = zone_ids[j];
+        while (j >= 0 && depths[j] < d) {
+            depths[j + 1] = depths[j];
+            zone_list[j + 1] = zone_list[j];
             j--;
         }
-        distances[j + 1] = key_dist;
-        zone_ids[j + 1] = key_zone;
+        depths[j + 1] = d;
+        zone_list[j + 1] = z;
     }
 
-    /* Step 4: Build output (far to near for painter's algorithm) */
-    for (int i = 0; i < num_zones && i < MAX_ORDER_ENTRIES; i++) {
-        out->zones[i] = zone_ids[i];
-    }
+    /* Step 4: Output (far to near) */
+    for (int i = 0; i < num_zones && i < MAX_ORDER_ENTRIES; i++)
+        out->zones[i] = zone_list[i];
     out->count = num_zones;
 }
 
