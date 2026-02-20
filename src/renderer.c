@@ -30,7 +30,6 @@
 #include "game_data.h"
 #include "game_types.h"
 #include "visibility.h"
-#include "objects.h"
 #include "stub_audio.h"
 #include <stdlib.h>
 #include <string.h>
@@ -680,11 +679,12 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     }
 }
 /* -----------------------------------------------------------------------
- * Deferred walls: collected in stream order, then depth-sorted before draw.
+ * Deferred walls: Amiga stream order, painter's only.
  *
  * Type 0/13 (wall) and type 5 (arc) append to deferred[] in stream order.
- * Before drawing we sort by midpoint depth (z1+z2) descending so far walls
- * are drawn first (painter's). Then objects draw on top.
+ * After the zone stream is parsed, we draw deferred walls in that same order
+ * (no depth sort). Floors/roofs were already drawn as we parsed. Then objects.
+ * Level compiler arranges the stream so draw order is correct.
  * ----------------------------------------------------------------------- */
 #define MAX_DEFERRED_WALLS 256
 /* Reference Z used to project two-level zone split height to screen Y (same scale as orp->z). */
@@ -717,16 +717,6 @@ typedef struct {
 /* Global deferred water (accumulated across all zones, drawn after zone loop). */
 static DeferredWaterSpan s_deferred_water[MAX_DEFERRED_WATER_SPANS];
 static int s_num_deferred_water;
-
-/* Per-zone deferred floor/roof spans: multi-floor zones draw all ceilings first, then all floors. */
-#define MAX_DEFERRED_FLOOR_SPANS 2048
-typedef struct {
-    int16_t  y, x_left, x_right;
-    int32_t  rel_h;
-    const uint8_t *texture;
-    int16_t  brightness;
-    int      is_roof;  /* 1 = roof (draw first), 0 = floor */
-} DeferredFloorSpan;
 
 /* -----------------------------------------------------------------------
  * Draw a wall segment between two rotated endpoints
@@ -1947,11 +1937,6 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
     }
 
 
-    /* Multi-floor: draw ceiling (roof) before floor so floor overwrites at horizon (painter's). */
-    int is_multi_floor = (rd32(level->zone_graph_adds + zone_id * 8 + 4) != 0);
-    DeferredFloorSpan deferred_floor[MAX_DEFERRED_FLOOR_SPANS];
-    int num_deferred_floor = 0;
-
     /* Deferred walls: collect during stream parsing, draw AFTER floors/ceilings.
      * This ensures floors draw on the black framebuffer first, then walls
      * overwrite on top (matching Amiga behaviour). Stream order is preserved. */
@@ -2348,18 +2333,6 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                         ws->texture = floor_tex;
                         ws->brightness = bright;
                     }
-                } else if (is_multi_floor && (entry_type == 1 || entry_type == 2 || entry_type == 8 || entry_type == 9 || entry_type == 10 || entry_type == 11)) {
-                    /* Multi-floor: defer both roof and floor; draw all roofs first, then all floors. */
-                    if (num_deferred_floor < MAX_DEFERRED_FLOOR_SPANS) {
-                        DeferredFloorSpan *df = &deferred_floor[num_deferred_floor++];
-                        df->y = (int16_t)row;
-                        df->x_left = le;
-                        df->x_right = re;
-                        df->rel_h = rel_h;
-                        df->texture = floor_tex;
-                        df->brightness = bright;
-                        df->is_roof = (entry_type == 2);
-                    }
                 } else {
                     renderer_draw_floor_span((int16_t)row, le, re,
                                              rel_h, floor_tex, bright, 0);
@@ -2523,33 +2496,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
         }
     }
 
-    /* Multi-floor: draw deferred roof spans first, then floor spans (correct painter's order). */
-    for (int i = 0; i < num_deferred_floor; i++) {
-        DeferredFloorSpan *df = &deferred_floor[i];
-        if (!df->is_roof) continue;
-        renderer_draw_floor_span(df->y, df->x_left, df->x_right,
-                                 df->rel_h, df->texture, df->brightness, 0);
-    }
-    for (int i = 0; i < num_deferred_floor; i++) {
-        DeferredFloorSpan *df = &deferred_floor[i];
-        if (df->is_roof) continue;
-        renderer_draw_floor_span(df->y, df->x_left, df->x_right,
-                                 df->rel_h, df->texture, df->brightness, 0);
-    }
-
-    /* Sort deferred walls by depth (midpoint Z) descending so far walls draw first (painter's). */
-    for (int i = 1; i < num_deferred; i++) {
-        DeferredWall w = deferred[i];
-        int32_t w_depth = (int32_t)w.z1 + (int32_t)w.z2;
-        int j = i - 1;
-        while (j >= 0 && ((int32_t)deferred[j].z1 + (int32_t)deferred[j].z2) < w_depth) {
-            deferred[j + 1] = deferred[j];
-            j--;
-        }
-        deferred[j + 1] = w;
-    }
-
-    /* Draw walls and arcs back-to-front (far first). */
+    /* Draw walls and arcs in stream order (no sort; painter's by stream order). */
     for (int i = 0; i < num_deferred; i++) {
         DeferredWall *dw = &deferred[i];
         if (dw->tex_id >= 0 && dw->tex_id < MAX_WALL_TILES) {
@@ -2736,9 +2683,7 @@ void renderer_draw_display(GameState *state)
             int32_t upper_gfx = rd32(zgraph + 4);
             if (upper_gfx != 0 && zone_off >= 0 && state->level.data) {
                 const uint8_t *zd = state->level.data + zone_off;
-                /* Use base zone roof for split (door/lift overwrite ZD_ROOF; that would break ordering). */
-                int32_t zone_roof = (zone_has_door(state->level.door_data, zone_id) || zone_has_lift(state->level.lift_data, zone_id))
-                    ? door_get_base_zone_roof(state, zone_id) : rd32(zd + 6);
+                int32_t zone_roof = rd32(zd + 6);  /* ToZoneRoof = split height */
                 int32_t rel = zone_roof - r->yoff;
                 /* Split screen Y where lower ceiling / upper floor projects (same projection formula, fixed ref Z). */
                 int split_y = (int)((int64_t)(rel >> WORLD_Y_FRAC_BITS) * g_renderer.proj_y_scale * RENDER_SCALE / TWO_LEVEL_SPLIT_REF_Z) + (g_renderer.height / 2);

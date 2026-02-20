@@ -1171,13 +1171,6 @@ static bool player_at_door_zone(GameState *state, int16_t door_zone_id, int16_t 
     return false;
 }
 
-/* Cache of each zone's base ZD_ROOF (level value) so door_routine can write
- * base_roof + (door_pos - door_max*256) and not overwrite with 0 when closed. */
-#define MAX_DOOR_ZONE_CACHE 256
-static int32_t s_door_base_roof[MAX_DOOR_ZONE_CACHE];
-static uint8_t s_door_base_roof_valid[MAX_DOOR_ZONE_CACHE];
-static const uint8_t *s_door_last_level_data;
-
 /* -----------------------------------------------------------------------
  * Door routine
  *
@@ -1195,12 +1188,6 @@ static const uint8_t *s_door_last_level_data;
 void door_routine(GameState *state)
 {
     if (!state->level.door_data) return;
-
-    /* Clear base-roof cache when level data changes (new level load). */
-    if (state->level.data != s_door_last_level_data) {
-        memset(s_door_base_roof_valid, 0, sizeof(s_door_base_roof_valid));
-        s_door_last_level_data = state->level.data;
-    }
 
     uint8_t *door = state->level.door_data;
 
@@ -1291,22 +1278,17 @@ void door_routine(GameState *state)
         wbe16(door + 12, timer);
 
         /* Update zone data (door height affects zone roof).
-         * Renderer clips walls to (ZD_ROOF, ZD_FLOOR). We must use the level's base ceiling
-         * plus door offset so when closed the full wall is drawn; when open the wall is
-         * clipped to the door opening. zone_roof = base_roof + (door_pos - door_max*256). */
+         * Renderer expects zone_roof in world Y: 0 = floor (closed, no opening), negative = ceiling (open).
+         * door_pos: 0 = open, door_max*256 = closed. So zone_roof = door_pos - door_max*256.
+         * Add a sine-wave bobbing offset so doors animate up and down. */
         if (state->level.zone_adds && state->level.data &&
-            zone_id >= 0 && zone_id < state->level.num_zones && (unsigned)zone_id < MAX_DOOR_ZONE_CACHE) {
+            zone_id >= 0 && zone_id < state->level.num_zones) {
             const uint8_t *za = state->level.zone_adds;
             int32_t zoff = (int32_t)((za[zone_id*4]<<24)|(za[zone_id*4+1]<<16)|
                            (za[zone_id*4+2]<<8)|za[zone_id*4+3]);
             uint8_t *zd = state->level.data + zoff;
-            if (!s_door_base_roof_valid[zone_id]) {
-                s_door_base_roof[zone_id] = (int32_t)((zd[6]<<24)|(zd[7]<<16)|(zd[8]<<8)|zd[9]);
-                s_door_base_roof_valid[zone_id] = 1;
-            }
             int32_t door_max_val = (int32_t)door_max * 256;
-            /* When closed (door_pos = door_max_val): roof = base. When open (door_pos = 0): roof = base + door_max_val (top of opening moves down). */
-            int32_t zone_roof_y = s_door_base_roof[zone_id] + (door_max_val - door_pos);
+            int32_t zone_roof_y = door_pos - door_max_val;  /* 0 when closed, -door_max_val when open */
 
             zd[6] = (uint8_t)(zone_roof_y >> 24);
             zd[7] = (uint8_t)(zone_roof_y >> 16);
@@ -1316,20 +1298,6 @@ void door_routine(GameState *state)
 
         door += 16;
     }
-}
-
-int32_t door_get_base_zone_roof(GameState *state, int16_t zone_id)
-{
-    if (!state->level.zone_adds || !state->level.data ||
-        zone_id < 0 || zone_id >= state->level.num_zones || (unsigned)zone_id >= MAX_DOOR_ZONE_CACHE)
-        return 0;
-    if (s_door_base_roof_valid[zone_id])
-        return s_door_base_roof[zone_id];
-    const uint8_t *za = state->level.zone_adds;
-    int32_t zoff = (int32_t)((za[zone_id*4]<<24)|(za[zone_id*4+1]<<16)|
-                   (za[zone_id*4+2]<<8)|za[zone_id*4+3]);
-    const uint8_t *zd = state->level.data + zoff;
-    return (int32_t)((zd[6]<<24)|(zd[7]<<16)|(zd[8]<<8)|zd[9]);
 }
 
 /* -----------------------------------------------------------------------
