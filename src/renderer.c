@@ -1268,9 +1268,9 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
             }
             if (texel == 0) continue;  /* transparent */
 
-            uint8_t *row8 = buf + (size_t)screen_row * rw;
-            uint32_t *row32 = rgb + (size_t)screen_row * rw;
-            int16_t *depth_row = depth_buf + (size_t)screen_row * rw;
+            uint8_t *row8 = buf + screen_row * g_renderer.width;
+            uint32_t *row32 = rgb + screen_row * g_renderer.width;
+            int16_t *depth_row = depth_buf + screen_row * g_renderer.width;
 
             depth_row[screen_col] = sprite_z_bias;
             row8[screen_col] = texel;
