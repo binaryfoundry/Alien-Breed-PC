@@ -32,9 +32,7 @@ typedef struct {
  *
  * Translated from OrderZones.s.
  *
- * Takes the ListOfGraphRooms (rooms potentially visible from the player's
- * current room) and orders them by view-space depth (farthest first) for
- * correct painter's algorithm. viewer_angle is 14-bit (same as angpos & 0x3FFF).
+ * Traverses ListOfGraphRooms and outputs zone ids in list order (no sorting).
  */
 void order_zones(ZoneOrder *out, const LevelState *level,
                  int32_t viewer_x, int32_t viewer_z,

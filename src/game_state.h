@@ -200,6 +200,10 @@ typedef struct {
     int16_t         zone_order_zones[256];
     int             zone_order_count;
 
+    /* List used this frame for ordering; renderer uses it for portal clip lookup.
+     * Set from viewer's current zone (zone_data + 48) or level list. */
+    const uint8_t  *view_list_of_graph_rooms;
+
     /* End zones per level */
     int16_t         end_zones[16];
 

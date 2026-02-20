@@ -23,13 +23,13 @@ static int32_t read_be32(const uint8_t *p)
     return (int32_t)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
 }
 
-/* Floor line offsets */
-#define FLINE_SIZE  16
-#define FLINE_X     0
-#define FLINE_Z     2
-#define FLINE_XLEN  4
-#define FLINE_ZLEN  6
-#define FLINE_CONNECT  8   /* connected zone (other side of line) */
+/* Floor line offsets. Normal for side test: perpendicular to (xlen,zlen) = (-zlen, xlen). */
+#define FLINE_SIZE    16
+#define FLINE_X       0
+#define FLINE_Z       2
+#define FLINE_XLEN    4
+#define FLINE_ZLEN    6
+#define FLINE_CONNECT 8
 
 /* Zone data offsets */
 #define ZONE_FLOOR_HEIGHT   2
@@ -41,18 +41,50 @@ static int32_t read_be32(const uint8_t *p)
 #define ZONE_EXIT_LIST      32
 #define ZONE_LIST_OF_GRAPH  48
 
+/* Return 1 if node_a appears before node_b when walking from head. */
+static int node_before(int head, int node_a, int node_b,
+                      const int *next)
+{
+    int n = head;
+    while (n >= 0) {
+        if (n == node_a) return 1;
+        if (n == node_b) return 0;
+        n = next[n];
+    }
+    return 0;
+}
+
+/* Unlink node from list; insert it before node 'before' (so node is drawn before that one). */
+static void move_before(int node, int before,
+                        int *next, int *prev)
+{
+    int p = prev[node], n = next[node];
+    if (p >= 0) next[p] = n;
+    if (n >= 0) prev[n] = p;
+    prev[node] = prev[before];
+    next[node] = before;
+    if (prev[before] >= 0)
+        next[prev[before]] = node;
+    prev[before] = node;
+}
+
 /* -----------------------------------------------------------------------
- * order_zones - Traverse ListOfGraphRooms then sort by depth (back-to-front)
+ * order_zones - Amiga OrderZones: traverse list from current zone, then
+ * reorder by portal (exit-line) side test so back-to-front order is correct.
  *
- * 1. Traverse: walk ListOfGraphRooms, build list of zone ids to draw (same as Amiga).
- * 2. Sort: assign each zone a depth (max view-space depth over its exit line midpoints),
- *    sort by depth descending so farthest zones are drawn first (painter's).
+ * 1. Traverse ListOfGraphRooms (viewer's zone list at zone_data + 48).
+ * 2. Build linked list in that order.
+ * 3. RunThroughList + InsertList: for each zone, look at exit lines; if
+ *    connected zone is in list and further away (viewer in front of line),
+ *    but currently drawn before current, move current to after connected.
+ * 4. Output final list order.
  * ----------------------------------------------------------------------- */
 void order_zones(ZoneOrder *out, const LevelState *level,
                  int32_t viewer_x, int32_t viewer_z,
                  int viewer_angle,
                  const uint8_t *list_of_graph_rooms)
 {
+    (void)viewer_angle;
     out->count = 0;
 
     if (!level->data || !level->zone_adds || !level->floor_lines) {
@@ -62,18 +94,17 @@ void order_zones(ZoneOrder *out, const LevelState *level,
     uint8_t to_draw_tab[256];
     memset(to_draw_tab, 0, sizeof(to_draw_tab));
 
-    /* Step 1: Traverse ListOfGraphRooms – build zone list (8 bytes per entry: zone_id word, then long) */
     int16_t zone_list[256];
     int num_zones = 0;
 
     if (list_of_graph_rooms) {
         const uint8_t *lgr = list_of_graph_rooms;
         while (num_zones < MAX_ORDER_ENTRIES) {
-            int16_t zone_id = read_be16(lgr);
-            if (zone_id < 0) break;
-            if (zone_id < 256) {
-                to_draw_tab[zone_id] = 1;
-                zone_list[num_zones++] = zone_id;
+            int16_t zid = read_be16(lgr);
+            if (zid < 0) break;
+            if (zid < 256) {
+                to_draw_tab[zid] = 1;
+                zone_list[num_zones++] = zid;
             }
             lgr += 8;
         }
@@ -89,67 +120,77 @@ void order_zones(ZoneOrder *out, const LevelState *level,
     }
     if (num_zones == 0) return;
 
-    /* Step 2: View-space depth per zone = max over exit line midpoints.
-     * Depth = (mid_x - viewer_x)*sin + (mid_z - viewer_z)*cos; larger = farther from camera. */
-    int16_t sin_v = sin_lookup(viewer_angle);
-    int16_t cos_v = cos_lookup(viewer_angle);
-    int32_t depths[256];
-
+    /* Linked list by node index: next[i], prev[i], zone_id[i]. Head = 0, tail = num_zones-1. */
+    int next[256], prev[256];
+    int16_t node_zone[256];
     for (int i = 0; i < num_zones; i++) {
-        int16_t z = zone_list[i];
-        int32_t zone_off = read_be32(level->zone_adds + (int)z * 4);
-        int32_t max_d = (int32_t)0x80000000;
+        node_zone[i] = zone_list[i];
+        prev[i] = i - 1;
+        next[i] = i + 1;
+    }
+    prev[0] = -1;
+    next[num_zones - 1] = -1;
+    int head = 0, tail = num_zones - 1;
 
-        if (zone_off == 0) {
-            depths[i] = 0;
-            continue;
-        }
-        const uint8_t *zone_data = level->data + zone_off;
-        int16_t exit_rel = read_be16(zone_data + ZONE_EXIT_LIST);
-        if (exit_rel == 0) {
-            depths[i] = 0;
-            continue;
-        }
-        const uint8_t *exit_list = zone_data + exit_rel;
+    /* Amiga RunThroughList: multiple passes (100), each pass walk list from tail to head. */
+    enum { k_order_passes = 100 };
+    for (int pass = 0; pass < k_order_passes; pass++) {
+        int node = tail;
+        while (node >= 0) {
+            int16_t cur_zone = node_zone[node];
+            int32_t zone_off = read_be32(level->zone_adds + (int)cur_zone * 4);
+            if (zone_off != 0) {
+                const uint8_t *zone_data = level->data + zone_off;
+                int16_t exit_rel = read_be16(zone_data + ZONE_EXIT_LIST);
+                if (exit_rel != 0) {
+                    const uint8_t *exit_list = zone_data + exit_rel;
+                    for (int ei = 0; ei < 64; ei++) {
+                        int16_t line_idx = read_be16(exit_list + ei * 2);
+                        if (line_idx < 0) break;
+                        int16_t connect = read_be16(level->floor_lines + (int)line_idx * FLINE_SIZE + FLINE_CONNECT);
+                        if (connect < 0 || connect >= 256 || !to_draw_tab[connect]) continue;
 
-        for (int ei = 0; ei < 64; ei++) {
-            int16_t line_idx = read_be16(exit_list + ei * 2);
-            if (line_idx < 0) break;
+                        /* Side test: which side of the exit line is the viewer?
+                         * Normal = perpendicular to (xlen,zlen), i.e. (-zlen, xlen). Then side = dx*nz - dz*nx. */
+                        const uint8_t *fline = level->floor_lines + (int)line_idx * FLINE_SIZE;
+                        int32_t lx = (int32_t)read_be16(fline + FLINE_X);
+                        int32_t lz = (int32_t)read_be16(fline + FLINE_Z);
+                        int32_t lxlen = (int32_t)read_be16(fline + FLINE_XLEN);
+                        int32_t lzlen = (int32_t)read_be16(fline + FLINE_ZLEN);
+                        int32_t dx = viewer_x - lx, dz = viewer_z - lz;
+                        int32_t nx = -lzlen, nz = lxlen;  /* perpendicular to line */
+                        int32_t side = dx * nz - dz * nx;
+                        if (side <= 0) continue; /* viewer behind line: current zone further, no reorder */
 
-            const uint8_t *fline = level->floor_lines + (int)line_idx * FLINE_SIZE;
-            int16_t lx = read_be16(fline + FLINE_X);
-            int16_t lz = read_be16(fline + FLINE_Z);
-            int16_t lxlen = read_be16(fline + FLINE_XLEN);
-            int16_t lzlen = read_be16(fline + FLINE_ZLEN);
-            int32_t mid_x = (int32_t)lx + (int32_t)lxlen / 2;
-            int32_t mid_z = (int32_t)lz + (int32_t)lzlen / 2;
-            int32_t dx = mid_x - viewer_x;
-            int32_t dz = mid_z - viewer_z;
-            int32_t d = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
-            if (d > max_d) max_d = d;
+                        /* Connected zone is further. If it's currently drawn before current, move current in front of it. */
+                        int conn_node = -1;
+                        for (int k = 0; k < num_zones; k++) {
+                            if (node_zone[k] == connect) { conn_node = k; break; }
+                        }
+                        if (conn_node < 0) continue;
+                        if (!node_before(head, conn_node, node, next)) continue; /* connected not earlier */
+
+                        int old_prev = prev[node], old_next = next[node];
+                        if (node == head) head = (old_next >= 0) ? old_next : node;
+                        if (node == tail) tail = (old_prev >= 0) ? old_prev : node;
+                        move_before(node, conn_node, next, prev);
+                        if (conn_node == head) head = node;
+                        break; /* one reorder per node per pass */
+                    }
+                }
+            }
+            node = prev[node];
         }
-        depths[i] = (max_d == (int32_t)0x80000000) ? 0 : max_d;
     }
 
-    /* Step 3: Sort towards the camera = far to near. Farthest zone first (index 0), nearest last.
-     * So sort by depth descending: larger depth = farther = earlier in list = drawn first. */
-    for (int i = 1; i < num_zones; i++) {
-        int32_t d = depths[i];
-        int16_t z = zone_list[i];
-        int j = i - 1;
-        while (j >= 0 && depths[j] < d) {
-            depths[j + 1] = depths[j];
-            zone_list[j + 1] = zone_list[j];
-            j--;
-        }
-        depths[j + 1] = d;
-        zone_list[j + 1] = z;
+    /* Output final order (walk from head) */
+    int n = head;
+    int out_i = 0;
+    while (n >= 0 && out_i < MAX_ORDER_ENTRIES) {
+        out->zones[out_i++] = node_zone[n];
+        n = next[n];
     }
-
-    /* Step 4: Output (far to near) */
-    for (int i = 0; i < num_zones && i < MAX_ORDER_ENTRIES; i++)
-        out->zones[i] = zone_list[i];
-    out->count = num_zones;
+    out->count = out_i;
 }
 
 /* -----------------------------------------------------------------------

@@ -2634,16 +2634,13 @@ void renderer_draw_display(GameState *state)
         r->wall_top_clip = -1;
         r->wall_bot_clip = -1;
 
-        /* Apply zone clipping from ListOfGraphRooms + LEVELCLIPS.
-         * ListOfGraphRooms entries are 8 bytes:
-         *   +0: zone_id (word)
-         *   +2: clip_offset (word) - offset into LEVELCLIPS (* 2)
-         *   +4: reserved (4 bytes)
-         * LEVELCLIPS is an array of word-sized point indices.
-         * First section: left clips (terminated by -1)
-         * Second section: right clips (terminated by -1) */
-        if (state->level.list_of_graph_rooms && state->level.clips) {
-            const uint8_t *lgr = state->level.list_of_graph_rooms;
+        /* Apply zone clipping from ListOfGraphRooms + LEVELCLIPS (portal clipping).
+         * Use the list we ordered from this frame (view_list_of_graph_rooms) so
+         * clip offsets match the current zone's list. */
+        {
+            const uint8_t *lgr = state->view_list_of_graph_rooms ?
+                state->view_list_of_graph_rooms : state->level.list_of_graph_rooms;
+        if (lgr && state->level.clips) {
             /* Find this zone's entry in ListOfGraphRooms */
             int found = 0;
             while (rd16(lgr) >= 0) {
@@ -2696,6 +2693,7 @@ void renderer_draw_display(GameState *state)
             if (r->left_clip >= g_renderer.width) continue;
             if (r->right_clip <= 0) continue;
             if (r->left_clip >= r->right_clip) continue;
+        }
         }
 
         /* Multi-floor zone: draw lower and upper room with vertical clip split */
