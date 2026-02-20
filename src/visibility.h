@@ -17,11 +17,6 @@
 
 #include "game_state.h"
 
-/* Set to 1 to log zone ordering traversal to stdout (paste for debugging). */
-#ifndef ORDER_ZONES_LOG
-#define ORDER_ZONES_LOG 0
-#endif
-
 /* Maximum rooms that can be visible at once */
 #define MAX_VISIBLE_ROOMS   256
 #define MAX_ORDER_ENTRIES   256

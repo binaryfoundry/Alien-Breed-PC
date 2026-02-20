@@ -690,14 +690,24 @@ void io_release_level_memory(LevelState *level)
      * so it must NOT be freed separately. Just NULL it. */
     level->list_of_graph_rooms = NULL;
 
+    /* Free door/switch tables if we allocated them (LE→BE conversion); do before freeing graphics */
+    if (level->door_data_owned && level->door_data) {
+        free(level->door_data);
+    }
+    level->door_data = NULL;
+    level->door_data_owned = false;
+    if (level->switch_data_owned && level->switch_data) {
+        free(level->switch_data);
+    }
+    level->switch_data = NULL;
+    level->switch_data_owned = false;
+
     free(level->data);              level->data = NULL;
     free(level->graphics);          level->graphics = NULL;
     free(level->clips);             level->clips = NULL;
 
     /* Clear remaining pointers (they pointed into the freed buffers) */
-    level->door_data = NULL;
     level->lift_data = NULL;
-    level->switch_data = NULL;
     level->zone_graph_adds = NULL;
     level->zone_adds = NULL;
     level->points = NULL;

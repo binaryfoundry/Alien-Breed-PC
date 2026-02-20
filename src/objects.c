@@ -1474,6 +1474,8 @@ void switch_routine(GameState *state)
             if (state->plr1.p_spctap && near_plr1) {
                 int16_t bit_mask = be16(sw + 4);
                 game_conditions ^= bit_mask;
+                printf("[SWITCH] pressed (plr1) zone=%d bit_mask=0x%04X game_conditions=0x%04X\n",
+                       (int)zone_id, (unsigned)(uint16_t)bit_mask, (unsigned)(uint16_t)game_conditions);
                 *(int8_t*)(sw + 3) = 20; /* cooldown */
                 /* Patch switch wall: only flip bit 1 (on/off); preserve point index in first word */
                 if (state->level.graphics) {
@@ -1488,6 +1490,8 @@ void switch_routine(GameState *state)
             if (state->plr2.p_spctap && near_plr2) {
                 int16_t bit_mask = be16(sw + 4);
                 game_conditions ^= bit_mask;
+                printf("[SWITCH] pressed (plr2) zone=%d bit_mask=0x%04X game_conditions=0x%04X\n",
+                       (int)zone_id, (unsigned)(uint16_t)bit_mask, (unsigned)(uint16_t)game_conditions);
                 *(int8_t*)(sw + 3) = 20;
                 if (state->level.graphics) {
                     int32_t gfx_off = (int32_t)be32(sw + 6);

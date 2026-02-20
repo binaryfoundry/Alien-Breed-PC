@@ -146,6 +146,10 @@ typedef struct {
     uint8_t *list_of_graph_rooms; /* ListOfGraphRooms - rooms visible from current */
     uint8_t *floor_tile;          /* floortile - 256x256 floor texture sheet */
 
+    /* When true, door_data / switch_data were allocated by level_parse (LE→BE conversion) and must be freed */
+    bool door_data_owned;
+    bool switch_data_owned;
+
     int16_t  num_object_points;
     int16_t  num_zones;           /* Number of zones in the level */
     int32_t  num_floor_lines;    /* Number of floor/wall line segments (for brute-force collision) */

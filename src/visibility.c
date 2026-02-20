@@ -8,7 +8,6 @@
 #include "visibility.h"
 #include "math_tables.h"
 #include <string.h>
-#include <stdio.h>
 
 /* -----------------------------------------------------------------------
  * Helper: read big-endian values from level data
@@ -142,18 +141,6 @@ void order_zones(ZoneOrder *out, const LevelState *level,
     }
     if (num_zones == 0) return;
 
-#if ORDER_ZONES_LOG
-    printf("[order_zones] list_of_graph_rooms=%p viewer_x=%d viewer_z=%d num_zones=%d\n",
-           (void*)list_of_graph_rooms, (int)viewer_x, (int)viewer_z, num_zones);
-    printf("[order_zones] initial_traversal:");
-    for (int i = 0; i < num_zones; i++) printf(" %d", (int)zone_list[i]);
-    printf("\n");
-    for (int i = 0; i < num_zones && i < 8; i++) {
-        printf("[order_zones]   zone %d workspace=0x%08X\n", (int)zone_list[i], (unsigned)workspace[zone_list[i]]);
-    }
-    if (num_zones > 8) printf("[order_zones]   ... (%d more)\n", num_zones - 8);
-#endif
-
     /* Linked list by node index: next[i], prev[i], zone_id[i]. Head = 0, tail = num_zones-1. */
     int next[256], prev[256];
     int16_t node_zone[256];
@@ -218,10 +205,6 @@ void order_zones(ZoneOrder *out, const LevelState *level,
                         }
                         if (conn_node < 0) continue;
                         if (!node_before(head, conn_node, node, next)) continue;  /* connected not earlier, nothing to do */
-#if ORDER_ZONES_LOG
-                        printf("[order_zones] reorder: move zone %d before zone %d (cur_node=%d conn_node=%d)\n",
-                               (int)cur_zone, (int)connect, node, conn_node);
-#endif
                         if (node == head) head = (next[node] >= 0) ? next[node] : node;
                         if (node == tail) tail = (prev[node] >= 0) ? prev[node] : node;
                         move_before(node, conn_node, next, prev);
@@ -243,12 +226,6 @@ void order_zones(ZoneOrder *out, const LevelState *level,
         n = next[n];
     }
     out->count = out_i;
-
-#if ORDER_ZONES_LOG
-    printf("[order_zones] final_order:");
-    for (int i = 0; i < out_i; i++) printf(" %d", (int)out->zones[i]);
-    printf("\n");
-#endif
 }
 
 /* -----------------------------------------------------------------------

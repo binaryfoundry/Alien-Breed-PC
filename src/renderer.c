@@ -2761,32 +2761,6 @@ void renderer_draw_display(GameState *state)
                                  ws->floor_height, ws->texture, ws->brightness, 1);
     }
 
-#if 0
-    /* Debug: count visible non-zero pixels + histogram (expensive full-frame scan) */
-    {
-        static int dbg_frame = 0;
-        if (dbg_frame < 3) {
-            int nonzero = 0;
-            int histo[16] = {0};
-            for (int y = 0; y < g_renderer.height; y++) {
-                for (int x = 0; x < g_renderer.width; x++) {
-                    uint8_t v = r->buffer[y * g_renderer.width + x];
-                    if (v) { nonzero++; histo[v >> 4]++; }
-                }
-            }
-            printf("[RENDER] Frame %d: %d zones, %d/%d visible non-zero px\n",
-                   dbg_frame, state->zone_order_count, nonzero, g_renderer.width*g_renderer.height);
-            printf("[RENDER] Histo: ");
-            for (int i = 0; i < 16; i++) {
-                if (histo[i]) printf("[%d-%d]=%d ", i*16, i*16+15, histo[i]);
-            }
-            printf("\n");
-            fflush(stdout);
-        }
-        dbg_frame++;
-    }
-#endif
-
     /* 6. Draw gun overlay */
     renderer_draw_gun(state);
 

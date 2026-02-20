@@ -7,6 +7,7 @@
 
 #include "level.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Helper to read big-endian 16-bit word from buffer */
@@ -19,6 +20,28 @@ static int16_t read_word(const uint8_t *p)
 static int32_t read_long(const uint8_t *p)
 {
     return (int32_t)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
+}
+
+/* Little-endian variants (some level data uses LE for door/switch tables) */
+static int16_t read_word_le(const uint8_t *p)
+{
+    return (int16_t)((p[1] << 8) | p[0]);
+}
+static int32_t read_long_le(const uint8_t *p)
+{
+    return (int32_t)((p[3] << 24) | (p[2] << 16) | (p[1] << 8) | p[0]);
+}
+static void write_word_be(uint8_t *p, int16_t v)
+{
+    p[0] = (uint8_t)((uint16_t)v >> 8);
+    p[1] = (uint8_t)(uint16_t)v;
+}
+static void write_long_be(uint8_t *p, int32_t v)
+{
+    p[0] = (uint8_t)((uint32_t)v >> 24);
+    p[1] = (uint8_t)((uint32_t)v >> 16);
+    p[2] = (uint8_t)((uint32_t)v >> 8);
+    p[3] = (uint8_t)(uint32_t)v;
 }
 
 /* -----------------------------------------------------------------------
@@ -73,8 +96,112 @@ int level_parse(LevelState *level)
     int32_t zone_graph_offset = read_long(lg + 12);
     printf("[LEVEL] Graphics header: door=%ld lift=%ld switch=%ld zone_graph=%ld\n",
            (long)door_offset, (long)lift_offset, (long)switch_offset, (long)zone_graph_offset);
+    level->door_data_owned = false;
+    level->switch_data_owned = false;
+
     if (door_offset > 0) {
-        level->door_data = lg + door_offset;
+        const uint8_t *door_src = lg + door_offset;
+        int16_t zone_id_be = read_word(door_src);
+        int16_t type_be = read_word(door_src + 2);
+        int16_t zone_id_le = read_word_le(door_src);
+        int16_t type_le = read_word_le(door_src + 2);
+        /* Alternate layout: zone at 4, type at 6 (4-byte header; bytes 0-3 padding) */
+        int16_t zone_at4 = read_word(door_src + 4);
+        int16_t type_at6 = read_word(door_src + 6);
+        /* Alternate layout: 18-byte entries with zone at 2, type at 4 */
+        int16_t zone_at2 = read_word(door_src + 2);
+        int16_t type_at4 = read_word(door_src + 4);
+        int num_zones = (int)read_word(ld + 16);  /* will be set below; use early for validation */
+
+        if (zone_id_be < 0) {
+            level->door_data = NULL;  /* empty list */
+        } else if ((type_be >= 0 && type_be <= 5 && zone_id_be >= 0 && zone_id_be < num_zones) || num_zones <= 0) {
+            level->door_data = (uint8_t *)(lg + door_offset);
+        } else if (type_at6 >= 0 && type_at6 <= 5 && zone_at4 >= 0 && zone_at4 < num_zones) {
+            /* Zone at 4, type at 6. Try both 20-byte and 16-byte stride; use whichever yields more doors (stops at zone < 0). */
+            int nd20 = 0;
+            const uint8_t *d = door_src;
+            while (nd20 < 256 && read_word(d + 4) >= 0) { nd20++; d += 20; }
+            int nd16 = 0;
+            d = door_src;
+            while (nd16 < 256 && read_word(d + 4) >= 0) { nd16++; d += 16; }
+            int nd = (nd16 > nd20) ? nd16 : nd20;
+            int stride = (nd16 > nd20) ? 16 : 20;
+            uint8_t *buf = (uint8_t *)malloc((size_t)(nd + 1) * 16u);
+            if (buf) {
+                for (int i = 0; i < nd; i++) {
+                    const uint8_t *s = door_src + i * (unsigned)stride;
+                    uint8_t *t = buf + i * 16;
+                    write_word_be(t + 0, read_word(s + 4));   /* zone */
+                    write_word_be(t + 2, read_word(s + 6));   /* type */
+                    write_long_be(t + 4, read_long(s + 8));   /* pos */
+                    write_word_be(t + 8, read_word(s + 12));  /* vel */
+                    write_word_be(t + 10, read_word(s + 14)); /* max */
+                    if (stride >= 20) {
+                        write_word_be(t + 12, read_word(s + 16)); /* timer */
+                        write_word_be(t + 14, read_word(s + 18)); /* flags */
+                    } else {
+                        write_word_be(t + 12, 0);  /* timer default */
+                        write_word_be(t + 14, 0); /* flags default */
+                    }
+                }
+                write_word_be(buf + nd * 16, (int16_t)-1);
+                level->door_data = buf;
+                level->door_data_owned = true;
+            } else {
+                level->door_data = (uint8_t *)(lg + door_offset);
+            }
+        } else if (type_at4 >= 0 && type_at4 <= 5 && zone_at2 >= 0 && zone_at2 < num_zones) {
+            /* 18-byte entries: bytes 0-1 padding, 2-3 zone, 4-5 type, 6-9 pos, 10-11 vel, 12-13 max, 14-15 timer, 16-17 flags */
+            int nd = 0;
+            const uint8_t *d = door_src;
+            while (read_word(d + 2) >= 0) { nd++; d += 18; }
+            uint8_t *buf = (uint8_t *)malloc((size_t)(nd + 1) * 16u);
+            if (buf) {
+                for (int i = 0; i < nd; i++) {
+                    const uint8_t *s = door_src + i * 18;
+                    uint8_t *t = buf + i * 16;
+                    write_word_be(t + 0, read_word(s + 2));   /* zone */
+                    write_word_be(t + 2, read_word(s + 4));   /* type */
+                    write_long_be(t + 4, read_long(s + 6));   /* pos */
+                    write_word_be(t + 8, read_word(s + 10)); /* vel */
+                    write_word_be(t + 10, read_word(s + 12)); /* max */
+                    write_word_be(t + 12, read_word(s + 14));/* timer */
+                    write_word_be(t + 14, read_word(s + 16));/* flags */
+                }
+                write_word_be(buf + nd * 16, (int16_t)-1);
+                level->door_data = buf;
+                level->door_data_owned = true;
+            } else {
+                level->door_data = (uint8_t *)(lg + door_offset);
+            }
+        } else if (type_le >= 0 && type_le <= 5 && zone_id_le >= 0 && zone_id_le < num_zones) {
+            /* 16-byte entries, little-endian */
+            int nd = 0;
+            const uint8_t *d = door_src;
+            while (read_word_le(d) >= 0) { nd++; d += 16; }
+            uint8_t *buf = (uint8_t *)malloc((size_t)(nd + 1) * 16u);
+            if (buf) {
+                for (int i = 0; i < nd; i++) {
+                    const uint8_t *s = door_src + i * 16;
+                    uint8_t *t = buf + i * 16;
+                    write_word_be(t + 0, read_word_le(s + 0));
+                    write_word_be(t + 2, read_word_le(s + 2));
+                    write_long_be(t + 4, read_long_le(s + 4));
+                    write_word_be(t + 8, read_word_le(s + 8));
+                    write_word_be(t + 10, read_word_le(s + 10));
+                    write_word_be(t + 12, read_word_le(s + 12));
+                    write_word_be(t + 14, read_word_le(s + 14));
+                }
+                write_word_be(buf + nd * 16, (int16_t)-1);
+                level->door_data = buf;
+                level->door_data_owned = true;
+            } else {
+                level->door_data = (uint8_t *)(lg + door_offset);
+            }
+        } else {
+            level->door_data = (uint8_t *)(lg + door_offset);
+        }
     } else {
         level->door_data = NULL;
     }
@@ -83,7 +210,46 @@ int level_parse(LevelState *level)
     level->lift_data = (lift_offset > 0) ? (lg + lift_offset) : NULL;
 
     /* Long 8: Offset to switches */
-    level->switch_data = (switch_offset > 0) ? (lg + switch_offset) : NULL;
+    if (switch_offset > 0) {
+        const uint8_t *sw_src = lg + switch_offset;
+        int num_zones_sw = (int)read_word(ld + 16);
+        int16_t zone_id_be = read_word(sw_src);
+        int16_t zone_id_le = read_word_le(sw_src);
+        uint16_t bit_mask_be = (uint16_t)read_word(sw_src + 4);
+        uint16_t bit_mask_le = (uint16_t)read_word_le(sw_src + 4);
+
+        if (zone_id_be < 0) {
+            level->switch_data = NULL;
+        } else if ((zone_id_be >= 0 && zone_id_be < num_zones_sw) || num_zones_sw <= 0) {
+            level->switch_data = (uint8_t *)(lg + switch_offset);
+        } else if (zone_id_le >= 0 && zone_id_le < num_zones_sw) {
+            int ns = 0;
+            const uint8_t *s = sw_src;
+            while (read_word_le(s) >= 0) { ns++; s += 14; }
+            uint8_t *buf = (uint8_t *)malloc((size_t)(ns + 1) * 14u);
+            if (buf) {
+                for (int i = 0; i < ns; i++) {
+                    const uint8_t *s = sw_src + i * 14;
+                    uint8_t *t = buf + i * 14;
+                    write_word_be(t + 0, read_word_le(s + 0));
+                    write_word_be(t + 2, read_word_le(s + 2));
+                    write_word_be(t + 4, read_word_le(s + 4));
+                    write_long_be(t + 6, read_long_le(s + 6));
+                    write_word_be(t + 10, read_word_le(s + 10));
+                    write_word_be(t + 12, read_word_le(s + 12));
+                }
+                write_word_be(buf + ns * 14, (int16_t)-1);
+                level->switch_data = buf;
+                level->switch_data_owned = true;
+            } else {
+                level->switch_data = (uint8_t *)(lg + switch_offset);
+            }
+        } else {
+            level->switch_data = (uint8_t *)(lg + switch_offset);
+        }
+    } else {
+        level->switch_data = NULL;
+    }
 
     /* Long 12: Offset to zone graph adds */
     level->zone_graph_adds = lg + zone_graph_offset;
@@ -143,6 +309,39 @@ int level_parse(LevelState *level)
 
     printf("[LEVEL] Parsed: %d zones, %d points, %d obj_points, %d floor_lines\n",
            level->num_zones, num_points, level->num_object_points, level->num_floor_lines);
+
+    /* Debug: dump doors and switches (door_flags / bit_mask must match for switch-to-door link) */
+    if (level->door_data) {
+        const uint8_t *door = level->door_data;
+        int di = 0;
+        while (1) {
+            int16_t zone_id = read_word(door);
+            if (zone_id < 0) break;
+            int16_t door_type = read_word(door + 2);
+            int32_t door_pos = read_long(door + 4);
+            int16_t door_max = read_word(door + 10);
+            uint16_t door_flags = (uint16_t)read_word(door + 14);
+            printf("[LEVEL] door[%d] zone=%d type=%d pos=%ld max=%d flags=0x%04X (%u)\n",
+                   di, (int)zone_id, (int)door_type, (long)door_pos, (int)door_max, door_flags, door_flags);
+            door += 16;
+            di++;
+        }
+    }
+    if (level->switch_data) {
+        const uint8_t *sw = level->switch_data;
+        int si = 0;
+        while (1) {
+            int16_t zone_id = read_word(sw);
+            if (zone_id < 0) break;
+            uint16_t bit_mask = (uint16_t)read_word(sw + 4);
+            int16_t sw_x = read_word(sw + 10);
+            int16_t sw_z = read_word(sw + 12);
+            printf("[LEVEL] switch[%d] zone=%d bit_mask=0x%04X (%u) pos=(%d,%d)\n",
+                   si, (int)zone_id, bit_mask, bit_mask, (int)sw_x, (int)sw_z);
+            sw += 14;
+            si++;
+        }
+    }
 
     return 0;
 }
