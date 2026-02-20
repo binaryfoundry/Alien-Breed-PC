@@ -1559,8 +1559,9 @@ static const struct {
  * Iterates all objects in ObjectData, finds those in the current zone,
  * sorts by depth, and draws them back-to-front.
  * ----------------------------------------------------------------------- */
+/* level_filter: -1 = draw all (single-level zone), 0 = lower floor only, 1 = upper floor only (multi-floor). */
 static void draw_zone_objects(GameState *state, int16_t zone_id,
-                              int32_t top_of_room, int32_t bot_of_room)
+                              int32_t top_of_room, int32_t bot_of_room, int level_filter)
 {
     RendererState *r = &g_renderer;
     LevelState *level = &state->level;
@@ -1568,7 +1569,17 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
 
     int32_t y_off = r->yoff;
 
-    /* Build depth-sorted list of objects in this zone */
+    /* Multi-floor: only draw objects on the current level. Same rule as objects.c: object is on
+     * upper floor when its world Y (ObjectPoints[pt*8+2]) * 128 <= ZD_ROOF (split height). */
+    const uint8_t *zone_data = NULL;
+    int32_t split_h = 0;
+    if (level_filter >= 0 && level->zone_adds && level->data) {
+        int32_t zo = rd32(level->zone_adds + zone_id * 4);
+        if (zo >= 0) zone_data = level->data + zo;
+        if (zone_data) split_h = rd32(zone_data + 6);  /* ZD_ROOF = split */
+    }
+
+    /* Build depth-sorted list of objects in this zone (and on this floor when level_filter >= 0) */
     typedef struct { int idx; int32_t z; } ObjEntry;
     ObjEntry objs[80];
     int obj_count = 0;
@@ -1591,6 +1602,14 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         int in_this_zone = (graphic_room >= 0 && graphic_room == (int16_t)zone_id)
                            || (obj_zone >= 0 && obj_zone == (int16_t)zone_id);
         if (!in_this_zone) continue;
+
+        /* Multi-floor: skip objects on the other level */
+        if (level_filter >= 0 && zone_data && pt_num >= 0 && pt_num < num_pts) {
+            int16_t obj_world_y = rd16(level->object_points + (size_t)pt_num * 8 + 2);
+            int on_upper = ((int32_t)obj_world_y * 128 <= split_h);
+            if ((level_filter == 1 && !on_upper) || (level_filter == 0 && on_upper))
+                continue;
+        }
 
         ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
         if (orp->z <= 0) continue; /* Behind camera */
@@ -2126,7 +2145,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             int poly_top = h;
             int poly_bot = -1;
 
-            /* Clamp Y range for floor vs ceiling */
+            /* Clamp Y range for floor vs ceiling. Multi-floor: also clamp to zone top_clip/bot_clip
+             * so lower room does not draw above the split and upper room does not draw below it. */
             int y_min_clamp, y_max_clamp;
             if (floor_y_dist > 0) {
                 y_min_clamp = half_h;       /* floor: center to bottom */
@@ -2135,6 +2155,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 y_min_clamp = 0;            /* ceiling: top to center */
                 y_max_clamp = half_h - 1;
             }
+            if (y_min_clamp < r->top_clip) y_min_clamp = r->top_clip;
+            if (y_max_clamp > r->bot_clip) y_max_clamp = r->bot_clip;
 
             /* Full screen: use full extension; portal view: use 1px only to avoid drawing outside. */
             int full_screen_zone = (r->left_clip == 0 && r->right_clip == g_renderer.width);
@@ -2283,6 +2305,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             /* Fill between edges for each row (floor and ceiling/roof). Clamp to zone clip. */
             for (int row = poly_top; row <= poly_bot; row++) {
                 if (row < 0 || row >= h) continue;
+                if (row < r->top_clip || row > r->bot_clip) continue;  /* multi-floor: stay in zone band */
                 int16_t le = left_edge[row];
                 int16_t re = right_edge_tab[row];
                 if (le >= g_renderer.width || re < 0) continue;
@@ -2490,7 +2513,10 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
     }
 
     /* Draw this zone's sprites after all floor and walls so they appear in front. */
-    draw_zone_objects(state, zone_id, zone_roof, zone_floor);
+    {
+        int is_multi_floor = (rd32(level->zone_graph_adds + zone_id * 8 + 4) != 0);
+        draw_zone_objects(state, zone_id, zone_roof, zone_floor, is_multi_floor ? use_upper : -1);
+    }
 }
 
 /* -----------------------------------------------------------------------
@@ -2671,16 +2697,25 @@ void renderer_draw_display(GameState *state)
                 if (lower_top < 0) lower_top = 0;
                 int upper_bot = split_y - split_margin - 1;
                 if (upper_bot < 0) upper_bot = -1;
-                r->top_clip = (int16_t)lower_top;
-                r->bot_clip = (int16_t)(g_renderer.height - 1);
-                r->wall_top_clip = 0;   /* lower room: walls can extend to top when very close to wall */
-                r->wall_bot_clip = -1;
-                renderer_draw_zone(state, zone_id, 0);  /* lower room */
+                /* Painter's order: draw upper room (back) first, then lower room (front) so floor/ceiling
+                 * and walls at the split are correctly ordered – lower room overwrites upper near the boundary. */
                 r->top_clip = 0;
                 r->bot_clip = (int16_t)(upper_bot >= 0 ? upper_bot : split_y - 1);
                 r->wall_top_clip = -1;
                 r->wall_bot_clip = (int16_t)split_y;  /* upper room: walls extend down to meet floor at split */
-                renderer_draw_zone(state, zone_id, 1);  /* upper room */
+                renderer_draw_zone(state, zone_id, 1);  /* upper room first (back) */
+                /* Reset column clip so lower room is not affected by upper room's walls. */
+                {
+                    int w = g_renderer.width;
+                    memset(r->clip.top, 0, (size_t)w * sizeof(int16_t));
+                    int16_t bot_val = (int16_t)(g_renderer.height - 1);
+                    for (int c = 0; c < w; c++) r->clip.bot[c] = bot_val;
+                }
+                r->top_clip = (int16_t)lower_top;
+                r->bot_clip = (int16_t)(g_renderer.height - 1);
+                r->wall_top_clip = 0;   /* lower room: walls can extend to top when very close to wall */
+                r->wall_bot_clip = -1;
+                renderer_draw_zone(state, zone_id, 0);  /* lower room second (front) */
                 continue;
             }
         }
