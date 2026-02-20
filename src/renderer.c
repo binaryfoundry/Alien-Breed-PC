@@ -262,6 +262,22 @@ void renderer_shutdown(void)
     printf("[RENDERER] Shutdown\n");
 }
 
+/* Row templates for fast RGB clear (avoid per-pixel loops). Max width from renderer_resize. */
+#define CLEAR_ROW_MAX 2048
+static uint32_t s_clear_sky_row[CLEAR_ROW_MAX];
+static uint32_t s_clear_black_row[CLEAR_ROW_MAX];
+static int s_clear_rows_inited = 0;
+
+static void init_clear_rows(void)
+{
+    if (s_clear_rows_inited) return;
+    for (int i = 0; i < CLEAR_ROW_MAX; i++) {
+        s_clear_sky_row[i] = 0xFFEEEEEEu;
+        s_clear_black_row[i] = 0xFF000000u;
+    }
+    s_clear_rows_inited = 1;
+}
+
 void renderer_clear(uint8_t color)
 {
     int w = g_renderer.width, h = g_renderer.height;
@@ -269,14 +285,22 @@ void renderer_clear(uint8_t color)
         memset(g_renderer.buffer, color, (size_t)w * h);
     }
     if (g_renderer.rgb_buffer) {
+        init_clear_rows();
         uint32_t *p = g_renderer.rgb_buffer;
         int center = h / 2;
-        const uint32_t sky = 0xFFEEEEEEu;
-        for (int y = 0; y < center; y++) {
-            for (int x = 0; x < w; x++) p[y * w + x] = sky;
-        }
-        for (int y = center; y < h; y++) {
-            for (int x = 0; x < w; x++) p[y * w + x] = 0xFF000000u;
+        size_t row_bytes = (size_t)w * sizeof(uint32_t);
+        if (w <= CLEAR_ROW_MAX) {
+            for (int y = 0; y < center; y++)
+                memcpy(p + (size_t)y * w, s_clear_sky_row, row_bytes);
+            for (int y = center; y < h; y++)
+                memcpy(p + (size_t)y * w, s_clear_black_row, row_bytes);
+        } else {
+            for (int y = 0; y < center; y++) {
+                for (int x = 0; x < w; x++) p[y * w + x] = 0xFFEEEEEEu;
+            }
+            for (int y = center; y < h; y++) {
+                for (int x = 0; x < w; x++) p[y * w + x] = 0xFF000000u;
+            }
         }
     }
 }
@@ -2733,12 +2757,13 @@ void renderer_draw_display(GameState *state)
                                  ws->floor_height, ws->texture, ws->brightness, 1);
     }
 
-    /* Debug: count visible non-zero pixels + histogram */
+#if 0
+    /* Debug: count visible non-zero pixels + histogram (expensive full-frame scan) */
     {
         static int dbg_frame = 0;
         if (dbg_frame < 3) {
             int nonzero = 0;
-            int histo[16] = {0}; /* buckets for value ranges 0-15, 16-31, etc */
+            int histo[16] = {0};
             for (int y = 0; y < g_renderer.height; y++) {
                 for (int x = 0; x < g_renderer.width; x++) {
                     uint8_t v = r->buffer[y * g_renderer.width + x];
@@ -2756,6 +2781,7 @@ void renderer_draw_display(GameState *state)
         }
         dbg_frame++;
     }
+#endif
 
     /* 6. Draw gun overlay */
     renderer_draw_gun(state);

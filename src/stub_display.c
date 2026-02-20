@@ -158,27 +158,33 @@ void display_draw_display(GameState *state)
     if (SDL_LockTexture(g_texture, NULL, (void**)&pixels, &pitch) < 0) return;
 
     int w = renderer_get_width(), h = renderer_get_height();
-    for (int y = 0; y < h; y++) {
-        const uint32_t *src_row = src + y * w;
-        uint32_t *dst_row = (uint32_t*)((uint8_t*)pixels + y * pitch);
-        memcpy(dst_row, src_row, (size_t)w * sizeof(uint32_t));
+    const size_t row_bytes = (size_t)w * sizeof(uint32_t);
+    if (pitch == (int)(w * sizeof(uint32_t))) {
+        memcpy(pixels, src, row_bytes * (size_t)h);
+    } else {
+        for (int y = 0; y < h; y++) {
+            uint32_t *dst_row = (uint32_t*)((uint8_t*)pixels + (size_t)y * pitch);
+            memcpy(dst_row, src + (size_t)y * w, row_bytes);
+        }
     }
 
     SDL_UnlockTexture(g_texture);
 
-    /* 3. Present to screen */
-    SDL_RenderClear(g_sdl_ren);
+    /* 3. Present to screen (no RenderClear – full texture overwrites target) */
     SDL_RenderCopy(g_sdl_ren, g_texture, NULL, NULL);
     SDL_RenderPresent(g_sdl_ren);
 
-    /* Debug: show player position in window title */
+    /* Debug: show player position in window title (throttled) */
     {
-        PlayerState *dbg_plr = &state->plr1;
-        char title[128];
-        snprintf(title, sizeof(title), "AB3D - Pos(%d,%d) Zone=%d Ang=%d",
-                 (int)(dbg_plr->xoff >> 16), (int)(dbg_plr->zoff >> 16),
-                 dbg_plr->zone, dbg_plr->angpos);
-        SDL_SetWindowTitle(g_window, title);
+        static int title_frame = 0;
+        if ((++title_frame % 30) == 0) {
+            PlayerState *dbg_plr = &state->plr1;
+            char title[128];
+            snprintf(title, sizeof(title), "AB3D - Pos(%d,%d) Zone=%d Ang=%d",
+                     (int)(dbg_plr->xoff >> 16), (int)(dbg_plr->zoff >> 16),
+                     dbg_plr->zone, dbg_plr->angpos);
+            SDL_SetWindowTitle(g_window, title);
+        }
     }
 }
 
