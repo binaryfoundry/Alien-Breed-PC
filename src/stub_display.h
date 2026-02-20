@@ -24,6 +24,7 @@
 /* Lifecycle */
 void display_init(void);
 void display_shutdown(void);
+int display_is_fullscreen(void);  /* non-zero if window is fullscreen */
 
 /* Screen management */
 void display_alloc_text_screen(void);

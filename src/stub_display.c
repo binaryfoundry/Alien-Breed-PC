@@ -73,6 +73,12 @@ void display_init(void)
            WINDOW_W, WINDOW_H, RENDER_WIDTH, RENDER_HEIGHT);
 }
 
+int display_is_fullscreen(void)
+{
+    if (!g_window) return 0;
+    return (SDL_GetWindowFlags(g_window) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) != 0;
+}
+
 void display_shutdown(void)
 {
     renderer_shutdown();

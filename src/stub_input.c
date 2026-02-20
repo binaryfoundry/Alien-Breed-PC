@@ -7,6 +7,7 @@
  */
 
 #include "stub_input.h"
+#include "stub_display.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -90,7 +91,10 @@ void input_init(void)
 {
     printf("[INPUT] SDL2 input init\n");
     g_quit_requested = false;
-    SDL_SetRelativeMouseMode(SDL_TRUE);
+    /* In fullscreen, capture mouse from the start; in windowed, user double-clicks to capture. */
+    if (display_is_fullscreen()) {
+        SDL_SetRelativeMouseMode(SDL_TRUE);
+    }
 }
 
 void input_shutdown(void)
@@ -120,7 +124,11 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
         case SDL_KEYDOWN:
         {
             uint8_t amiga = sdl_to_amiga(ev.key.keysym.scancode);
-            if (amiga != 0xFF && key_map) {
+            /* In windowed mode, Escape releases mouse capture and is not sent to the game */
+            if (ev.key.keysym.scancode == SDL_SCANCODE_ESCAPE && SDL_GetRelativeMouseMode()) {
+                SDL_SetRelativeMouseMode(SDL_FALSE);
+                /* Consume key so game doesn't quit */
+            } else if (amiga != 0xFF && key_map) {
                 key_map[amiga] = 1;
                 if (last_pressed) *last_pressed = amiga;
             }
@@ -137,30 +145,36 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
         }
 
         case SDL_MOUSEMOTION:
-            g_mouse.dx += (int16_t)ev.motion.xrel;
-            g_mouse.dy += (int16_t)ev.motion.yrel;
+            /* Only use mouse motion for look when captured */
+            if (SDL_GetRelativeMouseMode()) {
+                g_mouse.dx += (int16_t)ev.motion.xrel;
+                g_mouse.dy += (int16_t)ev.motion.yrel;
+            }
             break;
 
         case SDL_MOUSEBUTTONDOWN:
+            /* Double-click in window enables relative mouse mode (capture) */
+            if (ev.button.clicks == 2) {
+                SDL_SetRelativeMouseMode(SDL_TRUE);
+            }
             if (ev.button.button == SDL_BUTTON_LEFT) {
                 g_mouse.left_button = true;
-                /* Also trigger fire via key_map */
-                if (key_map) key_map[AMIGA_KEY_RALT] = 1;
+                if (SDL_GetRelativeMouseMode() && key_map) key_map[AMIGA_KEY_RALT] = 1;
             }
             if (ev.button.button == SDL_BUTTON_RIGHT) {
                 g_mouse.right_button = true;
-                if (key_map) key_map[AMIGA_KEY_SPACE] = 1;
+                if (SDL_GetRelativeMouseMode() && key_map) key_map[AMIGA_KEY_SPACE] = 1;
             }
             break;
 
         case SDL_MOUSEBUTTONUP:
             if (ev.button.button == SDL_BUTTON_LEFT) {
                 g_mouse.left_button = false;
-                if (key_map) key_map[AMIGA_KEY_RALT] = 0;
+                if (SDL_GetRelativeMouseMode() && key_map) key_map[AMIGA_KEY_RALT] = 0;
             }
             if (ev.button.button == SDL_BUTTON_RIGHT) {
                 g_mouse.right_button = false;
-                if (key_map) key_map[AMIGA_KEY_SPACE] = 0;
+                if (SDL_GetRelativeMouseMode() && key_map) key_map[AMIGA_KEY_SPACE] = 0;
             }
             break;
         }
