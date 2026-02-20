@@ -123,7 +123,10 @@ static inline void wr32(uint8_t *p, int32_t v) {
 #define ZD_TEL_ZONE      38    /* word: teleport destination zone (-1 = none) */
 #define ZD_TEL_X         40    /* word */
 #define ZD_TEL_Z         42    /* word */
-#define ZD_SIZE          52    /* total zone data size */
+/* List of graph rooms (ToListOfGraph) at 48: 8 bytes per entry (zone_id, clip_off, workspace long), -1 terminator */
+#define ZD_LIST_OF_GRAPH 48
+#define ZD_LIST_ENTRY_SIZE 8
+#define ZD_SIZE          (ZD_LIST_OF_GRAPH + (NUM_ZONES + 1) * ZD_LIST_ENTRY_SIZE)  /* room for list + terminator */
 
 /* Floor line data */
 #define FL_X              0    /* word */
@@ -241,6 +244,18 @@ static void build_test_level_data(LevelState *level)
         wr16(zd + ZD_TEL_ZONE, -1);         /* no teleport */
         wr16(zd + ZD_TEL_X, 0);
         wr16(zd + ZD_TEL_Z, 0);
+        /* List of graph rooms at offset 48 (Amiga ToListOfGraph). Stub: same list for all zones.
+         * Real levels: list comes from level data at zone_data+48. */
+        {
+            uint8_t *lgr = zd + ZD_LIST_OF_GRAPH;
+            for (int g = 0; g < NUM_ZONES; g++) {
+                wr16(lgr + 0, (int16_t)g);
+                wr16(lgr + 2, -1);
+                wr32(lgr + 4, 0);
+                lgr += ZD_LIST_ENTRY_SIZE;
+            }
+            wr16(lgr + 0, -1);
+        }
     }
 
     /* ---- Points ---- */

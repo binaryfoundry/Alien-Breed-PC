@@ -23,12 +23,25 @@ static int32_t read_be32(const uint8_t *p)
     return (int32_t)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
 }
 
-/* Floor line offsets. Normal for side test: perpendicular to (xlen,zlen) = (-zlen, xlen). */
+/* 68020 btst/bset on data registers uses bit index modulo 32. */
+static inline uint32_t reg_bit32(unsigned int bit_index)
+{
+    return (uint32_t)1u << (bit_index & 31u);
+}
+
+static inline int reg_btst32(uint32_t value, unsigned int bit_index)
+{
+    return (value & reg_bit32(bit_index)) != 0u;
+}
+
+/* Floor line offsets. Amiga side test uses words at 4 and 6 directly: result = dx*word6 - dz*word4. */
 #define FLINE_SIZE    16
 #define FLINE_X       0
 #define FLINE_Z       2
-#define FLINE_XLEN    4
-#define FLINE_ZLEN    6
+#define FLINE_WORD4   4   /* Amiga muls 4(a1,d0.w),d3; our layout: xlen */
+#define FLINE_WORD6   6   /* Amiga muls 6(a1,d0.w),d2; our layout: zlen */
+#define FLINE_XLEN    FLINE_WORD4
+#define FLINE_ZLEN    FLINE_WORD6
 #define FLINE_CONNECT 8
 
 /* Zone data offsets */
@@ -76,15 +89,18 @@ static void move_before(int node, int before,
  * 2. Build linked list in that order.
  * 3. RunThroughList + InsertList: for each zone, look at exit lines; if
  *    connected zone is in list and further away (viewer in front of line),
- *    but currently drawn before current, move current to after connected.
+ *    but currently drawn before current, move current in front of connected.
  * 4. Output final list order.
  * ----------------------------------------------------------------------- */
 void order_zones(ZoneOrder *out, const LevelState *level,
                  int32_t viewer_x, int32_t viewer_z,
+                 int32_t move_dx, int32_t move_dz,
                  int viewer_angle,
                  const uint8_t *list_of_graph_rooms)
 {
     (void)viewer_angle;
+    (void)move_dx;
+    (void)move_dz;
     out->count = 0;
 
     if (!level->data || !level->zone_adds || !level->floor_lines) {
@@ -93,6 +109,10 @@ void order_zones(ZoneOrder *out, const LevelState *level,
 
     uint8_t to_draw_tab[256];
     memset(to_draw_tab, 0, sizeof(to_draw_tab));
+
+    /* WorkSpace[zone_id] = long at offset 4 in list entry (Amiga settodraw). */
+    uint32_t workspace[256];
+    memset(workspace, 0, sizeof(workspace));
 
     int16_t zone_list[256];
     int num_zones = 0;
@@ -104,6 +124,7 @@ void order_zones(ZoneOrder *out, const LevelState *level,
             if (zid < 0) break;
             if (zid < 256) {
                 to_draw_tab[zid] = 1;
+                workspace[zid] = read_be32(lgr + 4);
                 zone_list[num_zones++] = zid;
             }
             lgr += 8;
@@ -114,11 +135,24 @@ void order_zones(ZoneOrder *out, const LevelState *level,
         if (n > 256) n = 256;
         for (int z = 0; z < n; z++) {
             to_draw_tab[z] = 1;
+            /* workspace stays 0 when no list; we treat 0 as "all bits set" for indrawlist */
             zone_list[num_zones++] = (int16_t)z;
             if (num_zones >= MAX_ORDER_ENTRIES) break;
         }
     }
     if (num_zones == 0) return;
+
+#if ORDER_ZONES_LOG
+    printf("[order_zones] list_of_graph_rooms=%p viewer_x=%d viewer_z=%d num_zones=%d\n",
+           (void*)list_of_graph_rooms, (int)viewer_x, (int)viewer_z, num_zones);
+    printf("[order_zones] initial_traversal:");
+    for (int i = 0; i < num_zones; i++) printf(" %d", (int)zone_list[i]);
+    printf("\n");
+    for (int i = 0; i < num_zones && i < 8; i++) {
+        printf("[order_zones]   zone %d workspace=0x%08X\n", (int)zone_list[i], (unsigned)workspace[zone_list[i]]);
+    }
+    if (num_zones > 8) printf("[order_zones]   ... (%d more)\n", num_zones - 8);
+#endif
 
     /* Linked list by node index: next[i], prev[i], zone_id[i]. Head = 0, tail = num_zones-1. */
     int next[256], prev[256];
@@ -132,7 +166,7 @@ void order_zones(ZoneOrder *out, const LevelState *level,
     next[num_zones - 1] = -1;
     int head = 0, tail = num_zones - 1;
 
-    /* Amiga RunThroughList: multiple passes (100), each pass walk list from tail to head. */
+    /* RunThroughList: multiple passes, each pass walk list from tail to head. */
     enum { k_order_passes = 100 };
     for (int pass = 0; pass < k_order_passes; pass++) {
         int node = tail;
@@ -144,39 +178,57 @@ void order_zones(ZoneOrder *out, const LevelState *level,
                 int16_t exit_rel = read_be16(zone_data + ZONE_EXIT_LIST);
                 if (exit_rel != 0) {
                     const uint8_t *exit_list = zone_data + exit_rel;
+                    uint32_t d6 = workspace[cur_zone];
                     for (int ei = 0; ei < 64; ei++) {
                         int16_t line_idx = read_be16(exit_list + ei * 2);
                         if (line_idx < 0) break;
                         int16_t connect = read_be16(level->floor_lines + (int)line_idx * FLINE_SIZE + FLINE_CONNECT);
                         if (connect < 0 || connect >= 256 || !to_draw_tab[connect]) continue;
 
-                        /* Side test: which side of the exit line is the viewer?
-                         * Normal = perpendicular to (xlen,zlen), i.e. (-zlen, xlen). Then side = dx*nz - dz*nx. */
-                        const uint8_t *fline = level->floor_lines + (int)line_idx * FLINE_SIZE;
-                        int32_t lx = (int32_t)read_be16(fline + FLINE_X);
-                        int32_t lz = (int32_t)read_be16(fline + FLINE_Z);
-                        int32_t lxlen = (int32_t)read_be16(fline + FLINE_XLEN);
-                        int32_t lzlen = (int32_t)read_be16(fline + FLINE_ZLEN);
-                        int32_t dx = viewer_x - lx, dz = viewer_z - lz;
-                        int32_t nx = -lzlen, nz = lxlen;  /* perpendicular to line */
-                        int32_t side = dx * nz - dz * nx;
-                        if (side <= 0) continue; /* viewer behind line: current zone further, no reorder */
+                        /* Amiga InsertList bit flow:
+                         *   b   = d7 (indrawlist gate)
+                         *   b+1 = evaluated marker
+                         *   b+2 = cached "mustdo" marker
+                         * d7 advances by 3 per exit; btst/bset are register ops (bit index mod 32).
+                         * WorkSpace=0 fallback: when d6 is 0, still run side test and reorder. */
+                        unsigned int b = (unsigned)(ei * 3);
+                        if (d6 != 0 && !reg_btst32(d6, b)) continue;
 
-                        /* Connected zone is further. If it's currently drawn before current, move current in front of it. */
+                        /* Amiga InsertList: side = dx*word6 - dz*word4; ble PutDone => reorder when side > 0 */
+                        if (!reg_btst32(d6, b + 1u)) {
+                            /* First time: mark evaluated, run side test. */
+                            d6 |= reg_bit32(b + 1u);
+                            const uint8_t *fline = level->floor_lines + (int)line_idx * FLINE_SIZE;
+                            int32_t lx = (int32_t)read_be16(fline + FLINE_X);
+                            int32_t lz = (int32_t)read_be16(fline + FLINE_Z);
+                            int32_t word4 = (int32_t)read_be16(fline + FLINE_WORD4);
+                            int32_t word6 = (int32_t)read_be16(fline + FLINE_WORD6);
+                            int32_t dx = viewer_x - lx, dz = viewer_z - lz;  /* Amiga: move.w xoff/zoff */
+                            int32_t side = dx * word6 - dz * word4;
+                            if (side <= 0) continue;  /* Amiga: ble PutDone */
+                            d6 |= reg_bit32(b + 2u);  /* mustdo */
+                        } else {
+                            if (!reg_btst32(d6, b + 2u)) continue;  /* wealreadyknow: only if mustdo set */
+                        }
+
+                        /* mustdo: connected is further; if it's earlier in list, move current in front of it (Amiga iscloser). */
                         int conn_node = -1;
                         for (int k = 0; k < num_zones; k++) {
                             if (node_zone[k] == connect) { conn_node = k; break; }
                         }
                         if (conn_node < 0) continue;
-                        if (!node_before(head, conn_node, node, next)) continue; /* connected not earlier */
-
-                        int old_prev = prev[node], old_next = next[node];
-                        if (node == head) head = (old_next >= 0) ? old_next : node;
-                        if (node == tail) tail = (old_prev >= 0) ? old_prev : node;
+                        if (!node_before(head, conn_node, node, next)) continue;  /* connected not earlier, nothing to do */
+#if ORDER_ZONES_LOG
+                        printf("[order_zones] reorder: move zone %d before zone %d (cur_node=%d conn_node=%d)\n",
+                               (int)cur_zone, (int)connect, node, conn_node);
+#endif
+                        if (node == head) head = (next[node] >= 0) ? next[node] : node;
+                        if (node == tail) tail = (prev[node] >= 0) ? prev[node] : node;
                         move_before(node, conn_node, next, prev);
                         if (conn_node == head) head = node;
-                        break; /* one reorder per node per pass */
+                        /* Amiga: bra InsertLoop - no return, so multiple reorders per node per pass */
                     }
+                    workspace[cur_zone] = d6;  /* Amiga allinlist: move.l d6,(a6) */
                 }
             }
             node = prev[node];
@@ -191,6 +243,12 @@ void order_zones(ZoneOrder *out, const LevelState *level,
         n = next[n];
     }
     out->count = out_i;
+
+#if ORDER_ZONES_LOG
+    printf("[order_zones] final_order:");
+    for (int i = 0; i < out_i; i++) printf(" %d", (int)out->zones[i]);
+    printf("\n");
+#endif
 }
 
 /* -----------------------------------------------------------------------

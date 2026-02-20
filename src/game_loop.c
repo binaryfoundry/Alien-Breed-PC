@@ -293,9 +293,21 @@ void game_loop(GameState *state)
                     lgr_ptr = state->level.list_of_graph_rooms;
                 }
 
+                /* Amiga uses high 16 bits of xoff/zoff for OrderZones side test (move.w xoff,d2 = first word of long). */
+                int32_t view_x = (int32_t)(int16_t)(view_plr->xoff >> 16);
+                int32_t view_z = (int32_t)(int16_t)(view_plr->zoff >> 16);
+#if ORDER_ZONES_LOG
+                printf("[game_loop] zone_order: list_src=%s view_zone=%d xoff=0x%08X zoff=0x%08X view_x=%d view_z=%d\n",
+                       lgr_ptr == state->level.list_of_graph_rooms ? "level" : "viewer",
+                       (int)view_plr->zone,
+                       (unsigned)view_plr->xoff, (unsigned)view_plr->zoff,
+                       (int)view_x, (int)view_z);
+#endif
+                int32_t move_dx = (state->mode == MODE_SLAVE) ? (int32_t)state->xdiff2 : (int32_t)state->xdiff1;
+                int32_t move_dz = (state->mode == MODE_SLAVE) ? (int32_t)state->zdiff2 : (int32_t)state->zdiff1;
                 ZoneOrder zo;
                 order_zones(&zo, &state->level,
-                            view_plr->xoff >> 16, view_plr->zoff >> 16,
+                            view_x, view_z, move_dx, move_dz,
                             (int)(view_plr->angpos & 0x3FFF),
                             lgr_ptr);
                 memcpy(state->zone_order_zones, zo.zones,

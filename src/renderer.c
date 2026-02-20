@@ -2622,7 +2622,7 @@ void renderer_draw_display(GameState *state)
      * For each zone: apply LEVELCLIPS, then renderer_draw_zone (stream parse + draw).
      */
     s_num_deferred_water = 0;
-    for (int i = 0; i < state->zone_order_count; i++) {
+    for (int i = state->zone_order_count - 1; i >= 0; i--) {
         int16_t zone_id = state->zone_order_zones[i];
         if (zone_id < 0) continue;
 

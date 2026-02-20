@@ -17,6 +17,11 @@
 
 #include "game_state.h"
 
+/* Set to 1 to log zone ordering traversal to stdout (paste for debugging). */
+#ifndef ORDER_ZONES_LOG
+#define ORDER_ZONES_LOG 0
+#endif
+
 /* Maximum rooms that can be visible at once */
 #define MAX_VISIBLE_ROOMS   256
 #define MAX_ORDER_ENTRIES   256
@@ -36,6 +41,7 @@ typedef struct {
  */
 void order_zones(ZoneOrder *out, const LevelState *level,
                  int32_t viewer_x, int32_t viewer_z,
+                 int32_t move_dx, int32_t move_dz,
                  int viewer_angle,
                  const uint8_t *list_of_graph_rooms);
 
