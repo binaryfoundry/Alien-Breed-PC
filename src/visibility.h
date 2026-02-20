@@ -36,10 +36,12 @@ typedef struct {
  * current room) and orders them by view-space depth (farthest first) for
  * correct painter's algorithm. viewer_angle is 14-bit (same as angpos & 0x3FFF).
  */
+/* use_list_order: 1 = list is from current zone (Amiga), use list order as draw order; 0 = depth-sort (stub/fallback). */
 void order_zones(ZoneOrder *out, const LevelState *level,
                  int32_t viewer_x, int32_t viewer_z,
                  int viewer_angle,
-                 const uint8_t *list_of_graph_rooms);
+                 const uint8_t *list_of_graph_rooms,
+                 int use_list_order);
 
 /*
  * CanItBeSeen - Line-of-sight check between two points.

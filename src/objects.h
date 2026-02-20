@@ -54,6 +54,8 @@ void object_handle_bullet(GameObject *obj, GameState *state);
 void door_routine(GameState *state);
 void lift_routine(GameState *state);
 void switch_routine(GameState *state);
+/* For zones with doors: return base ZD_ROOF (level value) for split/ordering, not door-modified. */
+int32_t door_get_base_zone_roof(GameState *state, int16_t zone_id);
 
 /* Water animations */
 void do_water_anims(GameState *state);

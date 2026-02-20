@@ -284,21 +284,22 @@ void game_loop(GameState *state)
                 PlayerState *view_plr = (state->mode == MODE_SLAVE) ?
                                         &state->plr2 : &state->plr1;
 
-                /* Prefer level->list_of_graph_rooms (set by graphics loader / stub)
-                 * over plr->list_of_graph_rooms (zone_data + 48, only valid for
-                 * real Amiga levels with embedded ListOfGraphRooms in zone data). */
+                /* Prefer level->list_of_graph_rooms (stub) over plr->list_of_graph_rooms (current zone, Amiga).
+                 * Only use list order as draw order when list is from current zone (Amiga behaviour). */
                 const uint8_t *lgr_ptr = NULL;
+                int use_list_order = 0;
                 if (state->level.list_of_graph_rooms) {
                     lgr_ptr = state->level.list_of_graph_rooms;
                 } else if (view_plr->list_of_graph_rooms > 0 && state->level.data) {
                     lgr_ptr = state->level.data + view_plr->list_of_graph_rooms;
+                    use_list_order = 1;  /* Amiga: list at zone+48 is in draw order */
                 }
 
                 ZoneOrder zo;
                 order_zones(&zo, &state->level,
                             view_plr->xoff >> 16, view_plr->zoff >> 16,
                             (int)(view_plr->angpos & 0x3FFF),
-                            lgr_ptr);
+                            lgr_ptr, use_list_order);
                 memcpy(state->zone_order_zones, zo.zones,
                        (size_t)(zo.count < 256 ? zo.count : 256) * sizeof(int16_t));
                 state->zone_order_count = zo.count;
