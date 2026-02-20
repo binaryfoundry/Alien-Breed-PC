@@ -1171,6 +1171,7 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
     if (!buf || !rgb || !depth_buf) return;
     if (z <= 0) return;
     if (!wad || !ptr_data) return;
+    int rw = g_renderer.width, rh = g_renderer.height;
     if (src_cols < 1) src_cols = 32;
     if (src_rows < 1) src_rows = 32;
 
@@ -1242,9 +1243,9 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
 
         for (int dy = 0; dy < height; dy++) {
             int screen_row = sy + dy;
-            if (screen_row < 0 || screen_row >= g_renderer.height) continue;
+            if (screen_row < 0 || screen_row >= rh) continue;
 
-            if (sprite_z_bias >= depth_buf[screen_row * g_renderer.width + screen_col])
+            if (sprite_z_bias >= depth_buf[screen_row * rw + screen_col])
                 continue;
 
             /* Map screen row to source row 0..eff_rows-1 */
@@ -1267,9 +1268,9 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
             }
             if (texel == 0) continue;  /* transparent */
 
-            uint8_t *row8 = buf + screen_row * g_renderer.width;
-            uint32_t *row32 = rgb + screen_row * g_renderer.width;
-            int16_t *depth_row = depth_buf + screen_row * g_renderer.width;
+            uint8_t *row8 = buf + (size_t)screen_row * rw;
+            uint32_t *row32 = rgb + (size_t)screen_row * rw;
+            int16_t *depth_row = depth_buf + (size_t)screen_row * rw;
 
             depth_row[screen_col] = sprite_z_bias;
             row8[screen_col] = texel;
