@@ -122,3 +122,13 @@ if(MSVC)
 else()
     target_compile_options(ab3d1 PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# -----------------------------------------------------------------------
+# Standalone level parser (Amiga format only; outputs door/switch/lift logs)
+# -----------------------------------------------------------------------
+add_executable(parse_level tools/parse_level.c src/sb_decompress.c)
+target_include_directories(parse_level PRIVATE ${CMAKE_SOURCE_DIR}/src)
+set_target_properties(parse_level PROPERTIES C_STANDARD 11)
+if(MSVC)
+    target_compile_definitions(parse_level PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
