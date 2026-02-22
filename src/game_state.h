@@ -164,6 +164,8 @@ typedef struct {
     int32_t *zone_base_roof;
     /* Original ZD_FLOOR per zone (saved at load so lift can write base_floor + delta). */
     int32_t *zone_base_floor;
+    /* Original ZD_WATER per zone (saved at load so do_water_anims can write base_water + delta). */
+    int32_t *zone_base_water;
 } LevelState;
 
 /* -----------------------------------------------------------------------

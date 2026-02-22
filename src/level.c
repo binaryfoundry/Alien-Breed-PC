@@ -288,9 +288,23 @@ int level_parse(LevelState *level)
         } else {
             level->zone_base_floor = NULL;
         }
+        level->zone_base_water = (int32_t *)malloc((size_t)level->num_zones * sizeof(int32_t));
+        if (level->zone_base_water) {
+            size_t data_len = level->data_byte_count;
+            for (int z = 0; z < level->num_zones; z++) {
+                int32_t zoff = read_long(level->zone_adds + (size_t)z * 4u);
+                if (zoff >= 0 && (data_len == 0 || (size_t)zoff + 22u <= data_len))
+                    level->zone_base_water[z] = read_long(ld + zoff + ZONE_OFF_WATER);
+                else
+                    level->zone_base_water[z] = 0;
+            }
+        } else {
+            level->zone_base_water = NULL;
+        }
     } else {
         level->zone_base_roof = NULL;
         level->zone_base_floor = NULL;
+        level->zone_base_water = NULL;
     }
 
     /* Byte 20: Number of object points (word) */
@@ -584,6 +598,15 @@ int level_set_zone_floor(LevelState *level, int16_t zone_id, int32_t floor_y)
     uint8_t *zd = level_get_zone_data_ptr(level, zone_id);
     if (!zd) return -1;
     write_long_be(zd + ZONE_OFF_FLOOR, floor_y);
+
+    return 0;
+}
+
+int level_set_zone_water(LevelState *level, int16_t zone_id, int32_t water_y)
+{
+    uint8_t *zd = level_get_zone_data_ptr(level, zone_id);
+    if (!zd) return -1;
+    write_long_be(zd + ZONE_OFF_WATER, water_y);
 
     return 0;
 }

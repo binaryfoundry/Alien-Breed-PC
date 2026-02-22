@@ -67,6 +67,11 @@ int level_set_zone_roof(LevelState *level, int16_t zone_id, int32_t roof_y);
 int level_set_zone_floor(LevelState *level, int16_t zone_id, int32_t floor_y);
 
 /*
+ * Set the zone water Y (big-endian long at ZONE_OFF_WATER). Returns 0 on success, -1 if invalid.
+ */
+int level_set_zone_water(LevelState *level, int16_t zone_id, int32_t water_y);
+
+/*
  * Log each zone's offset, id, floor, roof, brightness to stdout (for periodic debug output).
  */
 void level_log_zones(const LevelState *level);

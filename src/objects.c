@@ -1532,16 +1532,13 @@ void do_water_anims(GameState *state)
         wl[16] = (uint8_t)(dir >> 8);
         wl[17] = (uint8_t)(dir);
 
-        /* Update zone floor to water level */
-        if (state->level.zone_adds && state->level.data) {
-            const uint8_t *za = state->level.zone_adds;
-            int32_t zoff = (int32_t)((za[zone_id*4]<<24)|(za[zone_id*4+1]<<16)|
-                           (za[zone_id*4+2]<<8)|za[zone_id*4+3]);
-            uint8_t *zd = state->level.data + zoff;
-            zd[2] = (uint8_t)(cur_level >> 24);
-            zd[3] = (uint8_t)(cur_level >> 16);
-            zd[4] = (uint8_t)(cur_level >> 8);
-            zd[5] = (uint8_t)(cur_level);
+        /* Update zone water height: base_water + (cur_level - min_level) so room floor stays valid. */
+        if (zone_id >= 0 && zone_id < state->level.num_zones) {
+            int32_t base_water = 0;
+            if (state->level.zone_base_water)
+                base_water = state->level.zone_base_water[zone_id];
+            int32_t zone_water_y = base_water + (cur_level - min_level);
+            level_set_zone_water(&state->level, zone_id, zone_water_y);
         }
 
         wl += 18;
