@@ -71,14 +71,14 @@ int level_parse(LevelState *level)
      * Byte 12-15: zone_graph_offset (long)  offset to zone graph adds
      * Byte 16+:   zone_adds     (num_zones * 4 bytes)  each long = offset into LEVELDATA to that zone's zone data
      *
-     * Door table (at lg + door_offset). Entries 16 bytes each, terminated by zone_id < 0.
+     * Door table (at lg + door_offset). Entries 22 bytes each (same idea as lift: pos/top/bot), terminated by zone_id < 0.
      *   0-1:  zone_id (int16)   zone this door affects (roof height written here)
      *   2-3:  door_type (int16) 0=space/switch, 1=cond 0x900, 2=0x400, 3=0x200, 4=always open, 5=never
-     *   4-7:  door_pos (int32)  current opening (0=open, door_max*256=closed)
+     *   4-7:  door_pos (int32)  current Y (*256)
      *   8-9:  door_vel (int16)  open/close speed
-     *  10-11: door_max (int16)  max opening height (logical units * 256 when closed)
-     *  12-13: timer (int16)     close delay
-     *  14-15: door_flags (uint16) for type 0: condition bit mask; 0 = any switch opens this door
+     *  10-13: door_top (int32) open position (*256), 14-17: door_bot (int32) closed position (*256)
+     *  18-19: timer (int16)     close delay
+     *  20-21: door_flags (uint16) for type 0: condition bit mask; 0 = any switch opens this door
      *
      * Switch table (at lg + switch_offset). Entries 14 bytes each, terminated by zone_id < 0.
      *   0-1:  zone_id (int16)   zone the switch is in
@@ -124,7 +124,8 @@ int level_parse(LevelState *level)
             }
             int16_t zone0 = read_word(door_src + 12);
             if (nd > 0 && nd <= 256 && zone0 >= 0 && zone0 < num_zones) {
-                uint8_t *buf = (uint8_t *)malloc((size_t)(nd + 1) * 16u);
+                /* Door entry 22 bytes (same idea as lift: pos/top/bot in world units *256) */
+                uint8_t *buf = (uint8_t *)malloc((size_t)(nd + 1) * 22u);
                 if (buf) {
                     const uint8_t *s = door_src;
                     int out_idx = 0;
@@ -133,24 +134,20 @@ int level_parse(LevelState *level)
                         int16_t zone = read_word(s + 12);
                         int16_t cond = read_word(s + 14);
                         if (zone >= 0 && zone < num_zones) {
-                            int16_t range = (int16_t)(top - bottom);
-                            if (range < 0) range = 0;
-                            int32_t pos = (int32_t)(curr - bottom) * 256;
-                            if (pos < 0) pos = 0;
-                            if (pos > (int32_t)range * 256) pos = (int32_t)range * 256;
-                            uint8_t *t = buf + out_idx * 16;
+                            uint8_t *t = buf + out_idx * 22;
                             write_word_be(t + 0, zone);
                             write_word_be(t + 2, (int16_t)0);
-                            write_long_be(t + 4, pos);
+                            write_long_be(t + 4, (int32_t)curr * 256);   /* pos: same scaling as lift */
                             write_word_be(t + 8, dir);
-                            write_word_be(t + 10, range);
-                            write_word_be(t + 12, (int16_t)0);
-                            write_word_be(t + 14, cond);
+                            write_long_be(t + 10, (int32_t)top * 256);    /* top = open position */
+                            write_long_be(t + 14, (int32_t)bottom * 256); /* bot = closed position */
+                            write_word_be(t + 18, (int16_t)0);
+                            write_word_be(t + 20, cond);
                             out_idx++;
                         }
                         s = skip_amiga_wall_list(s + 18);
                     }
-                    write_word_be(buf + out_idx * 16, (int16_t)-1);
+                    write_word_be(buf + out_idx * 22, (int16_t)-1);
                     level->door_data = buf;
                     level->door_data_owned = true;
                 } else {
@@ -260,53 +257,6 @@ int level_parse(LevelState *level)
         }
     }
 
-    /* Save original zone roof for each zone so door_routine can write base_roof + door_delta. */
-    if (level->num_zones > 0) {
-        level->zone_base_roof = (int32_t *)malloc((size_t)level->num_zones * sizeof(int32_t));
-        if (level->zone_base_roof) {
-            size_t data_len = level->data_byte_count;
-            for (int z = 0; z < level->num_zones; z++) {
-                int32_t zoff = read_long(level->zone_adds + (size_t)z * 4u);
-                if (zoff >= 0 && (data_len == 0 || (size_t)zoff + 10u <= data_len))
-                    level->zone_base_roof[z] = read_long(ld + zoff + ZONE_OFF_ROOF);
-                else
-                    level->zone_base_roof[z] = 0;
-            }
-        } else {
-            level->zone_base_roof = NULL;
-        }
-        level->zone_base_floor = (int32_t *)malloc((size_t)level->num_zones * sizeof(int32_t));
-        if (level->zone_base_floor) {
-            size_t data_len = level->data_byte_count;
-            for (int z = 0; z < level->num_zones; z++) {
-                int32_t zoff = read_long(level->zone_adds + (size_t)z * 4u);
-                if (zoff >= 0 && (data_len == 0 || (size_t)zoff + 10u <= data_len))
-                    level->zone_base_floor[z] = read_long(ld + zoff + ZONE_OFF_FLOOR);
-                else
-                    level->zone_base_floor[z] = 0;
-            }
-        } else {
-            level->zone_base_floor = NULL;
-        }
-        level->zone_base_water = (int32_t *)malloc((size_t)level->num_zones * sizeof(int32_t));
-        if (level->zone_base_water) {
-            size_t data_len = level->data_byte_count;
-            for (int z = 0; z < level->num_zones; z++) {
-                int32_t zoff = read_long(level->zone_adds + (size_t)z * 4u);
-                if (zoff >= 0 && (data_len == 0 || (size_t)zoff + 22u <= data_len))
-                    level->zone_base_water[z] = read_long(ld + zoff + ZONE_OFF_WATER);
-                else
-                    level->zone_base_water[z] = 0;
-            }
-        } else {
-            level->zone_base_water = NULL;
-        }
-    } else {
-        level->zone_base_roof = NULL;
-        level->zone_base_floor = NULL;
-        level->zone_base_water = NULL;
-    }
-
     /* Byte 20: Number of object points (word) */
     level->num_object_points = read_word(ld + 20);
 
@@ -362,11 +312,12 @@ int level_parse(LevelState *level)
             if (zone_id < 0) break;
             int16_t door_type = read_word(door + 2);
             int32_t door_pos = read_long(door + 4);
-            int16_t door_max = read_word(door + 10);
-            uint16_t door_flags = (uint16_t)read_word(door + 14);
-            printf("[LEVEL] door[%d] zone=%d type=%d pos=%ld max=%d flags=0x%04X (%u)\n",
-                   di, (int)zone_id, (int)door_type, (long)door_pos, (int)door_max, door_flags, door_flags);
-            door += 16;
+            int32_t door_top = read_long(door + 10);
+            int32_t door_bot = read_long(door + 14);
+            uint16_t door_flags = (uint16_t)read_word(door + 20);
+            printf("[LEVEL] door[%d] zone=%d type=%d pos=%ld top=%ld bot=%ld flags=0x%04X (%u)\n",
+                   di, (int)zone_id, (int)door_type, (long)door_pos, (long)door_top, (long)door_bot, door_flags, door_flags);
+            door += 22;
             di++;
         }
     }

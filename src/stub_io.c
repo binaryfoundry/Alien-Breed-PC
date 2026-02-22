@@ -381,22 +381,6 @@ static void build_test_level_data(LevelState *level)
     level->num_floor_lines = NUM_FLINES;
     level->point_brights = NULL; /* No per-point brightness for test level */
 
-    level->zone_base_roof = (int32_t *)malloc((size_t)NUM_ZONES * sizeof(int32_t));
-    if (level->zone_base_roof) {
-        for (int z = 0; z < NUM_ZONES; z++)
-            level->zone_base_roof[z] = ROOF_H;
-    }
-    level->zone_base_floor = (int32_t *)malloc((size_t)NUM_ZONES * sizeof(int32_t));
-    if (level->zone_base_floor) {
-        for (int z = 0; z < NUM_ZONES; z++)
-            level->zone_base_floor[z] = FLOOR_H;
-    }
-    level->zone_base_water = (int32_t *)malloc((size_t)NUM_ZONES * sizeof(int32_t));
-    if (level->zone_base_water) {
-        for (int z = 0; z < NUM_ZONES; z++)
-            level->zone_base_water[z] = 0;  /* no water in test level */
-    }
-
     /* Allocate player shot data (20 bullet slots for projectile weapons).
      * Each slot is OBJECT_SIZE bytes.  zone < 0 means the slot is free. */
     {
@@ -553,19 +537,20 @@ static void build_test_level_graphics(LevelState *level)
     }
 
     /* Door table for test level: one door in zone 0 (wall between room 0 and 1).
-     * Opens when player in zone 0 or 1 presses space. Format: 16 bytes per entry, terminator zone_id -1. */
+     * Same format as lift: 22 bytes per entry, pos/top/bot (*256). Terminator zone_id -1. */
     {
-        uint8_t *door_buf = (uint8_t *)malloc(32);
+        uint8_t *door_buf = (uint8_t *)malloc(44);
         if (door_buf) {
-            int32_t closed_pos = 96 * 256;  /* door_max*256 = closed (matches ROOF_H magnitude 24576) */
+            int32_t closed_y = 96 * 256;  /* closed position (matches ROOF_H magnitude) */
             wr16(door_buf + 0, 0);             /* zone_id = 0 */
             wr16(door_buf + 2, 0);             /* door_type = 0 (space/switch) */
-            wr32(door_buf + 4, closed_pos);   /* door_pos = closed */
+            wr32(door_buf + 4, closed_y);     /* pos = closed */
             wr16(door_buf + 8, 0);             /* door_vel = 0 */
-            wr16(door_buf + 10, 96);           /* door_max */
-            wr16(door_buf + 12, 0);            /* timer */
-            wr16(door_buf + 14, 0);            /* door_flags (0 = any switch or space in zone) */
-            wr16(door_buf + 16, -1);           /* terminator: next zone_id = -1 */
+            wr32(door_buf + 10, 0);            /* top = open position */
+            wr32(door_buf + 14, closed_y);     /* bot = closed position */
+            wr16(door_buf + 18, 0);            /* timer */
+            wr16(door_buf + 20, 0);            /* door_flags */
+            wr16(door_buf + 22, -1);          /* terminator */
             level->door_data = door_buf;
         }
     }
@@ -729,10 +714,6 @@ void io_release_level_memory(LevelState *level)
     }
     level->zone_adds = NULL;
     level->zone_adds_owned = false;
-    free(level->zone_base_roof);    level->zone_base_roof = NULL;
-    free(level->zone_base_floor);  level->zone_base_floor = NULL;
-    free(level->zone_base_water);  level->zone_base_water = NULL;
-
     free(level->data);              level->data = NULL;
     level->data_byte_count = 0;
     free(level->graphics);          level->graphics = NULL;

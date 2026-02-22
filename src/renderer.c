@@ -1866,7 +1866,7 @@ static int zone_has_door(const uint8_t *door_data, int16_t zone_id)
         int16_t d_zone = rd16(door_data);
         if (d_zone < 0) return 0;  /* End of list */
         if (d_zone == zone_id) return 1;
-        door_data += 16;
+        door_data += 22;
     }
     return 0;  /* Safety: avoid reading past buffer if format is wrong */
 }

@@ -1180,7 +1180,7 @@ static bool player_at_door_zone(GameState *state, int16_t door_zone_id, int16_t 
  * Door data format (per door, 16 bytes in DoorData array):
  *   0: zone index (word)
  *   2: door type (word) - 0=player+space, 1=condition, 2=condition2, etc.
- *   4: door position (long) - current height offset
+ *   4: door position (long) - current Y (*256), 10: top (open), 14: bot (closed). 22 bytes per entry.
  *   8: door velocity (word) - current speed
  *  10: door max (word) - maximum opening height
  *  12: timer (word) - close delay
@@ -1192,7 +1192,7 @@ void door_routine(GameState *state)
 
     uint8_t *door = state->level.door_data;
 
-    /* Iterate door entries (16 bytes each, terminated by -1) */
+    /* Iterate door entries (22 bytes each, terminated by -1). Same layout as lift: pos/top/bot (world *256). */
     while (1) {
         int16_t zone_id = be16(door);
         if (zone_id < 0) break;
@@ -1200,9 +1200,10 @@ void door_routine(GameState *state)
         int16_t door_type = be16(door + 2);
         int32_t door_pos = be32(door + 4);
         int16_t door_vel = be16(door + 8);
-        int16_t door_max = be16(door + 10);
-        int16_t timer = be16(door + 12);
-        uint16_t door_flags = (uint16_t)be16(door + 14);
+        int32_t door_top = be32(door + 10);  /* open position (more negative) */
+        int32_t door_bot = be32(door + 14);  /* closed position (more positive) */
+        int16_t timer = be16(door + 18);
+        uint16_t door_flags = (uint16_t)be16(door + 20);
 
         bool should_open = false;
 
@@ -1246,29 +1247,26 @@ void door_routine(GameState *state)
         }
 
         if (should_open && door_vel == 0) {
-            door_vel = -16; /* Open speed */
+            door_vel = -16; /* Open speed (toward top) */
         }
 
-        /* Animate door position */
+        /* Animate door position: top = open, bot = closed */
         if (door_vel != 0) {
             door_pos += (int32_t)door_vel * state->temp_frames * 256;
 
-            if (door_pos <= 0) {
-                /* Fully open */
-                door_pos = 0;
+            if (door_pos <= door_top) {
+                door_pos = door_top;
                 door_vel = 0;
                 timer = 100; /* Close delay */
             }
-            if (door_pos >= (int32_t)door_max * 256) {
-                /* Fully closed */
-                door_pos = (int32_t)door_max * 256;
+            if (door_pos >= door_bot) {
+                door_pos = door_bot;
                 door_vel = 0;
             }
-        } else if (!should_open && door_pos < (int32_t)door_max * 256) {
-            /* Close timer: type 0 (space) and condition doors (1,2,3) all close when should_open is false */
+        } else if (!should_open && door_pos < door_bot) {
             timer -= state->temp_frames;
             if (timer <= 0) {
-                door_vel = 4; /* Close speed */
+                door_vel = 4; /* Close speed (toward bot) */
                 timer = 0;
             }
         }
@@ -1276,20 +1274,13 @@ void door_routine(GameState *state)
         /* Write back (big-endian) */
         wbe32(door + 4, door_pos);
         wbe16(door + 8, door_vel);
-        wbe16(door + 12, timer);
+        wbe16(door + 18, timer);
 
-        /* Update zone data (door height affects zone roof). Write base_roof + door_delta so we
-         * don't overwrite the room's real roof; door_pos 0 = open, door_max*256 = closed. */
-        {
-            int32_t door_max_val = (int32_t)door_max * 256;
-            int32_t base_roof = 0;
-            if (state->level.zone_base_roof && zone_id >= 0 && zone_id < state->level.num_zones)
-                base_roof = state->level.zone_base_roof[zone_id];
-            int32_t zone_roof_y = base_roof + (door_pos - door_max_val);
-            level_set_zone_roof(&state->level, zone_id, zone_roof_y);
-        }
+        /* Update zone data: write door position directly to zone roof (same as Amiga). */
+        if (zone_id >= 0 && zone_id < state->level.num_zones)
+            level_set_zone_roof(&state->level, zone_id, door_pos);
 
-        door += 16;
+        door += 22;
     }
 }
 
@@ -1374,14 +1365,9 @@ void lift_routine(GameState *state)
         wbe32(lift + 4, lift_pos);
         wbe16(lift + 8, lift_vel);
 
-        /* Update zone floor height: base_floor + (lift_pos - lift_bot) so room floor stays valid. */
-        if (zone_id >= 0 && zone_id < state->level.num_zones) {
-            int32_t base_floor = 0;
-            if (state->level.zone_base_floor)
-                base_floor = state->level.zone_base_floor[zone_id];
-            int32_t zone_floor_y = base_floor + (lift_pos - lift_bot);
-            level_set_zone_floor(&state->level, zone_id, zone_floor_y);
-        }
+        /* Update zone floor: write lift position directly (same as Amiga). */
+        if (zone_id >= 0 && zone_id < state->level.num_zones)
+            level_set_zone_floor(&state->level, zone_id, lift_pos);
 
         /* Adjust player Y if standing on this lift */
         if (state->plr1.stood_on_lift && state->plr1.zone == zone_id) {
@@ -1532,14 +1518,9 @@ void do_water_anims(GameState *state)
         wl[16] = (uint8_t)(dir >> 8);
         wl[17] = (uint8_t)(dir);
 
-        /* Update zone water height: base_water + (cur_level - min_level) so room floor stays valid. */
-        if (zone_id >= 0 && zone_id < state->level.num_zones) {
-            int32_t base_water = 0;
-            if (state->level.zone_base_water)
-                base_water = state->level.zone_base_water[zone_id];
-            int32_t zone_water_y = base_water + (cur_level - min_level);
-            level_set_zone_water(&state->level, zone_id, zone_water_y);
-        }
+        /* Update zone water: write current level directly (same as Amiga). */
+        if (zone_id >= 0 && zone_id < state->level.num_zones)
+            level_set_zone_water(&state->level, zone_id, cur_level);
 
         wl += 18;
     }
