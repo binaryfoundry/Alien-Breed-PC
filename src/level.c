@@ -274,9 +274,31 @@ int level_parse(LevelState *level)
     int32_t obj_offset = read_long(ld + 30);
     level->object_data = ld + obj_offset;
 
-    /* Number of floor lines (16 bytes each) for brute-force collision */
-    level->num_floor_lines = (obj_offset - floor_offset) / 16;
-    if (level->num_floor_lines < 0) level->num_floor_lines = 0;
+    /* Number of floor lines: derived at runtime (do not trust header). Amiga indexes with *16 so 16 bytes per line.
+     * 1) Layout: how many 16-byte slots fit between floor block and object data.
+     * 2) Zone exit lists: max floor line index referenced; we need at least max_index+1.
+     * Use the smaller of the two when both are valid so we don't read past real data. */
+    int32_t layout_count = (floor_offset  - obj_offset) / 16;
+    if (layout_count < 0) layout_count = 0;
+    int32_t max_ref_index = -1;
+    if (level->zone_adds && level->num_zones > 0) {
+        for (int z = 0; z < level->num_zones; z++) {
+            int32_t zoff = read_long(level->zone_adds + z * 4);
+            const uint8_t *zd = ld + zoff;
+            int16_t list_off = read_word(zd + 32);  /* ToExitList */
+            const uint8_t *list = zd + list_off;
+            for (int i = 0; i < 128; i++) {
+                int16_t entry = read_word(list + i * 2);
+                if (entry == -2) break;
+                if (entry >= 0 && entry > max_ref_index) max_ref_index = (int32_t)entry;
+            }
+        }
+    }
+    if (max_ref_index >= 0 && layout_count > 0) {
+        level->num_floor_lines = (max_ref_index + 1 <= layout_count) ? (max_ref_index + 1) : layout_count;
+    } else {
+        level->num_floor_lines = layout_count;
+    }
 
     /* Long 34: Offset to player shot data */
     int32_t pshot_offset = read_long(ld + 34);
@@ -302,6 +324,25 @@ int level_parse(LevelState *level)
 
     printf("[LEVEL] Parsed: %d zones, %d points, %d obj_points, %d floor_lines\n",
            level->num_zones, num_points, level->num_object_points, level->num_floor_lines);
+
+    /* Log floor lines data (16 bytes each: x, z, xlen, zlen, connect at 0,2,4,6,8) */
+    if (level->floor_lines && level->num_floor_lines > 0) {
+        printf("[LEVEL] Floor lines: offset=%ld count=%d (x, z, xlen, zlen, connect)\n",
+               (long)floor_offset, (int)level->num_floor_lines);
+        int log_max = level->num_floor_lines > 24 ? 24 : (int)level->num_floor_lines;
+        for (int fli = 0; fli < log_max; fli++) {
+            const uint8_t *fl = level->floor_lines + (unsigned)fli * 16u;
+            int16_t fx = read_word(fl + 0);
+            int16_t fz = read_word(fl + 2);
+            int16_t fxlen = read_word(fl + 4);
+            int16_t fzlen = read_word(fl + 6);
+            int16_t fconn = read_word(fl + 8);
+            printf("[LEVEL]   fl[%d] x=%d z=%d xlen=%d zlen=%d connect=%d\n",
+                   fli, (int)fx, (int)fz, (int)fxlen, (int)fzlen, (int)fconn);
+        }
+        if ((int)level->num_floor_lines > log_max)
+            printf("[LEVEL]   ... and %d more\n", (int)level->num_floor_lines - log_max);
+    }
 
     /* Debug: dump doors and switches (door_flags / bit_mask must match for switch-to-door link) */
     if (level->door_data) {
