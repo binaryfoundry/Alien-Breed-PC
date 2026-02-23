@@ -1582,11 +1582,9 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
 
         if ((unsigned)pt_num >= (unsigned)num_pts) continue; /* invalid point number */
 
-        /* Which zone draws this object */
-        int16_t graphic_room = rd16(obj + 26);
+        /* Only draw objects that are currently in this zone (obj_zone is updated by movement). */
         int16_t obj_zone = rd16(obj + 12);
-        int in_this_zone = (graphic_room >= 0 && graphic_room == (int16_t)zone_id)
-                           || (obj_zone >= 0 && obj_zone == (int16_t)zone_id);
+        int in_this_zone = (obj_zone >= 0 && obj_zone == (int16_t)zone_id);
         if (!in_this_zone) continue;
 
         /* Multi-floor: skip objects on the other level */
