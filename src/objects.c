@@ -1378,7 +1378,7 @@ void lift_routine(GameState *state)
 
     uint8_t *lift = state->level.lift_data;
     int lift_idx = 0;
-    /* Per-zone max floor (multiple lifts in same zone: platform = highest position, like doors with min roof). */
+    /* Per-zone max floor (×64 scale to match doors). Lifts store pos in ×256; we convert when writing to zone/wall. */
     int32_t zone_max_floor[256];
     uint8_t zone_lift_seen[256];
     memset(zone_lift_seen, 0, sizeof(zone_lift_seen));
@@ -1394,29 +1394,37 @@ void lift_routine(GameState *state)
         int32_t lift_top = be32(lift + 10);
         int32_t lift_bot = be32(lift + 14);
 
-        bool should_move = false;
-
-        /* TEMPORARY: Loop all lifts bot -> top -> bot for testing. REMOVE THIS BLOCK and restore
-         * the original should_move / lift_vel logic below when lift texturing is fixed. */
+        /* TEMPORARY: Loop all lifts bot -> top -> bot for testing. REMOVE and restore should_move/lift_type logic. */
         {
             const int32_t up_speed = 4, down_speed = -4;
             if (lift_pos >= lift_bot) {
-                lift_vel = down_speed;  /* at top: go down toward lift_top */
+                lift_vel = down_speed;
             } else if (lift_pos <= lift_top) {
-                lift_vel = up_speed;    /* at bottom: go up toward lift_bot */
+                lift_vel = up_speed;
             }
             lift_pos += (int32_t)lift_vel * state->temp_frames * 256;
-            /* Clamp to [lift_top, lift_bot] so fully up/down never overshoot */
             if (lift_pos < lift_top) lift_pos = lift_top;
             if (lift_pos > lift_bot) lift_pos = lift_bot;
             if (lift_pos == lift_top || lift_pos == lift_bot) lift_vel = 0;
         }
-        /* END TEMPORARY lift loop - restore original logic (space key / condition / etc.) here. */
 
         wbe32(lift + 4, lift_pos);
         wbe16(lift + 8, lift_vel);
 
-        /* Amiga-style: patch floor line 14 and graphics wall record for each lift wall (mirror door_routine). */
+        /* Lifts use ×256 internally; doors use ×64 for ZD_ROOF and wall. Convert lift to ×64 for zone and wall. */
+        int32_t lift_pos_64 = lift_pos >> 3;
+
+        /* Accumulate max floor per zone (×64) for apply and player Y. */
+        /*if (zone_id >= 0 && zone_id < state->level.num_zones && (unsigned)zone_id < 256u) {
+            if (!zone_lift_seen[zone_id]) {
+                zone_max_floor[zone_id] = lift_pos_64;
+                zone_lift_seen[zone_id] = 1;
+            } else if (lift_pos_64 > zone_max_floor[zone_id]) {
+                zone_max_floor[zone_id] = lift_pos_64;
+            }
+        }*/
+
+        /* Amiga-style: patch floor line 14 and graphics wall record. Write ×64 to match door wall layout. */
         if (state->level.lift_wall_list && state->level.lift_wall_list_offsets &&
             state->level.graphics && lift_idx < state->level.num_lifts) {
             uint32_t start = state->level.lift_wall_list_offsets[lift_idx];
@@ -1427,13 +1435,13 @@ void lift_routine(GameState *state)
                 int32_t gfx_off = (int32_t)be32(ent + 2);
                 if (state->level.floor_lines && fline >= 0 && (int32_t)fline < state->level.num_floor_lines) {
                     uint8_t *fl = state->level.floor_lines + (uint32_t)(int16_t)fline * 16u;
-                    wbe16(fl + 14, (int16_t)(uint16_t)0x8000);  /* lift wall flag: no collision (same as door) */
+                    wbe16(fl + 14, (int16_t)(uint16_t)0x8000);
                 }
                 if (gfx_off >= 0) {
                     uint8_t *wall_rec = state->level.graphics + (uint32_t)gfx_off;
-                    wbe32(wall_rec + 24, lift_pos);   /* lift floor height for this wall */
-                    int16_t yoff = (int16_t)((uint16_t)((-(lift_pos >> 7)) & 0xFFu));
-                    wbe32(wall_rec + 10, yoff);
+                    wbe32(wall_rec + 22, lift_pos_64);   /* botofwall = lift floor (×64, same scale as door) */
+                    int16_t yoff = (int16_t)((uint16_t)((-(lift_pos_64 >> 7)) & 0xFFu));  /* match door yoff formula */
+                    wbe16(wall_rec + 10, yoff);
                 }
             }
         }
@@ -1442,13 +1450,13 @@ void lift_routine(GameState *state)
         lift += LIFT_ENTRY_SIZE;
     }
 
-    /* Apply zone floors once per zone (scale already *256 in lift data). */
+    /* Apply zone floors once per zone (×64 scale, same as ZD_ROOF for doors). */
     for (int z = 0; z < state->level.num_zones && z < 256; z++) {
         if (zone_lift_seen[z])
             level_set_zone_floor(&state->level, (int16_t)z, zone_max_floor[z]);
     }
 
-    /* Adjust player Y when standing on a lift (use applied zone floor). */
+    /* Player Y when standing on lift (zone_max_floor is ×64, same as ZD_FLOOR / player.c floor_h). */
     if (state->plr1.stood_on_lift && state->plr1.zone >= 0 && state->plr1.zone < 256 &&
         zone_lift_seen[state->plr1.zone])
         state->plr1.s_tyoff = zone_max_floor[state->plr1.zone] - state->plr1.s_height;
