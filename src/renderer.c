@@ -2116,12 +2116,19 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             int16_t whichtile = rd16(ptr); ptr += 2;
             int16_t floor_bright_off = rd16(ptr); ptr += 2;
 
-            /* Determine floor height in world coords */
+            /* Determine floor height in world coords (same scale as y_off: *256) */
             int32_t floor_h_world = (int32_t)ypos << 6; /* ASM: asl.l #6,d7 */
+            /* Use live zone floor/roof so door/lift updates are visible (objects.c writes ZD_FLOOR/ZD_ROOF each frame). */
+            if (entry_type == 1)
+                floor_h_world = zone_floor;
+            else if (entry_type == 2)
+                floor_h_world = zone_roof;
             int32_t rel_h = floor_h_world - y_off; /* Relative to camera */
 
-            /* Floor Y offset (from flooryoff) */
-            int16_t floor_y_dist = (int16_t)(ypos - r->flooryoff);
+            /* Floor Y offset: sign decides which half of screen (floor vs ceiling). Use live height when overridden. */
+            int16_t floor_y_dist = (entry_type == 1 || entry_type == 2)
+                ? (int16_t)((floor_h_world > y_off) ? 1 : -1)
+                : (int16_t)(ypos - r->flooryoff);
 
             if (floor_y_dist == 0) {
                 /* At eye level - skip */
