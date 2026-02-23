@@ -1206,71 +1206,20 @@ void door_routine(GameState *state)
         int16_t timer = be16(door + 18);
         uint16_t door_flags = (uint16_t)be16(door + 20);
 
-        bool should_open = false;
-
-        switch (door_type) {
-        case 0: /* Opens when player in/adjacent to door zone presses space, or when a switch is pressed (door_flags = which bit; 0 = any switch) */
-            if (state->plr1.p_spctap && player_at_door_zone(state, zone_id, state->plr1.zone)) {
-                should_open = true;
-            }
-            if (state->plr2.p_spctap && player_at_door_zone(state, zone_id, state->plr2.zone)) {
-                should_open = true;
-            }
-            /* Switch-controlled: open when condition bit is set; no need for player to be in door zone */
-            if (!should_open) {
-                if (door_flags != 0) {
-                    if (game_conditions & door_flags) should_open = true;
-                } else {
-                    if (game_conditions != 0) should_open = true;  /* any switch opens when flags not set */
-                }
-            }
-            break;
-        case 1: /* Opens on condition bit */
-            if (game_conditions & 0x900) { /* %100100000000 */
-                should_open = true;
-            }
-            break;
-        case 2: /* Opens on condition bit */
-            if (game_conditions & 0x400) { /* %10000000000 */
-                should_open = true;
-            }
-            break;
-        case 3: /* Opens on condition bit */
-            if (game_conditions & 0x200) { /* %1000000000 */
-                should_open = true;
-            }
-            break;
-        case 4: /* Always open */
-            should_open = true;
-            break;
-        case 5: /* Never opens */
-            break;
-        }
-
-        if (should_open && door_vel == 0) {
-            door_vel = -16; /* Open speed (toward top) */
-        }
-
-        /* Animate door position: top = open, bot = closed. Amiga scale: pos/top/bot use *64 (asr #2 then muls #256). */
-        if (door_vel != 0) {
-            door_pos += (int32_t)door_vel * state->temp_frames * 64;
-
-            if (door_pos <= door_top) {
-                door_pos = door_top;
-                door_vel = 0;
-                timer = 100; /* Close delay */
-            }
+        /* TEMPORARY: Loop all doors bot -> top -> bot for testing. REMOVE THIS BLOCK and restore
+         * the original should_open / door_vel / timer logic below when door texturing is fixed. */
+        {
+            const int32_t open_speed = -16, close_speed = 4;
             if (door_pos >= door_bot) {
-                door_pos = door_bot;
-                door_vel = 0;
+                door_vel = open_speed;  /* at closed: open toward top */
+            } else if (door_pos <= door_top) {
+                door_vel = close_speed; /* at open: close toward bot */
             }
-        } else if (!should_open && door_pos < door_bot) {
-            timer -= state->temp_frames;
-            if (timer <= 0) {
-                door_vel = 4; /* Close speed (toward bot) */
-                timer = 0;
-            }
+            door_pos += (int32_t)door_vel * state->temp_frames * 64;
+            if (door_pos <= door_top) { door_pos = door_top; door_vel = 0; }
+            if (door_pos >= door_bot) { door_pos = door_bot; door_vel = 0; }
         }
+        /* END TEMPORARY door loop - restore original logic (switch/player open, timer close) here. */
 
         /* Write back (big-endian) */
         wbe32(door + 4, door_pos);
