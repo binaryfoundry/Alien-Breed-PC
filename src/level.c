@@ -22,13 +22,11 @@ static int32_t read_long(const uint8_t *p)
     return (int32_t)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
 }
 
-/* 0=static, 1=pulse, 2=flicker, 3=fire (from zone brightness word high/low byte) */
+/* 0=static, 1=pulse, 2=flicker, 3=fire. Amiga uses high byte only (lsr.w #8,d3; tst.b d3). */
 static inline unsigned zone_bright_anim_type(int16_t word)
 {
     unsigned hi = (unsigned)((uint16_t)word >> 8) & 0xFFu;
-    unsigned lo = (unsigned)((uint16_t)word) & 0xFFu;
     if (hi >= 1u && hi <= 3u) return hi;
-    if (lo >= 1u && lo <= 3u) return lo;
     return 0;
 }
 static const char *zone_anim_flag_name(unsigned t)
@@ -38,9 +36,6 @@ static const char *zone_anim_flag_name(unsigned t)
     if (t == 3) return "fire";
     return "static";
 }
-
-/* Force this zone to have fire animation flags (debug override) */
-#define FORCE_FIRE_ANIM_ZONE_ID  97
 
 static void write_word_be(uint8_t *p, int16_t v)
 {
@@ -358,11 +353,6 @@ int level_parse(LevelState *level)
                 continue;
             }
             const uint8_t *zd = ld + zoff;
-            if (z == FORCE_FIRE_ANIM_ZONE_ID) {
-                uint8_t *w = (uint8_t *)zd;
-                write_word_be(w + ZONE_OFF_BRIGHTNESS, (int16_t)0x0308);   /* fire, base 8 */
-                write_word_be(w + ZONE_OFF_UPPER_BRIGHT, (int16_t)0x0308);
-            }
             int16_t zone_id = read_word(zd + 0);
             int32_t floor_y = read_long(zd + ZONE_OFF_FLOOR);
             int32_t roof_y = read_long(zd + ZONE_OFF_ROOF);
@@ -616,18 +606,13 @@ uint8_t *level_get_zone_data_ptr(LevelState *level, int16_t zone_id)
     return level->data + zoff;
 }
 
-/* Anim type 1=pulse, 2=flicker, 3=fire. Amiga uses high byte; some levels use low byte. */
+/* Anim type 1=pulse, 2=flicker, 3=fire. Amiga uses high byte only. */
 static inline unsigned zone_anim_type_from_word(int16_t word)
 {
     unsigned hi = (unsigned)((uint16_t)word >> 8) & 0xFFu;
-    unsigned lo = (unsigned)((uint16_t)word) & 0xFFu;
     if (hi >= 1u && hi <= 3u) return hi;
-    if (lo >= 1u && lo <= 3u) return lo;
     return 0;
 }
-
-/* Zone 97 forced to fire animation (debug/override) */
-#define FORCE_FIRE_ANIM_ZONE_ID  97
 
 int16_t level_get_zone_brightness(const LevelState *level, int16_t zone_id, int use_upper)
 {
@@ -635,9 +620,6 @@ int16_t level_get_zone_brightness(const LevelState *level, int16_t zone_id, int 
         return 0;
     if (zone_id < 0 || zone_id >= level->num_zones)
         return 0;
-
-    if (zone_id == FORCE_FIRE_ANIM_ZONE_ID)
-        return (int16_t)level->bright_anim_values[2]; /* fire = anim 3, table value only */
 
     int32_t zoff = read_long(level->zone_adds + (size_t)zone_id * 4u);
     size_t data_len = level->data_byte_count;
