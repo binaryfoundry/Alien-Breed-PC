@@ -1664,6 +1664,17 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         if (src_cols < 1) src_cols = 32;
         if (src_rows < 1) src_rows = 32;
 
+
+        /* Look up frame info from FRAMES table (Amiga: 2(a0) indexes frame; frame gives DOWN_STRIP for strip offset). */
+        uint32_t ptr_off = 0;
+        uint16_t down_strip = 0;
+        const SpriteFrame *ft = sprite_frames_table[vect_num].frames;
+        int ft_count = sprite_frames_table[vect_num].count;
+        if (ft && frame_num >= 0 && frame_num < ft_count) {
+            ptr_off = ft[frame_num].ptr_off;
+            down_strip = ft[frame_num].down_strip;
+        }
+
         /* Sprite Y: use the object's own floor height from obj[4] and obj[7].
          * Formula (from objects.c): obj[4] = (floor_h >> 7) - world_h,
          *   world_h = obj[7] (signed). => obj_floor = (obj[4] + world_h) << 7.
@@ -1674,7 +1685,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         if (obj_number == OBJ_NBR_BARREL) {
             obj_floor = bot_of_room;
         } else if (obj_y4 != 0) {
-            int world_h_raw = (int)(int8_t)obj[7];
+            int world_h_raw = (int)(int8_t)(obj[7]);
             obj_floor = ((int32_t)obj_y4 + (int32_t)world_h_raw) << 7;
         } else {
             obj_floor = bot_of_room;
@@ -1686,15 +1697,6 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         int floor_screen_y = (int)((int64_t)floor_rel_8 * (int64_t)g_renderer.proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp->z) + center_y;
         int half_h = sprite_h / 2;
 
-        /* Look up frame info from FRAMES table (Amiga: 2(a0) indexes frame; frame gives DOWN_STRIP for strip offset). */
-        uint32_t ptr_off = 0;
-        uint16_t down_strip = 0;
-        const SpriteFrame *ft = sprite_frames_table[vect_num].frames;
-        int ft_count = sprite_frames_table[vect_num].count;
-        if (ft && frame_num >= 0 && frame_num < ft_count) {
-            ptr_off = ft[frame_num].ptr_off;
-            down_strip = ft[frame_num].down_strip;
-        }
         /* Place sprite so its bottom row (feet) is at floor_screen_y. Renderer uses center: sy = screen_y - height/2,
          * so we need center = floor_screen_y - half_h + 1 so that sy + height - 1 == floor_screen_y. */
         int scr_y = floor_screen_y - half_h + 1;

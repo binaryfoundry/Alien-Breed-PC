@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "array": "c",
+        "vector": "c",
+        "xstring": "c",
+        "xutility": "c",
+        "ratio": "c"
+    }
+}

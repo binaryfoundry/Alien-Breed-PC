@@ -453,13 +453,6 @@ void objects_update(GameState *state)
             continue;
         }
 
-        /* Check worry flag */
-        if (obj->obj.worry == 0) {
-            obj_index++;
-            continue;
-        }
-        obj->obj.worry--;
-
         /* Update rendering Y position from zone floor height.
          * Anims.s: each handler writes 4(a0) = (ToZoneFloor >> 7) - offset.
          * The offset is per-type; barrel uses -60 (= its world_h).
@@ -501,6 +494,13 @@ void objects_update(GameState *state)
                 }
             }
         }
+
+        /* Check worry flag */
+        if (obj->obj.worry == 0) {
+            obj_index++;
+            continue;
+        }
+        obj->obj.worry--;
 
         /* Dispatch by object type */
         int8_t obj_type = obj->obj.number;
