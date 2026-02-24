@@ -83,6 +83,7 @@ static uint8_t sdl_to_amiga(SDL_Scancode sc)
  * ----------------------------------------------------------------------- */
 static MouseState g_mouse = {0};
 static bool g_quit_requested = false;
+static bool g_f5_save_requested = false;
 
 /* -----------------------------------------------------------------------
  * Lifecycle
@@ -123,6 +124,9 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
 
         case SDL_KEYDOWN:
         {
+            if (ev.key.keysym.scancode == SDL_SCANCODE_F5) {
+                g_f5_save_requested = true;
+            }
             uint8_t amiga = sdl_to_amiga(ev.key.keysym.scancode);
             /* In windowed mode, Escape releases mouse capture and is not sent to the game */
             if (ev.key.keysym.scancode == SDL_SCANCODE_ESCAPE && SDL_GetRelativeMouseMode()) {
@@ -211,4 +215,11 @@ bool input_key_pressed(const uint8_t *key_map, uint8_t keycode)
 void input_clear_keyboard(uint8_t *key_map)
 {
     if (key_map) memset(key_map, 0, 128);
+}
+
+bool input_f5_save_requested(void)
+{
+    if (!g_f5_save_requested) return false;
+    g_f5_save_requested = false;
+    return true;
 }

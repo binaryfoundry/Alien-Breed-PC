@@ -71,6 +71,11 @@ static void make_data_path(char *buf, size_t bufsize, const char *subpath)
     snprintf(buf, bufsize, "%s%s", data_base_path(), subpath);
 }
 
+void io_make_data_path(char *buf, size_t bufsize, const char *subpath)
+{
+    snprintf(buf, bufsize, "%s%s", data_base_path(), subpath);
+}
+
 /* -----------------------------------------------------------------------
  * Big-endian write helpers (level data is Amiga format)
  * ----------------------------------------------------------------------- */

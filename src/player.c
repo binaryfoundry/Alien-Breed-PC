@@ -13,6 +13,7 @@
 #include "math_tables.h"
 #include "stub_input.h"
 #include "stub_audio.h"
+#include "stub_io.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -962,6 +963,102 @@ void player2_control(GameState *state)
     player_full_control(&state->plr2, state, 2);
 }
 
+/* Debug save file: debug_save.bin under data directory. Binary format: magic "AB3D", then per player:
+ * xoff(int32), zoff(int32), zone(int16), angpos(int16), yoff(int32). Native byte order. */
+#define DEBUG_SAVE_MAGIC "AB3D"
+#define DEBUG_SAVE_SUBPATH "debug_save.bin"
+
+void player_debug_save_position(GameState *state)
+{
+    char path[512];
+    io_make_data_path(path, sizeof(path), DEBUG_SAVE_SUBPATH);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        printf("[PLAYER] debug save: could not open %s for write\n", path);
+        return;
+    }
+    if (fwrite(DEBUG_SAVE_MAGIC, 1, 4, f) != 4) goto fail;
+    if (fwrite(&state->plr1.xoff, sizeof(state->plr1.xoff), 1, f) != 1) goto fail;
+    if (fwrite(&state->plr1.zoff, sizeof(state->plr1.zoff), 1, f) != 1) goto fail;
+    if (fwrite(&state->plr1.zone, sizeof(state->plr1.zone), 1, f) != 1) goto fail;
+    if (fwrite(&state->plr1.angpos, sizeof(state->plr1.angpos), 1, f) != 1) goto fail;
+    if (fwrite(&state->plr1.yoff, sizeof(state->plr1.yoff), 1, f) != 1) goto fail;
+    if (fwrite(&state->plr2.xoff, sizeof(state->plr2.xoff), 1, f) != 1) goto fail;
+    if (fwrite(&state->plr2.zoff, sizeof(state->plr2.zoff), 1, f) != 1) goto fail;
+    if (fwrite(&state->plr2.zone, sizeof(state->plr2.zone), 1, f) != 1) goto fail;
+    if (fwrite(&state->plr2.angpos, sizeof(state->plr2.angpos), 1, f) != 1) goto fail;
+    if (fwrite(&state->plr2.yoff, sizeof(state->plr2.yoff), 1, f) != 1) goto fail;
+    fclose(f);
+    printf("[PLAYER] debug save: position/orientation written to %s\n", path);
+    return;
+fail:
+    fclose(f);
+    printf("[PLAYER] debug save: write failed\n");
+}
+
+#ifndef NDEBUG
+/* In debug builds: load debug_save.bin and override player start position/orientation. */
+static void player_debug_load_position_if_present(GameState *state)
+{
+    char path[512];
+    io_make_data_path(path, sizeof(path), DEBUG_SAVE_SUBPATH);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char magic[4];
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, DEBUG_SAVE_MAGIC, 4) != 0) {
+        fclose(f);
+        return;
+    }
+    if (fread(&state->plr1.xoff, sizeof(state->plr1.xoff), 1, f) != 1) goto load_fail;
+    if (fread(&state->plr1.zoff, sizeof(state->plr1.zoff), 1, f) != 1) goto load_fail;
+    if (fread(&state->plr1.zone, sizeof(state->plr1.zone), 1, f) != 1) goto load_fail;
+    if (fread(&state->plr1.angpos, sizeof(state->plr1.angpos), 1, f) != 1) goto load_fail;
+    if (fread(&state->plr1.yoff, sizeof(state->plr1.yoff), 1, f) != 1) goto load_fail;
+    if (fread(&state->plr2.xoff, sizeof(state->plr2.xoff), 1, f) != 1) goto load_fail;
+    if (fread(&state->plr2.zoff, sizeof(state->plr2.zoff), 1, f) != 1) goto load_fail;
+    if (fread(&state->plr2.zone, sizeof(state->plr2.zone), 1, f) != 1) goto load_fail;
+    if (fread(&state->plr2.angpos, sizeof(state->plr2.angpos), 1, f) != 1) goto load_fail;
+    if (fread(&state->plr2.yoff, sizeof(state->plr2.yoff), 1, f) != 1) goto load_fail;
+    fclose(f);
+    /* Sync sim position, angle and Y from saved */
+    state->plr1.s_xoff = state->plr1.xoff;
+    state->plr1.s_zoff = state->plr1.zoff;
+    state->plr1.s_yoff = state->plr1.yoff;
+    state->plr1.s_angpos = state->plr1.angpos;
+    state->plr2.s_xoff = state->plr2.xoff;
+    state->plr2.s_zoff = state->plr2.zoff;
+    state->plr2.s_yoff = state->plr2.yoff;
+    state->plr2.s_angpos = state->plr2.angpos;
+    /* Re-apply zone-derived state (roompt, points_to_rotate_ptr, list_of_graph_rooms) */
+    if (state->level.zone_adds && state->plr1.zone >= 0 && state->plr1.zone < state->level.num_zones) {
+        const uint8_t *za = state->level.zone_adds;
+        int z = state->plr1.zone;
+        int32_t zoff = (int32_t)((za[z*4]<<24)|(za[z*4+1]<<16)|(za[z*4+2]<<8)|za[z*4+3]);
+        const uint8_t *zd = state->level.data + zoff;
+        state->plr1.s_tyoff = (int32_t)((zd[2]<<24)|(zd[3]<<16)|(zd[4]<<8)|zd[5]) - PLAYER_HEIGHT;
+        state->plr1.roompt = zoff;
+        int16_t pts1 = (int16_t)((zd[34] << 8) | zd[35]);
+        state->plr1.points_to_rotate_ptr = zoff + (int32_t)pts1;
+        state->plr1.list_of_graph_rooms = zoff + 48;
+    }
+    if (state->level.zone_adds && state->plr2.zone >= 0 && state->plr2.zone < state->level.num_zones) {
+        const uint8_t *za = state->level.zone_adds;
+        int z = state->plr2.zone;
+        int32_t zoff = (int32_t)((za[z*4]<<24)|(za[z*4+1]<<16)|(za[z*4+2]<<8)|za[z*4+3]);
+        const uint8_t *zd = state->level.data + zoff;
+        state->plr2.s_tyoff = (int32_t)((zd[2]<<24)|(zd[3]<<16)|(zd[4]<<8)|zd[5]) - PLAYER_HEIGHT;
+        state->plr2.roompt = zoff;
+        int16_t pts2 = (int16_t)((zd[34] << 8) | zd[35]);
+        state->plr2.points_to_rotate_ptr = zoff + (int32_t)pts2;
+        state->plr2.list_of_graph_rooms = zoff + 48;
+    }
+    printf("[PLAYER] debug load: position/orientation overridden from %s\n", path);
+    return;
+load_fail:
+    fclose(f);
+}
+#endif
+
 void player_init_from_level(GameState *state)
 {
     /* Default values */
@@ -1051,6 +1148,11 @@ void player_init_from_level(GameState *state)
             /* ListOfGraphRooms = zone_data + 48 (ToListOfGraph) */
             state->plr2.list_of_graph_rooms = zoff + 48;
         }
+
+#ifndef NDEBUG
+        /* In debug build: override start position/orientation from saved file if present */
+        player_debug_load_position_if_present(state);
+#endif
 
         printf("[PLAYER] init_from_level: PLR1 at (%d,%d) zone %d yoff=%d tyoff=%d, "
                "PLR2 at (%d,%d) zone %d\n",

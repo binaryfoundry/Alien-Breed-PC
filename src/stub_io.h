@@ -47,4 +47,7 @@ void io_save_prefs(const char *prefs_buf, int buf_size);
 void io_load_passwords(void);
 void io_save_passwords(void);
 
+/* Build full path for a file under the data directory (e.g. "debug_save.bin"). */
+void io_make_data_path(char *buf, size_t bufsize, const char *subpath);
+
 #endif /* STUB_IO_H */

@@ -34,4 +34,7 @@ void player2_shoot(GameState *state);
 void player1_snapshot(GameState *state);
 void player2_snapshot(GameState *state);
 
+/* Debug: save current player position/orientation to data/debug_save.bin (F5). */
+void player_debug_save_position(GameState *state);
+
 #endif /* PLAYER_H */

@@ -52,4 +52,7 @@ bool input_key_pressed(const uint8_t *key_map, uint8_t keycode);
 /* Clear keyboard state */
 void input_clear_keyboard(uint8_t *key_map);
 
+/* Debug: F5 save position. Returns true once when F5 was pressed (caller should save). */
+bool input_f5_save_requested(void);
+
 #endif /* STUB_INPUT_H */

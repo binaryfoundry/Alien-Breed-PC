@@ -76,6 +76,8 @@ void game_loop(GameState *state)
          * Always: Poll input every display frame for responsiveness
          * ================================================================ */
         input_update(state->key_map, &state->last_pressed);
+        if (input_f5_save_requested())
+            player_debug_save_position(state);
 
         /* ================================================================
          * Frame timing: accumulate 50Hz VBlanks from real elapsed time
