@@ -1292,7 +1292,7 @@ int  k =0;
  *   8: door velocity (word) - current speed
  *  10: door max (word) - maximum opening height
  *  12: timer (word) - close delay
- *  14: flags (word) - for type 0: condition mask; use same value as switch bit_mask to link; 0 = any switch
+ *  14: flags (word) - for type 0: 0 = player-only (space at door); else condition mask (switch bit)
  * ----------------------------------------------------------------------- */
 void door_routine(GameState *state)
 {
@@ -1314,22 +1314,37 @@ void door_routine(GameState *state)
         int16_t timer = be16(door + 18);
         uint16_t door_flags = (uint16_t)be16(door + 20);
 
-        /* TEMPORARY: Loop all doors bot -> top -> bot for testing. REMOVE THIS BLOCK and restore
-         * the original should_open / door_vel / timer logic below when door texturing is fixed. */
-        {
-            const int32_t open_speed = -16, close_speed = 4;
-            if (door_pos >= door_bot) {
-                door_vel = open_speed;  /* at closed: open toward top */
-            } else if (door_pos <= door_top) {
-                door_vel = close_speed; /* at open: close toward bot */
+        /* Type 0: flags 0 = player-only (space at door); flags != 0 = switch (open when condition bits set). */
+        if (door_type == 0) {
+            int satisfied;
+            if (door_flags == 0) {
+                /* Player-only: open only when player is at door and pressing space, not from switches. */
+                satisfied = (player_at_door_zone(state, zone_id, state->plr1.zone) && state->plr1.p_spctap) ||
+                            (player_at_door_zone(state, zone_id, state->plr2.zone) && state->plr2.p_spctap);
+            } else {
+                satisfied = ((uint16_t)game_conditions & door_flags) == door_flags;
+            }
+            const int32_t open_speed = -16;
+            const int32_t close_speed = 4;
+            if (satisfied) {
+                if (door_pos > door_top)
+                    door_vel = (int16_t)open_speed;
+                else {
+                    door_vel = 0;
+                    door_pos = door_top;
+                }
+            } else {
+                if (door_pos < door_bot)
+                    door_vel = (int16_t)close_speed;
+                else {
+                    door_vel = 0;
+                    door_pos = door_bot;
+                }
             }
             door_pos += (int32_t)door_vel * state->temp_frames * 64;
-            /* Clamp to [door_top, door_bot] so fully open/closed never overshoot */
             if (door_pos < door_top) door_pos = door_top;
             if (door_pos > door_bot) door_pos = door_bot;
-            if (door_pos == door_top || door_pos == door_bot) door_vel = 0;
         }
-        /* END TEMPORARY door loop - restore original logic (switch/player open, timer close) here. */
 
         /* Write back (big-endian) */
         wbe32(door + 4, door_pos);
@@ -1484,10 +1499,15 @@ void switch_routine(GameState *state)
     if (!state->level.switch_data) return;
 
     uint8_t *sw = state->level.switch_data;
+    int switch_index = 0;
 
     while (1) {
         int16_t zone_id = be16(sw);
         if (zone_id < 0) break;
+
+        /* Amiga: condition bit from switch index (offset 4 = point index). Loop d0=7..0 so switch 0→bit 4, 1→5, … 7→bit 11. */
+        unsigned int bit_num = 4 + (switch_index % 8);
+        uint16_t bit_mask = (uint16_t)(1u << bit_num);
 
         int8_t cooldown = *(int8_t*)(sw + 3);  /* byte 3 (Anims: sub.b d1,3(a0)) */
 
@@ -1499,9 +1519,8 @@ void switch_routine(GameState *state)
         }
 
         /* Check if player is near, facing the switch, and pressing use (space).
-         * Switch record is 14 bytes (Anims.s adda.w #14): zone(2), bit_mask(2), cooldown(1),
-         * pad(1), gfx_offset(4) = offset into level->graphics to the switch wall entry,
-         * position(4) = x(2), z(2). */
+         * Switch record is 14 bytes (Anims.s adda.w #14): zone(2), point_index(2), cooldown(1),
+         * pad(1), gfx_offset(4), sw_x(2), sw_z(2). Condition bit derived from switch index. */
         if (cooldown == 0) {
             int16_t sw_x = be16(sw + 10); /* switch X position */
             int16_t sw_z = be16(sw + 12); /* switch Z position */
@@ -1540,7 +1559,6 @@ void switch_routine(GameState *state)
             }
 
             if (state->plr1.p_spctap && near_plr1) {
-                int16_t bit_mask = be16(sw + 4);
                 game_conditions ^= bit_mask;
                 printf("[SWITCH] pressed (plr1) zone=%d bit_mask=0x%04X game_conditions=0x%04X\n",
                        (int)zone_id, (unsigned)(uint16_t)bit_mask, (unsigned)(uint16_t)game_conditions);
@@ -1556,7 +1574,6 @@ void switch_routine(GameState *state)
                 audio_play_sample(10, 50);
             }
             if (state->plr2.p_spctap && near_plr2) {
-                int16_t bit_mask = be16(sw + 4);
                 game_conditions ^= bit_mask;
                 printf("[SWITCH] pressed (plr2) zone=%d bit_mask=0x%04X game_conditions=0x%04X\n",
                        (int)zone_id, (unsigned)(uint16_t)bit_mask, (unsigned)(uint16_t)game_conditions);
@@ -1573,6 +1590,7 @@ void switch_routine(GameState *state)
         }
 
         sw += 14;
+        switch_index++;
     }
 }
 

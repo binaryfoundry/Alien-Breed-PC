@@ -135,7 +135,7 @@ int level_parse(LevelState *level)
      * Switch table (at lg + switch_offset). Entries 14 bytes each, terminated by zone_id < 0.
      *   0-1:  zone_id (int16)   zone the switch is in
      *   2-3:  (reserved; byte 3 used as cooldown)
-     *   4-5:  bit_mask (uint16) condition bit toggled when pressed; match door_flags for type 0 doors
+     *   4-5:  point_index (uint16) Amiga: index into Points for position; condition bit = 4 + (switch index in table), not from data
      *   6-9:  gfx_offset (long) offset into lg to switch wall's first word (for on/off patch)
      *  10-11: sw_x (int16)     switch position X (for facing check)
      *  12-13: sw_z (int16)     switch position Z
@@ -453,7 +453,7 @@ int level_parse(LevelState *level)
             printf("[LEVEL]   ... and %d more\n", (int)level->num_floor_lines - log_max);
     }
 
-    /* Debug: dump doors and switches (door_flags / bit_mask must match for switch-to-door link) */
+    /* Debug: dump doors and switches (door_flags; switch condition bit = 4 + switch_index, not from data) */
     if (level->door_data) {
         const uint8_t *door = level->door_data;
         int di = 0;
@@ -477,11 +477,32 @@ int level_parse(LevelState *level)
         while (1) {
             int16_t zone_id = read_word(sw);
             if (zone_id < 0) break;
-            uint16_t bit_mask = (uint16_t)read_word(sw + 4);
+            uint16_t point_index = (uint16_t)read_word(sw + 4);
+            unsigned int bit_num = 4 + (si % 8);
+            uint16_t cond_bit = (uint16_t)(1u << bit_num);
             int16_t sw_x = read_word(sw + 10);
             int16_t sw_z = read_word(sw + 12);
-            printf("[LEVEL] switch[%d] zone=%d bit_mask=0x%04X (%u) pos=(%d,%d)\n",
-                   si, (int)zone_id, bit_mask, bit_mask, (int)sw_x, (int)sw_z);
+            int door_zone = -1;
+            if (level->door_data) {
+                const uint8_t *door = level->door_data;
+                while (1) {
+                    int16_t dz = read_word(door);
+                    if (dz < 0) break;
+                    int16_t door_type = read_word(door + 2);
+                    uint16_t door_flags = (uint16_t)read_word(door + 20);
+                    if (door_type == 0 && (door_flags & cond_bit) != 0) {
+                        door_zone = (int)dz;
+                        break;
+                    }
+                    door += 22;
+                }
+            }
+            if (door_zone >= 0)
+                printf("[LEVEL] switch[%d] zone=%d point_index=%u cond_bit=0x%04X (bit %u) pos=(%d,%d) opens_door_zone=%d\n",
+                       si, (int)zone_id, point_index, cond_bit, bit_num, (int)sw_x, (int)sw_z, door_zone);
+            else
+                printf("[LEVEL] switch[%d] zone=%d point_index=%u cond_bit=0x%04X (bit %u) pos=(%d,%d)\n",
+                       si, (int)zone_id, point_index, cond_bit, bit_num, (int)sw_x, (int)sw_z);
             sw += 14;
             si++;
         }
