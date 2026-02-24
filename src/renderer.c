@@ -37,33 +37,6 @@
 #include <stdio.h>
 #include <limits.h>
 
-/* World size from obj[6]/obj[7] per object (Amiga style). */
-
-/* Per-sprite "feet" anchor: source rows from bottom of graphic to the feet row.
- * 0 = feet at bottom of image (default). If the art has empty space below the feet,
- * set this so we place that row on the floor. Y position itself comes from obj[4]/obj[7]. */
-static const int sprite_feet_rows_from_bottom_by_vect[MAX_SPRITE_TYPES] = {
-    /*  0 alien       */ -10,
-    /*  1 pickups     */ -3,   /* medikit, ammo etc – slight hover fix */
-    /*  2 bigbullet   */ 0,
-    /*  3 (unused)    */ 0,
-    /*  4 flying      */ 0,
-    /*  5 keys        */ 0,
-    /*  6 rockets     */ 0,   /* ammo pickup – slight hover fix */
-    /*  7 barrel      */ 2,   /* barrel: obj[7] signed (-60) handles vertical placement */
-    /*  8 explosion   */ 0,
-    /*  9 guns        */ 0,
-    /* 10 marine      */ -12,
-    /* 11 bigalien    */ 0,
-    /* 12 lamps       */ 0,
-    /* 13 worm        */ 0,
-    /* 14 bigclaws    */ 0,
-    /* 15 tree        */ 0,
-    /* 16 tough marine*/ 0,
-    /* 17 flame marine*/ 0,
-    /* 18,19         */ 0, 0,
-};
-
 /* Floor/ceiling UV step per pixel: d1>>FLOOR_STEP_SHIFT (same at any width so texture scale is correct). */
 #define FLOOR_STEP_SHIFT  (6 + RENDER_SCALE_LOG2)  /* d1>>9 at RENDER_SCALE=8 */
 /* UV per world unit for floor/ceiling camera offset. Matches projection: u_step = dist*cosval/512,
@@ -1712,13 +1685,8 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         int center_y = g_renderer.height / 2;
         int floor_screen_y = (int)((int64_t)floor_rel * (int64_t)g_renderer.proj_y_scale * (int32_t)RENDER_SCALE / denom) + center_y;
         int half_h = sprite_h / 2;
-        /* Per-vect feet anchor: shift sprite down so the feet row (not image bottom) sits on the floor. */
-        int feet_rows = sprite_feet_rows_from_bottom_by_vect[vect_num];
-        int feet_offset_px = (src_rows > 0 && feet_rows != 0)
-            ? (feet_rows * sprite_h / src_rows) : 0;
-        int scr_y = floor_screen_y - half_h + feet_offset_px;
 
-        /* Look up frame info from FRAMES table */
+        /* Look up frame info from FRAMES table (Amiga: 2(a0) indexes frame; frame gives DOWN_STRIP for strip offset). */
         uint32_t ptr_off = 0;
         uint16_t down_strip = 0;
         const SpriteFrame *ft = sprite_frames_table[vect_num].frames;
@@ -1727,6 +1695,10 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
             ptr_off = ft[frame_num].ptr_off;
             down_strip = ft[frame_num].down_strip;
         }
+        /* Vertical placement: Amiga positions sprite then adds DOWN_STRIP when indexing strip rows.
+         * Convert down_strip (source rows) to screen pixels and shift sprite down so content aligns. */
+        //int down_strip_px = (src_rows > 0) ? (int)((int32_t)down_strip * sprite_h / src_rows) : 0;
+        int scr_y = floor_screen_y - half_h;
 
         /* Use dedicated .pal if loaded; no fallback to WAD header because
          * sprite .pal format (15 levels × 32 × 2 bytes = 960) differs from
