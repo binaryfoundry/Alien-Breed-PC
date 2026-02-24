@@ -333,6 +333,8 @@ static int check_wall_line(MoveContext *ctx, LevelState *level,
                         (int64_t)(ctx->oldz - lz) * lxlen;
 
     if ((new_cross ^ old_cross) >= 0) return 0;  /* did not cross */
+    /* Avoid phantom hits when grazing the line (one side ~0); require clear crossing */
+    if (old_cross == 0 || new_cross == 0) return 0;
 
     /* Verify crossing is within the wall segment (not infinite extension) */
     int32_t wx = (int32_t)lxlen << ps;

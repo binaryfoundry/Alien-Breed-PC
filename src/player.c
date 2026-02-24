@@ -700,10 +700,26 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
             if (step.hitwall) any_hit = 1;
 
             /* One zone transition per frame so stairs climb step-by-step. After
-             * transitioning, do one more sub-step (with collision) so we advance
-             * into the new zone and don't sit on the boundary. */
-            /* One zone transition per frame so height snaps to one step at a time, not the top. */
+             * transitioning, validate position in the new zone so we don't end up
+             * inside a wall (wall clipping) or trigger phantom walls next frame. */
             if (cur_room != room_before) {
+                /* Run move_object again in the new zone so we check the new zone's
+                 * walls and slide/revert if we stepped into a wall. */
+                MoveContext step2 = ctx;
+                step2.objroom = cur_room;
+                step2.stood_in_top = cur_top;
+                step2.oldx = cur_x;
+                step2.oldz = cur_z;
+                step2.newx = start_x + (dx * i) / steps;
+                step2.newz = start_z + (dz * i) / steps;
+                step2.xdiff = step2.newx - step2.oldx;
+                step2.zdiff = step2.newz - step2.oldz;
+                move_object(&step2, &state->level);
+                cur_x = step2.newx;
+                cur_z = step2.newz;
+                cur_room = step2.objroom;
+                cur_top = step2.stood_in_top;
+                if (step2.hitwall) any_hit = 1;
                 plr->no_transition_back_roompt = (int32_t)(room_before - state->level.data);
                 break;
             }
