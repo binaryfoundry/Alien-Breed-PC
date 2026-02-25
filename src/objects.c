@@ -1366,6 +1366,45 @@ static bool player_at_door_zone(GameState *state, int16_t door_zone_id, int16_t 
     return false;
 }
 
+/* Same as player_at_door_zone but for lifts: uses lift wall list and returns true if player is in
+ * the lift zone or within DOOR_NEAR_THRESH of any lift wall floor line. */
+static bool player_at_lift_zone(GameState *state, int16_t lift_zone_id, int16_t player_zone, int lift_idx, int plr_num)
+{
+    if (player_zone < 0) return false;
+    if (player_zone == lift_zone_id) return true;
+
+    if (!state->level.lift_wall_list || !state->level.lift_wall_list_offsets || !state->level.floor_lines) return false;
+    if (lift_idx < 0 || (uint32_t)lift_idx >= state->level.num_lifts) return false;
+
+    int32_t px, pz;
+    if (plr_num == 0) {
+        px = state->plr1.xoff >> 16;
+        pz = state->plr1.zoff >> 16;
+    } else {
+        px = state->plr2.xoff >> 16;
+        pz = state->plr2.zoff >> 16;
+    }
+
+    uint32_t start = state->level.lift_wall_list_offsets[lift_idx];
+    uint32_t end   = state->level.lift_wall_list_offsets[lift_idx + 1];
+    for (uint32_t j = start; j < end; j++) {
+        const uint8_t *ent = state->level.lift_wall_list + j * DOOR_WALL_ENT_SIZE;
+        int16_t fi = be16(ent);
+        if (fi < 0 || (int32_t)fi >= state->level.num_floor_lines) continue;
+        const uint8_t *fl = state->level.floor_lines + (uint32_t)(int16_t)fi * DOOR_FLINE_SIZE;
+        int32_t lx   = (int32_t)(int16_t)be16(fl + DOOR_FLINE_X);
+        int32_t lz   = (int32_t)(int16_t)be16(fl + DOOR_FLINE_Z);
+        int32_t lxlen = (int32_t)(int16_t)be16(fl + DOOR_FLINE_XLEN);
+        int32_t lzlen = (int32_t)(int16_t)be16(fl + DOOR_FLINE_ZLEN);
+        int64_t cross = (int64_t)(px - lx) * lzlen - (int64_t)(pz - lz) * lxlen;
+        int64_t len_sq = (int64_t)lxlen * lxlen + (int64_t)lzlen * lzlen;
+        if (len_sq <= 0) continue;
+        if (cross < 0) cross = -cross;
+        if (cross * cross < 4000 * len_sq) return true;
+    }
+    return false;
+}
+
 /* -----------------------------------------------------------------------
  * Door routine
  *
@@ -1485,6 +1524,11 @@ void door_routine(GameState *state)
  * Lift routine
  *
  * Translated from Anims.s LiftRoutine (line ~377-627).
+ *
+ * Lift entry layout (20 bytes): zone(w), type(w), pos(l), vel(w), top(l), bot(l), flags(w).
+ *   type: high byte = behaviour when at top (0=space/on lift, 1=player on lift, 2=auto, 3=no move),
+ *         low byte = behaviour when at bottom (same).
+ *   flags: 0 = always active; else same as door (satisfied when (game_conditions & flags) == flags).
  * ----------------------------------------------------------------------- */
 void lift_routine(GameState *state)
 {
@@ -1507,20 +1551,61 @@ void lift_routine(GameState *state)
         int16_t lift_vel = be16(lift + 8);
         int32_t lift_top = be32(lift + 10);
         int32_t lift_bot = be32(lift + 14);
+        uint16_t lift_flags = (uint16_t)be16(lift + 18);
 
-        /* TEMPORARY: Loop all lifts bot -> top -> bot for testing. REMOVE and restore should_move/lift_type logic. */
-        {
-            const int32_t up_speed = 4, down_speed = -4;
-            if (lift_pos >= lift_bot) {
-                lift_vel = down_speed;
-            } else if (lift_pos <= lift_top) {
-                lift_vel = up_speed;
+        int plr1_at = player_at_lift_zone(state, zone_id, state->plr1.zone, lift_idx, 0);
+        int plr2_at = player_at_lift_zone(state, zone_id, state->plr2.zone, lift_idx, 1);
+        int at_lift = plr1_at || plr2_at;
+        int space_tap = (plr1_at && state->plr1.p_spctap) || (plr2_at && state->plr2.p_spctap);
+        int plr1_on = state->plr1.stood_on_lift && plr1_at;
+        int plr2_on = state->plr2.stood_on_lift && plr2_at;
+        int any_on_lift = plr1_on || plr2_on;
+
+        /* Conditions: when lift_flags == 0 always satisfied; else same as door (switch bits). */
+        int satisfied = (lift_flags == 0) || (((uint16_t)game_conditions & lift_flags) == lift_flags);
+
+        if (satisfied) {
+            /* Amiga: two type bytes – high = when at top (can go down), low = when at bottom (can go up). */
+            int type_at_top = (lift_type >> 8) & 0xFF;
+            int type_at_bot = lift_type & 0xFF;
+            int at_top = (lift_pos <= lift_top);
+            int at_bot = (lift_pos >= lift_bot);
+
+            if (at_top) {
+                /* Decide whether to go down (positive vel = toward lift_bot). */
+                switch (type_at_top) {
+                    case 0: /* space or player on lift */
+                        if (space_tap || (any_on_lift && at_lift))
+                            lift_vel = 4;
+                        break;
+                    case 1: /* player on lift */
+                        if (any_on_lift) lift_vel = 4;
+                        break;
+                    case 2: lift_vel = 4; break;  /* auto down */
+                    case 3: lift_vel = 0; break; /* no move */
+                    default: break;
+                }
+            } else if (at_bot) {
+                /* Decide whether to go up (negative vel = toward lift_top). */
+                switch (type_at_bot) {
+                    case 0:
+                        if (space_tap || (any_on_lift && at_lift))
+                            lift_vel = -4;
+                        break;
+                    case 1:
+                        if (any_on_lift) lift_vel = -4;
+                        break;
+                    case 2: lift_vel = -4; break;  /* auto up */
+                    case 3: lift_vel = 0; break;
+                    default: break;
+                }
             }
-            lift_pos += (int32_t)lift_vel * state->temp_frames * 64;
-            if (lift_pos < lift_top) lift_pos = lift_top;
-            if (lift_pos > lift_bot) lift_pos = lift_bot;
-            if (lift_pos == lift_top || lift_pos == lift_bot) lift_vel = 0;
+            /* Else neither at top nor at bottom: keep current velocity (already moving). */
         }
+
+        lift_pos += (int32_t)lift_vel * state->temp_frames * 64;
+        if (lift_pos < lift_top) lift_pos = lift_top;
+        if (lift_pos > lift_bot) lift_pos = lift_bot;
 
         wbe32(lift + 4, lift_pos);
         wbe16(lift + 8, lift_vel);

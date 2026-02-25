@@ -275,6 +275,7 @@ int level_parse(LevelState *level)
                     for (int i = 0; i < nl; i++) {
                         int16_t bottom = read_word(s + 0), top = read_word(s + 2), curr = read_word(s + 4), dir = read_word(s + 6);
                         int16_t zone = read_word(s + 12);
+                        int16_t conditions = read_word(s + 14);
                         const uint8_t *wall_start = s + 18;
                         uint32_t lift_start = wall_index;
                         int nw = parse_amiga_door_wall_list(&wall_start, wall_list ? wall_list + wall_index * 6 : NULL, 64);
@@ -291,7 +292,7 @@ int level_parse(LevelState *level)
                             write_word_be(t + 8, dir);
                             write_long_be(t + 10, (int32_t)top * 64);  /* lift_top = low position (×64, same as door) */
                             write_long_be(t + 14, (int32_t)bottom * 64);     /* lift_bot = high position (×64) */
-                            write_word_be(t + 18, (int16_t)0);  /* padding to 20 bytes */
+                            write_word_be(t + 18, conditions);  /* Amiga conditions mask (same as door flags) */
                             out_idx++;
                         }
                     }
