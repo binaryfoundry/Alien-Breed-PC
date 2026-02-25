@@ -121,7 +121,7 @@ void explode_into_bits(GameObject *obj, GameState *state)
  * ViewpointToDraw - calculate sprite frame from viewer angle
  *
  * Translated from ViewpointToDraw in the enemy .s files.
- * Given the angle from viewer to object and the object's facing,
+ * Given the angle from object to viewer and the object's facing,
  * returns which of 8 rotational frames to use (0-7).
  * ----------------------------------------------------------------------- */
 int16_t viewpoint_to_draw(int16_t viewer_x, int16_t viewer_z,
@@ -131,7 +131,8 @@ int16_t viewpoint_to_draw(int16_t viewer_x, int16_t viewer_z,
     /* Calculate angle from object to viewer */
     double dx = (double)(viewer_x - obj_x);
     double dz = (double)(viewer_z - obj_z);
-    double angle = atan2(-dx, -dz);
+    /* Angle of (dx,dz) from object to viewer; 0 = +Z (matches Amiga ViewpointToDraw) */
+    double angle = atan2(dx, dz);
     int16_t view_angle = (int16_t)(angle * (4096.0 / (2.0 * 3.14159265)));
     view_angle = (view_angle * 2) & ANGLE_MASK;
 
@@ -150,7 +151,8 @@ int16_t viewpoint_to_draw_16(int16_t viewer_x, int16_t viewer_z,
 {
     double dx = (double)(viewer_x - obj_x);
     double dz = (double)(viewer_z - obj_z);
-    double angle = atan2(-dx, -dz);
+    /* Angle of (dx,dz) from object to viewer; 0 = +Z (matches Amiga) */
+    double angle = atan2(dx, dz);
     int16_t view_angle = (int16_t)(angle * (4096.0 / (2.0 * 3.14159265)));
     view_angle = (view_angle * 2) & ANGLE_MASK;
     int16_t rel = (view_angle - obj_facing) & ANGLE_MASK;
