@@ -202,6 +202,7 @@ static inline void obj_sl(uint8_t *p, int32_t v) {
 #define NASTY_TIMER(o)    obj_w((o).raw + 34)   /* td[16] abs 34 */
 #define NASTY_EFLAGS(o)   obj_l((o).raw + 36)   /* td[18] abs 36 */
 
+#define NASTY_SET_DAMAGE(p, v)   (*(int8_t*)&(p)->raw[19] = (int8_t)(v))
 #define NASTY_SET_MAXSPD(o, v)   obj_sw((o).raw + 20, (int16_t)(v))
 #define NASTY_SET_CURRSPD(o, v)  obj_sw((o).raw + 22, (int16_t)(v))
 #define NASTY_SET_FACING(o, v)   obj_sw((o).raw + 30, (int16_t)(v))

@@ -249,6 +249,16 @@ typedef struct {
     /* Password storage (16 levels * 17 bytes each) */
     char            password_storage[PASSWORD_STORAGE_SIZE];
 
+#define MAX_EXPLOSIONS 16
+    /* Active explosion animations (barrel, rocket/grenade impact, explode_into_bits). */
+    struct {
+        int16_t  x, z;
+        int16_t  zone;
+        int32_t  y_floor;   /* world Y for sprite placement (same scale as obj_floor) */
+        int8_t   frame;
+    } explosions[MAX_EXPLOSIONS];
+    int num_explosions;
+
 } GameState;
 
 /* -----------------------------------------------------------------------

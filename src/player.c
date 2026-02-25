@@ -1241,10 +1241,11 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
     int8_t *obs_in_line = (plr_num == 1) ? plr1_obs_in_line : plr2_obs_in_line;
     int16_t *obj_dists = (plr_num == 1) ? plr1_obj_dists : plr2_obj_dists;
 
-    /* Enemy flags for target detection */
+    /* Enemy flags for target detection (include barrel so shooting barrels causes explosion) */
     uint32_t enemy_flags = (plr_num == 1) ?
         0x3FF371 :  /* %1111111111110111000001 for P1 */
         0x3FD5E1;   /* %1111111111010111100001 for P2 */
+    enemy_flags |= (1u << OBJ_NBR_BARREL);
 
     /* Find closest target in line of fire */
     int closest_idx = -1;
@@ -1311,7 +1312,7 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
                 /* Hit the target */
                 GameObject *target = (GameObject*)(state->level.object_data +
                                      closest_idx * OBJECT_SIZE);
-                NASTY_DAMAGE(*target) += gun->shot_power;
+                NASTY_SET_DAMAGE(target, (int8_t)(NASTY_DAMAGE(*target) + gun->shot_power));
 
                 /* Impact force on target (push in firing direction) */
                 int16_t push_x = (int16_t)(dir_x >> 4);

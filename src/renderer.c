@@ -1729,6 +1729,78 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
                              (int16_t)bright, vect_num,
                              clip_top_y, clip_bot_y);
     }
+
+    /* Draw explosion animations (barrel, rocket/grenade impact, explode_into_bits) */
+    const int expl_vect = 8;
+    if (r->sprite_wad[expl_vect] && r->sprite_ptr[expl_vect] && state->num_explosions > 0) {
+        int16_t sin_v = r->sinval;
+        int16_t cos_v = r->cosval;
+        int16_t cam_x = r->xoff;
+        int16_t cam_z = r->zoff;
+        const SpriteFrame *ft = sprite_frames_table[expl_vect].frames;
+        int ft_count = sprite_frames_table[expl_vect].count;
+        int expl_w = 64, expl_h = 64;
+        int src_cols = 64, src_rows = 64;
+
+        for (int ei = 0; ei < state->num_explosions; ei++) {
+            if (state->explosions[ei].zone != (int16_t)zone_id) continue;
+            if ((int)state->explosions[ei].frame >= 9) continue;
+            int frame_num = state->explosions[ei].frame;
+            if (frame_num >= ft_count) frame_num = ft_count - 1;
+
+            int16_t dx = (int16_t)(state->explosions[ei].x - cam_x);
+            int16_t dz = (int16_t)(state->explosions[ei].z - cam_z);
+            int32_t vx = (int32_t)dx * cos_v - (int32_t)dz * sin_v;
+            vx <<= 1;
+            int16_t vx16 = (int16_t)(vx >> 16);
+            int32_t vz = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
+            vz <<= 2;
+            int16_t vz16 = (int16_t)(vz >> 16);
+            int32_t vx_fine = (int32_t)vx16 << 7;
+            vx_fine += r->xwobble;
+
+            int32_t orp_z = (int32_t)vz16;
+            if (orp_z <= 0) continue;
+
+            int scr_x = (int)(vx_fine * RENDER_SCALE / (int32_t)orp_z) + (r->width / 2);
+            int32_t floor_rel = state->explosions[ei].y_floor - y_off;
+            int32_t floor_rel_8 = floor_rel >> WORLD_Y_FRAC_BITS;
+            int center_y = r->height / 2;
+            int floor_screen_y = (int)((int64_t)floor_rel_8 * (int64_t)r->proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp_z) + center_y;
+            int z_for_size = orp_z;
+            if (z_for_size < 1) z_for_size = 1;
+            int sprite_w = (int)((int32_t)expl_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+            int sprite_h = (int)((int64_t)expl_h * (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+            if (sprite_w < 1) sprite_w = 1;
+            if (sprite_h < 1) sprite_h = 1;
+            int half_h = sprite_h / 2;
+            int scr_y = floor_screen_y - half_h + 1;
+
+            uint32_t ptr_off = 0;
+            uint16_t down_strip = 0;
+            if (ft && frame_num >= 0 && frame_num < ft_count) {
+                ptr_off = ft[frame_num].ptr_off;
+                down_strip = ft[frame_num].down_strip;
+            }
+
+            int32_t clip_top_y = (int)((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE / orp_z) + center_y;
+            int32_t clip_bot_y = (int)((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE / orp_z) + center_y;
+            int bright = (orp_z >> 7) + 0;
+
+            const uint8_t *obj_pal = r->sprite_pal_data[expl_vect];
+            size_t obj_pal_size = r->sprite_pal_size[expl_vect];
+            renderer_draw_sprite((int16_t)scr_x, (int16_t)scr_y,
+                                 (int16_t)sprite_w, (int16_t)sprite_h,
+                                 (int16_t)(orp_z > 32767 ? 32767 : orp_z),
+                                 r->sprite_wad[expl_vect], r->sprite_wad_size[expl_vect],
+                                 r->sprite_ptr[expl_vect], r->sprite_ptr_size[expl_vect],
+                                 obj_pal, obj_pal_size,
+                                 ptr_off, down_strip,
+                                 src_cols, src_rows,
+                                 (int16_t)bright, expl_vect,
+                                 clip_top_y, clip_bot_y);
+        }
+    }
 }
 
 /* -----------------------------------------------------------------------

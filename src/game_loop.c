@@ -270,6 +270,7 @@ void game_loop(GameState *state)
             }
 
             objects_update(state);
+            explosion_advance(state);
 
             /* ---- Phase 15: Object worry flags ---- */
             if (state->level.object_data) {

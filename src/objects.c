@@ -100,7 +100,7 @@ static void get_object_pos(const LevelState *level, int index,
  *
  * Returns: true if enemy is dead (caller should return early)
  * ----------------------------------------------------------------------- */
-static bool enemy_check_damage(GameObject *obj, const EnemyParams *params)
+static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameState *state)
 {
     int8_t damage = NASTY_DAMAGE(*obj);
     if (damage <= 0) return false;
@@ -125,6 +125,12 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params)
         /* Check for explosion death */
         if (damage > 1 && params->explode_threshold > 0 &&
             damage >= params->explode_threshold) {
+            int idx = (int)(((uint8_t*)obj - state->level.object_data) / OBJECT_SIZE);
+            int16_t ex, ez;
+            get_object_pos(&state->level, idx, &ex, &ez);
+            int32_t y_floor = ((int32_t)obj_w(obj->raw + 4) + (int32_t)(int8_t)obj->raw[7]) << 7;
+            if ((int8_t)obj->raw[7] == 0) y_floor = ((int32_t)obj_w(obj->raw + 4) + 32) << 7;
+            explosion_spawn(state, ex, ez, OBJ_ZONE(obj), y_floor);
             explode_into_bits(obj, NULL);
         }
 
@@ -369,7 +375,7 @@ static void enemy_generic(GameObject *obj, GameState *state, int param_index)
     const EnemyParams *params = &enemy_params[param_index];
 
     /* Check damage */
-    if (enemy_check_damage(obj, params)) return;
+    if (enemy_check_damage(obj, params, state)) return;
 
     int8_t lives = NASTY_LIVES(*obj);
     if (lives <= 0) return;
@@ -667,7 +673,7 @@ void object_handle_marine(GameObject *obj, GameState *state)
     else                                   param_idx = 6;
 
     const EnemyParams *params = &enemy_params[param_idx];
-    if (enemy_check_damage(obj, params)) return;
+    if (enemy_check_damage(obj, params, state)) return;
 
     int8_t lives = NASTY_LIVES(*obj);
     if (lives <= 0) return;
@@ -727,7 +733,7 @@ void object_handle_flying_nasty(GameObject *obj, GameState *state)
 
     const EnemyParams *params = &enemy_params[9];
 
-    if (enemy_check_damage(obj, params)) return;
+    if (enemy_check_damage(obj, params, state)) return;
 
     int8_t lives = NASTY_LIVES(*obj);
     if (lives <= 0) return;
@@ -864,16 +870,22 @@ void object_handle_barrel(GameObject *obj, GameState *state)
 
     NASTY_DAMAGE(*obj) = 0;
     int8_t lives = NASTY_LIVES(*obj);
+    /* If lives uninitialized (0) from level, treat as one-shot: any damage explodes */
+    if (lives <= 0) lives = 1;
     lives -= damage;
 
     if (lives <= 0) {
-        /* Explode! */
-        OBJ_SET_ZONE(obj, -1);
-
-        /* Get position for blast */
+        /* Get position and zone before removing object */
         int idx = (int)(((uint8_t*)obj - state->level.object_data) / OBJECT_SIZE);
         int16_t bx, bz;
         get_object_pos(&state->level, idx, &bx, &bz);
+        int16_t zone = OBJ_ZONE(obj);
+        int32_t y_floor = ((int32_t)obj_w(obj->raw + 4) + (int32_t)(int8_t)obj->raw[7]) << 7;
+        if ((int8_t)obj->raw[7] == 0) y_floor = ((int32_t)obj_w(obj->raw + 4) + 32) << 7;
+
+        explosion_spawn(state, bx, bz, zone, y_floor);
+
+        OBJ_SET_ZONE(obj, -1);
 
         /* Area damage (radius 40, from Anims.s ItsABarrel) */
         compute_blast(state, bx, bz, 0, 40, 8);
@@ -1167,9 +1179,11 @@ void object_handle_bullet(GameObject *obj, GameState *state)
                               bullet_types[shot_size].hit_volume);
         }
 
-        /* Explosive force */
+        /* Explosive force + explosion animation */
         if (shot_size >= 0 && shot_size < 8 &&
             bullet_types[shot_size].explosive_force > 0) {
+            explosion_spawn(state, (int16_t)ctx.newx, (int16_t)ctx.newz,
+                            OBJ_ZONE(obj), accypos);
             compute_blast(state, ctx.newx, ctx.newz, accypos,
                           bullet_types[shot_size].explosive_force,
                           SHOT_POWER(*obj));
@@ -1233,8 +1247,8 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             continue;
         }
 
-        /* Check lives */
-        if (NASTY_LIVES(*target) <= 0) {
+        /* Check lives (barrels with 0 lives can still be hit to trigger explosion) */
+        if (NASTY_LIVES(*target) <= 0 && tgt_type != OBJ_NBR_BARREL) {
             check_idx++;
             continue;
         }
@@ -1278,7 +1292,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         }
 
         /* HIT! Apply damage */
-        NASTY_DAMAGE(*target) += SHOT_POWER(*obj);
+        NASTY_SET_DAMAGE(target, (int8_t)(NASTY_DAMAGE(*target) + SHOT_POWER(*obj)));
 
         /* Set bullet to popping */
         SHOT_STATUS(*obj) = 1;
@@ -1291,6 +1305,8 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         }
         if (shot_size >= 0 && shot_size < 8 &&
             bullet_types[shot_size].explosive_force > 0) {
+            explosion_spawn(state, (int16_t)ctx.newx, (int16_t)ctx.newz,
+                            OBJ_ZONE(obj), accypos);
             compute_blast(state, ctx.newx, ctx.newz, accypos,
                           bullet_types[shot_size].explosive_force,
                           SHOT_POWER(*obj));
@@ -1893,7 +1909,7 @@ void compute_blast(GameState *state, int32_t x, int32_t z, int32_t y,
             /* Apply damage, scaled by distance */
             int damage = (power * (radius - (int)dist)) / radius;
             if (damage > 0) {
-                NASTY_DAMAGE(*obj) += (int8_t)damage;
+                NASTY_SET_DAMAGE(obj, (int8_t)(NASTY_DAMAGE(*obj) + damage));
             }
         }
 
@@ -1921,6 +1937,36 @@ void compute_blast(GameState *state, int32_t x, int32_t z, int32_t y,
     }
 
     (void)y; /* Y currently not used for blast radius */
+}
+
+/* -----------------------------------------------------------------------
+ * Explosion animation (visual only; damage is compute_blast).
+ * ----------------------------------------------------------------------- */
+void explosion_spawn(GameState *state, int16_t x, int16_t z, int16_t zone, int32_t y_floor)
+{
+    if (state->num_explosions >= MAX_EXPLOSIONS) return;
+    int i = state->num_explosions++;
+    state->explosions[i].x = x;
+    state->explosions[i].z = z;
+    state->explosions[i].zone = zone;
+    state->explosions[i].y_floor = y_floor;
+    state->explosions[i].frame = 0;
+}
+
+void explosion_advance(GameState *state)
+{
+    int n = state->num_explosions;
+    for (int i = 0; i < n; i++) {
+        state->explosions[i].frame = (int8_t)(state->explosions[i].frame + state->temp_frames);
+        if ((int)state->explosions[i].frame >= 9) {
+            /* Remove: shift down */
+            n--;
+            for (int j = i; j < n; j++)
+                state->explosions[j] = state->explosions[j + 1];
+            state->num_explosions = n;
+            i--;
+        }
+    }
 }
 
 /* -----------------------------------------------------------------------
