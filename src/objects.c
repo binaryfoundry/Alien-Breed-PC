@@ -2043,6 +2043,8 @@ void compute_blast(GameState *state, int32_t x, int32_t z, int32_t y,
 
 /* -----------------------------------------------------------------------
  * Explosion animation (visual only; damage is compute_blast).
+ * Amiga: explosion/bullet pop advances one step per ObjMoveAnim (per vblank).
+ * Advance by 1 per call so duration is consistent regardless of temp_frames.
  * ----------------------------------------------------------------------- */
 void explosion_spawn(GameState *state, int16_t x, int16_t z, int16_t zone, int32_t y_floor)
 {
@@ -2059,7 +2061,7 @@ void explosion_advance(GameState *state)
 {
     int n = state->num_explosions;
     for (int i = 0; i < n; i++) {
-        state->explosions[i].frame = (int8_t)(state->explosions[i].frame + state->temp_frames);
+        state->explosions[i].frame = (int8_t)(state->explosions[i].frame + 1);
         if ((int)state->explosions[i].frame >= 9) {
             /* Remove: shift down */
             n--;
