@@ -910,6 +910,7 @@ void object_handle_medikit(GameObject *obj, GameState *state)
             plr->energy += HEAL_FACTOR;
             if (plr->energy > PLAYER_MAX_ENERGY)
                 plr->energy = PLAYER_MAX_ENERGY;
+            printf("[PICKUP] player 1 picked up medikit\n");
             OBJ_SET_ZONE(obj, -1); /* Remove pickup */
             audio_play_sample(4, 50);
         }
@@ -920,6 +921,7 @@ void object_handle_medikit(GameObject *obj, GameState *state)
             plr->energy += HEAL_FACTOR;
             if (plr->energy > PLAYER_MAX_ENERGY)
                 plr->energy = PLAYER_MAX_ENERGY;
+            printf("[PICKUP] player 2 picked up medikit\n");
             OBJ_SET_ZONE(obj, -1);
             audio_play_sample(4, 50);
         }
@@ -941,6 +943,7 @@ void object_handle_ammo(GameObject *obj, GameState *state)
             ammo += AMMO_PER_CLIP * 8;
             if (ammo > MAX_AMMO_DISPLAY) ammo = (int16_t)MAX_AMMO_DISPLAY;
             plr->gun_data[gun_idx].ammo = ammo;
+            printf("[PICKUP] player 1 picked up ammo (gun %d)\n", gun_idx);
             OBJ_SET_ZONE(obj, -1);
             audio_play_sample(11, 50);
         }
@@ -953,6 +956,7 @@ void object_handle_ammo(GameObject *obj, GameState *state)
             ammo += AMMO_PER_CLIP * 8;
             if (ammo > MAX_AMMO_DISPLAY) ammo = (int16_t)MAX_AMMO_DISPLAY;
             plr->gun_data[gun_idx].ammo = ammo;
+            printf("[PICKUP] player 2 picked up ammo (gun %d)\n", gun_idx);
             OBJ_SET_ZONE(obj, -1);
             audio_play_sample(11, 50);
         }
@@ -968,15 +972,15 @@ void object_handle_ammo(GameObject *obj, GameState *state)
 void object_handle_key(GameObject *obj, GameState *state)
 {
     if (pickup_distance_check(obj, state, 1)) {
-        /* Determine which key (stored in type_data) */
-        int key_id = obj->obj.type_data[0] & 0x03; /* 0-3 */
-        game_conditions |= (1 << (5 + key_id));
+        /* Determine which key from shared "can_see" */
+        game_conditions |= obj->obj.can_see;
+        printf("[PICKUP] player 1 picked up key (key_id %d)\n", obj->obj.can_see);
         OBJ_SET_ZONE(obj, -1);
         audio_play_sample(4, 50);
     }
     if (state->mode != MODE_SINGLE && pickup_distance_check(obj, state, 2)) {
-        int key_id = obj->obj.type_data[0] & 0x03;
-        game_conditions |= (1 << (5 + key_id));
+        game_conditions |= obj->obj.can_see;
+        printf("[PICKUP] player 2 picked up key (key_id %d)\n", obj->obj.can_see);
         OBJ_SET_ZONE(obj, -1);
         audio_play_sample(4, 50);
     }
@@ -997,6 +1001,7 @@ void object_handle_big_gun(GameObject *obj, GameState *state)
             /* Add some ammo */
             int16_t ammo_add = ammo_in_guns[gun_idx] * 8;
             plr->gun_data[gun_idx].ammo += ammo_add;
+            printf("[PICKUP] player 1 picked up big gun (gun %d)\n", gun_idx);
             OBJ_SET_ZONE(obj, -1);
             audio_play_sample(4, 50);
         }
@@ -1008,6 +1013,7 @@ void object_handle_big_gun(GameObject *obj, GameState *state)
             plr->gun_data[gun_idx].visible = -1;
             int16_t ammo_add = ammo_in_guns[gun_idx] * 8;
             plr->gun_data[gun_idx].ammo += ammo_add;
+            printf("[PICKUP] player 2 picked up big gun (gun %d)\n", gun_idx);
             OBJ_SET_ZONE(obj, -1);
             audio_play_sample(4, 50);
         }
@@ -1425,7 +1431,6 @@ void door_routine(GameState *state)
 
     uint8_t *door = state->level.door_data;
     int door_idx = 0;
-    printf("game_conditions: %d, \n", game_conditions);
 
     /* Iterate door entries (22 bytes each, terminated by -1). Same layout as lift: pos/top/bot (world *256). */
     while (1) {

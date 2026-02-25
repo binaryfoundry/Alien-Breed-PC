@@ -6,6 +6,7 @@
  */
 
 #include "level.h"
+#include "game_types.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -529,6 +530,31 @@ int level_parse(LevelState *level)
                    li, (int)zone_id, (int)lift_type, (long)lift_pos, (int)lift_vel, (long)lift_top, (long)lift_bot);
             lift += 20;
             li++;
+        }
+    }
+    /* Debug: dump objects in level (64 bytes each; zone < 0 = inactive) */
+    if (level->object_data) {
+        const uint8_t *obj = level->object_data;
+        int oi = 0;
+        const int max_objects = 256;
+        while (oi < max_objects) {
+            int16_t cid = read_word(obj + 0);
+            int16_t zone = read_word(obj + 12);
+            int8_t number = (int8_t)obj[16];  /* object type */
+            int8_t can_see = (int8_t)obj[17];
+            const uint8_t *type_data = obj + 18;  /* 44 bytes */
+            printf("[LEVEL] obj[%d] zone=%d cid=%d type=%d (%s)",
+                   oi, (int)zone, (int)cid, (int)number,
+                   number == OBJ_NBR_KEY ? "key" :
+                   number == OBJ_NBR_MEDIKIT ? "medikit" :
+                   number == OBJ_NBR_AMMO ? "ammo" :
+                   number == OBJ_NBR_BIG_GUN ? "big_gun" :
+                   number == OBJ_NBR_PLR1 ? "plr1" : number == OBJ_NBR_PLR2 ? "plr2" : "other");
+            if (number == OBJ_NBR_KEY)
+                printf(" key_byte17=%d", (int)(can_see & 0xFF));
+            printf("\n");
+            obj += OBJECT_SIZE;
+            oi++;
         }
     }
 

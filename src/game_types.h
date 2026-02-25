@@ -111,7 +111,7 @@ typedef union {
         /* offset 12 */ int16_t  zone;              /* .w - USE OBJ_ZONE() */
         /* offset 14 */ int16_t  graphic_room;     /* .w - USE OBJ_GROOM() */
         /* offset 16 */ int8_t   number;            /* .b - direct access OK */
-        /* offset 17 */ int8_t   can_see;           /* .b - direct access OK */
+        /* offset 17 */ int8_t   can_see;           /* .b - direct access OK - visibility or keys */
         /* offset 18 */ uint8_t  type_data[44];     /* type-dependent fields */
         /* offset 62 */ int8_t   worry;             /* .b - direct access OK */
         /* offset 63 */ int8_t   in_top;            /* .b - direct access OK */
