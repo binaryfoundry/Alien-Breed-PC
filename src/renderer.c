@@ -1724,8 +1724,10 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         int16_t cam_z = r->zoff;
         const SpriteFrame *ft = sprite_frames_table[expl_vect].frames;
         int ft_count = sprite_frames_table[expl_vect].count;
-        int expl_w = 64, expl_h = 64;
-        int src_cols = 64, src_rows = 64;
+        /* World size for explosion sprite (128 = 2x so explosions read clearly). */
+        int expl_w = 128, expl_h = 128;
+        /* PTR has 64 columns per frame (frames_explosion ptr_off steps by 64*4); use src_cols/rows=32 so eff_cols/eff_rows=64. */
+        int src_cols = 32, src_rows = 32;
 
         for (int ei = 0; ei < state->num_explosions; ei++) {
             if (state->explosions[ei].zone != (int16_t)zone_id) continue;

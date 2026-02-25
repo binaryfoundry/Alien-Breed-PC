@@ -131,8 +131,7 @@ int16_t viewpoint_to_draw(int16_t viewer_x, int16_t viewer_z,
     /* Calculate angle from object to viewer */
     double dx = (double)(viewer_x - obj_x);
     double dz = (double)(viewer_z - obj_z);
-    /* Angle of (dx,dz) from object to viewer; 0 = +Z (matches Amiga ViewpointToDraw) */
-    double angle = atan2(dx, dz);
+    double angle = atan2(-dx, -dz);
     int16_t view_angle = (int16_t)(angle * (4096.0 / (2.0 * 3.14159265)));
     view_angle = (view_angle * 2) & ANGLE_MASK;
 
@@ -151,8 +150,7 @@ int16_t viewpoint_to_draw_16(int16_t viewer_x, int16_t viewer_z,
 {
     double dx = (double)(viewer_x - obj_x);
     double dz = (double)(viewer_z - obj_z);
-    /* Angle of (dx,dz) from object to viewer; 0 = +Z (matches Amiga) */
-    double angle = atan2(dx, dz);
+    double angle = atan2(-dx, -dz);
     int16_t view_angle = (int16_t)(angle * (4096.0 / (2.0 * 3.14159265)));
     view_angle = (view_angle * 2) & ANGLE_MASK;
     int16_t rel = (view_angle - obj_facing) & ANGLE_MASK;
