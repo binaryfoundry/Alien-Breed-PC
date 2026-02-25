@@ -1458,9 +1458,7 @@ void door_routine(GameState *state)
                 satisfied = at_door && (space_tap || door_pos < door_bot);
             } else {
                 int conditions_met = ((uint16_t)game_conditions & door_flags) == door_flags;
-                int switch_only_bits = 0x1E0u;
-                int key_bits = 0xE10u ;
-                int is_switch_door = (door_flags & key_bits) == 0 && (door_flags & switch_only_bits) != 0;
+                int is_switch_door = door_flags & 0xFF0;
                 if (is_switch_door) {
                     satisfied = conditions_met;
                 } else {
