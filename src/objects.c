@@ -570,7 +570,9 @@ void objects_update(GameState *state)
             object_handle_gas_pipe(obj, state);
             break;
         case OBJ_NBR_DEAD:
-            /* Advance death animation; original type stored in type_data[1] when we died */
+            /* Advance death animation; original type stored in type_data[1] when we died.
+             * Amiga: ThirdTimer counts down from 25, one step per ObjMoveAnim (~0.5 s at 50 Hz).
+             * Advance every tick (dead_l >= 1) to match. */
             {
                 int8_t original_type = obj->obj.type_data[1];
                 param_idx = obj_type_to_enemy_index(original_type);
@@ -579,7 +581,7 @@ void objects_update(GameState *state)
                     int8_t death_index = obj->obj.type_data[0];
                     int16_t dead_l = OBJ_DEADL(obj);
                     dead_l += state->temp_frames;
-                    if (dead_l >= 4) {
+                    if (dead_l >= 1) {
                         dead_l = 0;
                         death_index++;
                         obj->obj.type_data[0] = death_index;
