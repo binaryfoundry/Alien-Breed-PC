@@ -1703,6 +1703,15 @@ void switch_routine(GameState *state)
         unsigned int bit_num = 4 + (switch_index % 8);
         uint16_t bit_mask = (uint16_t)(1u << bit_num);
 
+        /* Update switch wall graphic every frame to match game_conditions (e.g. after load or other triggers). */
+        if (state->level.graphics) {
+            int32_t gfx_off = (int32_t)be32(sw + 6);
+            uint8_t *wall_ptr = state->level.graphics + gfx_off;
+            int16_t w = be16(wall_ptr);
+            w = (int16_t)((w & ~2) | ((game_conditions & bit_mask) ? 2 : 0));
+            write_be16(wall_ptr, w);
+        }
+
         int8_t cooldown = *(int8_t*)(sw + 3);  /* byte 3 (Anims: sub.b d1,3(a0)) */
 
         /* Decrement cooldown */
