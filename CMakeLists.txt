@@ -16,6 +16,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal")
 endif()
 
 # -----------------------------------------------------------------------
+# Data: ensure data/sounds exists (WAV files 0.wav, 1.wav, ... for SFX)
+# -----------------------------------------------------------------------
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds")
+
+# -----------------------------------------------------------------------
 # Data: ensure data/vectorobjects exists and copy from amiga/vectorobjects
 # -----------------------------------------------------------------------
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/vectorobjects")
