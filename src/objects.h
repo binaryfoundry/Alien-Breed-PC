@@ -18,10 +18,17 @@
 #include "game_state.h"
 
 /* -----------------------------------------------------------------------
- * Object processing - called once per frame from the game loop
+ * Object processing - called once per logic tick from the game loop
  * Equivalent to ObjMoveAnim in Anims.s
  * ----------------------------------------------------------------------- */
 void objects_update(GameState *state);
+
+/* -----------------------------------------------------------------------
+ * Update sprite viewpoint frames (rotation) for visible enemies.
+ * Call every display frame so sprites animate smoothly even when logic
+ * ticks are less frequent or when the camera moves between ticks.
+ * ----------------------------------------------------------------------- */
+void objects_update_sprite_frames(GameState *state);
 
 /* -----------------------------------------------------------------------
  * Set obj[6]/obj[7] (world width/height) from default_object_world_size when

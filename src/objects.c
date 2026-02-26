@@ -644,6 +644,64 @@ void objects_update(GameState *state)
 }
 
 /* -----------------------------------------------------------------------
+ * Update sprite rotation frames for visible enemies (call every display frame).
+ * ----------------------------------------------------------------------- */
+void objects_update_sprite_frames(GameState *state)
+{
+    if (!state->level.object_data || !state->level.zone_adds) return;
+
+    uint8_t vis_zones[256];
+    memset(vis_zones, 0, sizeof(vis_zones));
+    if (state->zone_order_count > 0) {
+        for (int i = 0; i < state->zone_order_count && i < 256; i++) {
+            int16_t z = state->zone_order_zones[i];
+            if (z >= 0 && z < 256) vis_zones[z] = 1;
+        }
+    } else {
+        for (int z = 0; z < 256; z++) vis_zones[z] = 1;
+    }
+
+    int16_t view_x = (int16_t)(state->plr1.xoff >> 16);
+    int16_t view_z = (int16_t)(state->plr1.zoff >> 16);
+
+    int obj_index = 0;
+    while (1) {
+        GameObject *obj = get_object(&state->level, obj_index);
+        if (!obj) break;
+        if (OBJ_CID(obj) < 0) break;
+        int16_t obj_zone = OBJ_ZONE(obj);
+        if (obj_zone < 0 || obj_zone >= 256 || !vis_zones[obj_zone]) {
+            obj_index++;
+            continue;
+        }
+        if (NASTY_LIVES(*obj) <= 0) {
+            obj_index++;
+            continue;
+        }
+
+        int8_t obj_type = obj->obj.number;
+        switch (obj_type) {
+        case OBJ_NBR_ALIEN: case OBJ_NBR_ROBOT: case OBJ_NBR_BIG_NASTY:
+        case OBJ_NBR_FLYING_NASTY: case OBJ_NBR_EYEBALL:
+        case OBJ_NBR_MARINE: case OBJ_NBR_TOUGH_MARINE: case OBJ_NBR_FLAME_MARINE:
+        case OBJ_NBR_WORM: case OBJ_NBR_HUGE_RED_THING: case OBJ_NBR_SMALL_RED_THING:
+        case OBJ_NBR_TREE:
+            {
+                int16_t obj_x, obj_z;
+                get_object_pos(&state->level, OBJ_CID(obj), &obj_x, &obj_z);
+                int16_t facing = NASTY_FACING(*obj);
+                int16_t frame = viewpoint_to_draw_16(view_x, view_z, obj_x, obj_z, facing);
+                obj_sw(obj->raw + 10, frame);
+            }
+            break;
+        default:
+            break;
+        }
+        obj_index++;
+    }
+}
+
+/* -----------------------------------------------------------------------
  * Enemy handlers - each delegates to generic handler with type params
  * ----------------------------------------------------------------------- */
 

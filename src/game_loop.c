@@ -309,6 +309,12 @@ void game_loop(GameState *state)
         } /* end if (run_logic) */
 
         /* ================================================================
+         * Always: Update sprite rotation frames every display frame so
+         * sprites animate (face the camera) even when the player hasn't moved.
+         * ================================================================ */
+        objects_update_sprite_frames(state);
+
+        /* ================================================================
          * Always: Render every display frame (60Hz VSync) for smooth output
          * ================================================================ */
         display_energy_bar(state->energy);
