@@ -467,6 +467,102 @@ void renderer_rotate_object_pts(GameState *state)
     }
 }
 
+/* -----------------------------------------------------------------------
+ * Post-pass: fill ceiling/floor to meet wall columns (order-independent)
+ *
+ * Your per-column filler inside draw_wall_column can only pull from pixels
+ * that already exist at that moment. If the wall is drawn before the ceiling
+ * polygon (stream order / portals), it cannot "find" the ceiling yet.
+ *
+ * Fix: do a small post-pass after all zones are drawn (but before the gun),
+ * and for each column, for each wall segment, search a short distance for a
+ * ceiling/floor pixel (tag==1) above/below and extend it into the gap.
+ *
+ * This is order-independent and fixes the "not early enough" issue.
+ * ----------------------------------------------------------------------- */
+static void renderer_fill_wall_joins(void)
+{
+    uint8_t* buf = g_renderer.buffer;
+    uint32_t* rgb = g_renderer.rgb_buffer;
+    if (!buf || !rgb) return;
+
+    const int w = g_renderer.width;
+    const int h = g_renderer.height;
+
+    /* Small window: close quantization wedges without smearing across rooms */
+    const int SCAN = 24;
+
+    for (int x = 0; x < w; x++) {
+        int y = 0;
+        while (y < h) {
+            /* Find start of a wall run */
+            while (y < h && buf[y * w + x] != 2) y++;
+            if (y >= h) break;
+
+            int wall_top = y;
+            while (y < h && buf[y * w + x] == 2) y++;
+            int wall_bot = y - 1;
+
+            /* ---- Fill above wall: pull ceiling (tag==1) down to wall_top-1 ---- */
+            if (wall_top > 0) {
+                int y_gap_top = wall_top - 1;
+
+                /* Only consider if there is actually a gap (background/clear) */
+                if (buf[y_gap_top * w + x] != 2) {
+                    int y_src_min = wall_top - SCAN;
+                    if (y_src_min < 0) y_src_min = 0;
+
+                    int y_src = -1;
+                    for (int yy = wall_top - 1; yy >= y_src_min; yy--) {
+                        if (buf[yy * w + x] == 1) { y_src = yy; break; }
+                        /* Stop if we hit another wall segment */
+                        if (buf[yy * w + x] == 2) break;
+                    }
+
+                    if (y_src >= 0) {
+                        uint32_t c = rgb[y_src * w + x];
+                        /* Fill only clear/background pixels between y_src and wall_top */
+                        for (int yy = y_src + 1; yy <= wall_top - 1; yy++) {
+                            if (buf[yy * w + x] == 2) break;
+                            if (buf[yy * w + x] != 1) {
+                                buf[yy * w + x] = 1;
+                                rgb[yy * w + x] = c;
+                            }
+                        }
+                    }
+                }
+            }
+
+            /* ---- Fill below wall: pull floor (tag==1) up to wall_bot+1 ---- */
+            if (wall_bot + 1 < h) {
+                int y_gap_bot = wall_bot + 1;
+
+                if (buf[y_gap_bot * w + x] != 2) {
+                    int y_src_max = wall_bot + SCAN;
+                    if (y_src_max >= h) y_src_max = h - 1;
+
+                    int y_src = -1;
+                    for (int yy = wall_bot + 1; yy <= y_src_max; yy++) {
+                        if (buf[yy * w + x] == 1) { y_src = yy; break; }
+                        if (buf[yy * w + x] == 2) break;
+                    }
+
+                    if (y_src >= 0) {
+                        uint32_t c = rgb[y_src * w + x];
+                        for (int yy = y_src - 1; yy >= wall_bot + 1; yy--) {
+                            if (buf[yy * w + x] == 2) break;
+                            if (buf[yy * w + x] != 1) {
+                                buf[yy * w + x] = 1;
+                                rgb[yy * w + x] = c;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /* Wall texture index for switches (stub_io wall_texture_table). Must be before draw_wall_column. */
 #define SWITCHES_WALL_TEX_ID  11
 
@@ -2681,6 +2777,7 @@ void renderer_draw_display(GameState *state)
         renderer_draw_zone(state, zone_id, 0);
     }
 
+    renderer_fill_wall_joins();
     /* 6. Draw gun overlay */
     renderer_draw_gun(state);
 
