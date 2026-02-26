@@ -116,6 +116,12 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
     int8_t lives = NASTY_LIVES(*obj);
     lives -= damage;
 
+    int obj_idx = (int)(((uint8_t *)obj - state->level.object_data) / OBJECT_SIZE);
+    int lives_before = (int)NASTY_LIVES(*obj);
+    printf("[ENEMY] damage obj=%d type=%d applied=%d lives %d -> %d%s\n",
+           obj_idx, (int)obj->obj.number, (int)damage, lives_before, (int)lives,
+           lives <= 0 ? " (killed)" : "");
+
     if (lives <= 0) {
         /* Death */
         if (params->death_sound >= 0) {
