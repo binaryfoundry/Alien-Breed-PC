@@ -1297,18 +1297,16 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         }
     }
 
-    /* ---- Object-to-object hit detection (Anims.s lines 3202-3382) ---- */
+    /* ---- Object-to-object hit detection (ObjectMove.s Collision) ---- */
     uint32_t enemy_flags = NASTY_EFLAGS(*obj);
     if (enemy_flags == 0) return;
 
     if (!state->level.object_data) return;
 
-    /* Calculate bullet travel direction length (Newton-Raphson sqrt) */
-    int32_t bdx = ctx.newx - bx;
-    int32_t bdz = ctx.newz - bz;
-    int32_t travel_dist = calc_dist_approx(bdx, bdz);
-    if (travel_dist == 0) travel_dist = 1;
-    int32_t check_range_sq = (int32_t)(travel_dist + 40) * (travel_dist + 40);
+    /* Bullet's collision box (Amiga: a3 = ColBoxTable + bullet_type*8) */
+    int bullet_type = (int)obj->obj.number;
+    if (bullet_type < 0 || bullet_type > 20) bullet_type = OBJ_NBR_BULLET;
+    int bullet_width = col_box_table[bullet_type].width;
 
     int check_idx = 0;
     while (1) {
@@ -1334,40 +1332,46 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             continue;
         }
 
-        /* Height check using collision box */
+        /* Same floor (Amiga: objInTop(a0) eor StoodInTop; bne checkcol) */
+        if (obj->obj.in_top != target->obj.in_top) {
+            check_idx++;
+            continue;
+        }
+
+        /* Height check using collision box.
+         * raw[4] is (floor>>7)-world_h (sprite top); Amiga uses center, so use center = top + half_height. */
         const CollisionBox *box = &col_box_table[tgt_type];
         int16_t obj_y = (int16_t)(accypos >> 7);
-        int16_t tgt_y = target->raw[4] << 8 | target->raw[5]; /* offset 4 = Y */
-        int16_t ydiff = obj_y - tgt_y;
+        int16_t tgt_top = obj_w(target->raw + 4);
+        int16_t tgt_center_y = (int16_t)((int32_t)tgt_top + box->half_height);
+        int16_t ydiff = obj_y - tgt_center_y;
         if (ydiff < 0) ydiff = (int16_t)(-ydiff);
         if (ydiff > box->half_height) {
             check_idx++;
             continue;
         }
 
-        /* Position check */
+        /* Position (Amiga: (a1,d0.w*8) = target point index) */
         int16_t tx, tz;
-        get_object_pos(&state->level, check_idx, &tx, &tz);
+        get_object_pos(&state->level, OBJ_CID(target), &tx, &tz);
 
-        /* Perpendicular distance from target to bullet path */
-        int32_t dx_old = tx - bx;
-        int32_t dz_old = tz - bz;
-        int32_t cross = dx_old * bdz - dz_old * bdx;
-        if (cross < 0) cross = -cross;
-        int32_t perp = cross / travel_dist;
-
-        if (perp > box->width) {
+        /* Amiga horizontal: at new position, max(|dx|,|dz|) - bullet_width <= target width */
+        int32_t adx = (int32_t)tx - (int32_t)ctx.newx;
+        int32_t adz = (int32_t)tz - (int32_t)ctx.newz;
+        if (adx < 0) adx = -adx;
+        if (adz < 0) adz = -adz;
+        int32_t max_d = (adx > adz) ? adx : adz;
+        if (max_d - (int32_t)bullet_width > (int32_t)box->width) {
             check_idx++;
             continue;
         }
 
-        /* Distance check (both old and new position must be close) */
+        /* Amiga: bullet must have got closer (dist_new_sq <= dist_old_sq) */
+        int32_t dx_old = (int32_t)tx - (int32_t)bx;
+        int32_t dz_old = (int32_t)tz - (int32_t)bz;
         int32_t dist_old_sq = dx_old * dx_old + dz_old * dz_old;
-        int32_t dx_new = tx - (int32_t)ctx.newx;
-        int32_t dz_new = tz - (int32_t)ctx.newz;
-        int32_t dist_new_sq = dx_new * dx_new + dz_new * dz_new;
-
-        if (dist_old_sq > check_range_sq && dist_new_sq > check_range_sq) {
+        int32_t dist_new_sq = adx * adx + adz * adz;
+        if (dist_new_sq > dist_old_sq) {
             check_idx++;
             continue;
         }
