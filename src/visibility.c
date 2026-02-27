@@ -6,6 +6,7 @@
  */
 
 #include "visibility.h"
+#include "level.h"
 #include "math_tables.h"
 #include <stdio.h>
 #include <string.h>
@@ -172,7 +173,8 @@ void order_zones(ZoneOrder *out, const LevelState *level,
                         int16_t line_idx = read_be16(exit_list + ei * 2);
                         if (line_idx < 0) break;
                         int16_t connect = read_be16(level->floor_lines + (int)line_idx * FLINE_SIZE + FLINE_CONNECT);
-                        if (connect < 0 || connect >= 256 || !to_draw_tab[connect]) continue;
+                        int connect_index = level_connect_to_zone_index(level, connect);
+                        if (connect_index < 0 || connect_index >= 256 || !to_draw_tab[connect_index]) continue;
 
                         /* Amiga InsertList bit flow:
                          *   b   = d7 (indrawlist gate)
@@ -203,7 +205,7 @@ void order_zones(ZoneOrder *out, const LevelState *level,
                         /* mustdo: connected is further; if it's earlier in list, move current in front of it (Amiga iscloser). */
                         int conn_node = -1;
                         for (int k = 0; k < num_zones; k++) {
-                            if (node_zone[k] == connect) { conn_node = k; break; }
+                            if (node_zone[k] == connect_index) { conn_node = k; break; }
                         }
                         if (conn_node < 0) continue;
                         if (!node_before(head, conn_node, node, next)) continue;  /* connected not earlier, nothing to do */
@@ -359,6 +361,8 @@ uint8_t can_it_be_seen(const LevelState *level,
             if (targ_side >= 0) continue;
 
             if (connect < 0) return 0;
+            int connect_index = level_connect_to_zone_index(level, connect);
+            if (connect_index < 0) continue;
 
             int16_t divisor = read_be16(fline + FLINE_DIVISOR);
             if (divisor == 0) divisor = 1;
@@ -382,7 +386,7 @@ uint8_t can_it_be_seen(const LevelState *level,
             }
             if (cross_y < roof_h || cross_y > floor_h) continue;
 
-            int32_t next_off = read_be32(level->zone_adds + (unsigned)connect * 4u);
+            int32_t next_off = read_be32(level->zone_adds + (unsigned)connect_index * 4u);
             const uint8_t *next_zone = level->data + next_off;
 
             int32_t next_floor = read_be32(next_zone + ZONE_FLOOR_HEIGHT);

@@ -731,6 +731,18 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
         ctx.objroom = cur_room;
         ctx.stood_in_top = cur_top;
         ctx.hitwall = any_hit;
+        if (any_hit) {
+            int16_t zone_id = -1;
+            int32_t roompt = -1;
+            if (ctx.objroom && state->level.data) {
+                roompt = (int32_t)(ctx.objroom - state->level.data);
+                zone_id = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+                if (zone_id < 0 || zone_id >= state->level.num_zones)
+                    zone_id = -1;
+            }
+            printf("[PLAYER] wall collision plr%d at (%d, %d) zone=%d roompt=%ld\n",
+                   plr_num, (int)ctx.newx, (int)ctx.newz, (int)zone_id, (long)roompt);
+        }
     }
 
     plr->stood_in_top = ctx.stood_in_top;

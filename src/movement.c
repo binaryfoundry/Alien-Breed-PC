@@ -17,6 +17,7 @@
 #include "movement.h"
 #include "game_data.h"
 #include "math_tables.h"
+#include "level.h"
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
@@ -380,6 +381,7 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
     int ps = ctx->pos_shift;
 
     int16_t connect = (int16_t)read_be16(fline + FLINE_CONNECT);
+    int connect_index = level_connect_to_zone_index(level, connect);
     int32_t lx = (int32_t)(int16_t)read_be16(fline + FLINE_X) << ps;
     int32_t lz = (int32_t)(int16_t)read_be16(fline + FLINE_Z) << ps;
     int16_t lxlen = (int16_t)read_be16(fline + FLINE_XLEN);
@@ -389,8 +391,8 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
     int32_t wz = (int32_t)lzlen << ps;
 
     /* ---- Exit line: if passable, skip (transition handled later in find_room). ---- */
-    if (zone_data && level->zone_adds && connect >= 0 && connect < level->num_zones) {
-        int32_t target_zone_off = read_be32(level->zone_adds + connect * 4);
+    if (zone_data && level->zone_adds && connect_index >= 0 && connect_index < level->num_zones) {
+        int32_t target_zone_off = read_be32(level->zone_adds + (size_t)connect_index * 4);
         const uint8_t* target_zone = level->data + target_zone_off;
 
         int32_t target_floor = read_be32(target_zone + ZONE_FLOOR_HEIGHT);
@@ -403,8 +405,8 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
 
         if (floor_diff <= ctx->step_up_val) {
             int32_t clearance = target_floor - target_roof;
+            uint8_t* target_room = (uint8_t*)(level->data + target_zone_off);
             if (clearance >= ctx->thing_height || ctx->thing_height == 0) {
-                uint8_t* target_room = (uint8_t*)(level->data + target_zone_off);
                 if (!(ctx->no_transition_back && target_room == ctx->no_transition_back)) {
                     /* Passable exit: do not treat as wall. */
                     return 0;
@@ -510,8 +512,8 @@ static void find_room(MoveContext* ctx, LevelState* level,
                 {
                     const uint8_t* fline = level->floor_lines + entry * FLINE_SIZE;
                     int16_t connect = (int16_t)read_be16(fline + FLINE_CONNECT);
-                    if (connect < 0) continue;
-                    if (connect >= level->num_zones) continue;
+                    int connect_index = level_connect_to_zone_index(level, connect);
+                    if (connect_index < 0) continue;
 
                     int32_t lx = (int32_t)(int16_t)read_be16(fline + FLINE_X) << ps;
                     int32_t lz = (int32_t)(int16_t)read_be16(fline + FLINE_Z) << ps;
@@ -531,7 +533,7 @@ static void find_room(MoveContext* ctx, LevelState* level,
                     }
 
                     {
-                        int32_t target_zone_off = read_be32(level->zone_adds + connect * 4);
+                        int32_t target_zone_off = read_be32(level->zone_adds + (size_t)connect_index * 4);
                         const uint8_t* target_zone = level->data + target_zone_off;
 
                         int32_t target_floor = read_be32(target_zone + ZONE_FLOOR_HEIGHT);

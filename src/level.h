@@ -80,6 +80,13 @@ int level_set_zone_floor(LevelState *level, int16_t zone_id, int32_t floor_y);
 int level_set_zone_water(LevelState *level, int16_t zone_id, int32_t water_y);
 
 /*
+ * Map floor-line connect value (zone id from file) to zone index (0..num_zones-1).
+ * Some levels store zone id at zone data offset 0; this finds the index for that id.
+ * Returns zone index, or connect if connect < num_zones and no id match, or -1 if invalid.
+ */
+int level_connect_to_zone_index(const LevelState *level, int16_t connect);
+
+/*
  * Log each zone's offset, id, floor, roof, brightness to stdout (for periodic debug output).
  */
 void level_log_zones(const LevelState *level);

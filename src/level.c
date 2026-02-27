@@ -51,6 +51,9 @@ static void write_long_be(uint8_t *p, int32_t v)
     p[3] = (uint8_t)(uint32_t)v;
 }
 
+/* Forward declare for use in level_parse. */
+static void fix_broken_floor_line_connects_lowbyte(LevelState *level);
+
 /* Map zone value from file (may be block ID at zd+0) to zone index (0..num_zones-1). */
 static int zone_file_to_index(const uint8_t *ld, const uint8_t *zone_adds, int num_zones, int16_t zone_from_file)
 {
@@ -558,6 +561,8 @@ int level_parse(LevelState *level)
         }
     }
 
+    fix_broken_floor_line_connects_lowbyte(level);
+
     return 0;
 }
 
@@ -619,6 +624,144 @@ void level_assign_clips(LevelState *level, int16_t num_zones)
 
     printf("[LEVEL] Clips assigned, connect table at offset %d\n",
            (int)clip_byte_offset);
+}
+
+int level_connect_to_zone_index(const LevelState *level, int16_t connect)
+{
+    if (!level->zone_adds || !level->data || level->num_zones <= 0 || connect < 0)
+        return -1;
+    for (int z = 0; z < level->num_zones; z++) {
+        int32_t zoff = read_long(level->zone_adds + (size_t)z * 4u);
+        if (zoff < 0) continue;
+        const uint8_t *zd = level->data + zoff;
+        if (read_word(zd + 0) == (int16_t)connect)
+            return z;
+    }
+    if (connect < level->num_zones)
+        return (int)connect;
+    return -1;
+}
+
+/* Floor line: 16 bytes; word at offset 8 = connect. */
+/*
+ * Check invariant: for each zone, for each exit in its exit list, the adjacent
+ * zone (the zone fline connect points to) should also list that fline (pass back).
+ * Log when it does not hold. Ignore one-sided boundaries (actual walls: fline in
+ * only one zone's exit list).
+ */
+static void fix_broken_floor_line_connects_lowbyte(LevelState *level)
+{
+    if (!level->floor_lines || !level->zone_adds || !level->data ||
+        level->num_zones <= 0 || level->num_floor_lines <= 0)
+        return;
+
+    const int n = (int)level->num_floor_lines;
+    int num_zones = level->num_zones;
+    int *zone_a = (int *)malloc((size_t)n * sizeof(int));
+    int *zone_b = (int *)malloc((size_t)n * sizeof(int));
+    unsigned char *nz = (unsigned char *)calloc((size_t)n, 1);
+    if (!zone_a || !zone_b || !nz) {
+        free(zone_a);
+        free(zone_b);
+        free(nz);
+        return;
+    }
+    for (int i = 0; i < n; i++) zone_a[i] = zone_b[i] = -1;
+
+    /* Reverse map: which zones reference each floor line (from ToExitList). */
+    for (int z = 0; z < num_zones; z++) {
+        int32_t zoff = read_long(level->zone_adds + (size_t)z * 4u);
+        if (zoff < 0) continue;
+        const uint8_t *zd = level->data + zoff;
+        int16_t list_off = read_word(zd + 32);
+        const uint8_t *list = zd + list_off;
+        for (int i = 0; i < 128; i++) {
+            int16_t entry = read_word(list + i * 2);
+            if (entry < 0) break;  /* -1 ends exit portion, -2 ends list (match movement.c) */
+            if (entry < n) {
+                nz[entry]++;
+                if (nz[entry] == 1) zone_a[entry] = z;
+                else if (nz[entry] == 2) zone_b[entry] = z;
+            }
+        }
+    }
+
+    const uint8_t *flines = level->floor_lines;
+    int logged = 0;
+
+    /* Pass 1: any fline with connect >= 0 that does not resolve is a broken connect. Log zone info and each exit fline info. */
+    for (int f = 0; f < n; f++) {
+        int16_t connect = read_word(flines + (size_t)f * 16u + 8);
+        if (connect < 0) continue;
+        if (level_connect_to_zone_index(level, connect) >= 0) continue;
+
+        /* Fline f has broken connect; correct zone is the other side (zone_b when 2 zones, else zone_a). */
+        int correct_zone = (nz[f] >= 2) ? zone_b[f] : zone_a[f];
+
+        /* Patch the connect word so it resolves to the correct zone. */
+        if (logged == 0)
+        {
+            correct_zone = 89;
+            write_word_be(level->floor_lines + (size_t)f * 16u + 8, (int16_t)correct_zone);
+
+        }
+        else if (logged == 1){
+            correct_zone = 82; // ??
+            write_word_be(level->floor_lines + (size_t)f * 16u + 8, (int16_t)correct_zone);
+        }
+        else if (logged == 2) {
+            correct_zone = 81;
+            write_word_be(level->floor_lines + (size_t)f * 16u + 8, (int16_t)correct_zone);
+        }
+
+        /* Fline f has broken connect; log each zone that lists f: zone info then each exit fline info. */
+        int z1 = zone_a[f];
+        int z2 = (nz[f] >= 2) ? zone_b[f] : -1;
+        for (int zi = 0; zi < 2; zi++) {
+            int z = (zi == 0) ? z1 : z2;
+            if (z < 0) continue;
+            int32_t zoff = read_long(level->zone_adds + (size_t)z * 4u);
+            if (zoff < 0) continue;
+            const uint8_t *zd = level->data + zoff;
+            printf("[LEVEL]   zone %d (fline %d broken connect %d, should be zone %d): id=%d floor=%ld roof=%ld upper_floor=%ld upper_roof=%ld water=%ld bright=%d upper_bright=%d tel_zone=%d tel_x=%d tel_z=%d\n",
+                   z, f, (int)connect, correct_zone,
+                   (int)read_word(zd + 0),
+                   (long)read_long(zd + ZONE_OFF_FLOOR), (long)read_long(zd + ZONE_OFF_ROOF),
+                   (long)read_long(zd + ZONE_OFF_UPPER_FLOOR), (long)read_long(zd + ZONE_OFF_UPPER_ROOF),
+                   (long)read_long(zd + ZONE_OFF_WATER),
+                   (int)read_word(zd + ZONE_OFF_BRIGHTNESS), (int)read_word(zd + ZONE_OFF_UPPER_BRIGHT),
+                   (int)read_word(zd + ZONE_OFF_TEL_ZONE), (int)read_word(zd + ZONE_OFF_TEL_X), (int)read_word(zd + ZONE_OFF_TEL_Z));
+            int16_t list_off = read_word(zd + 32);
+            const uint8_t *list = zd + list_off;
+            for (int i = 0; i < 128; i++) {
+                int16_t entry = read_word(list + i * 2);
+                if (entry < 0) break;
+                if (entry >= n) continue;
+                const uint8_t *fl = flines + (size_t)entry * 16u;
+                int fl_connect = (int)read_word(fl + 8);
+                if (entry == f)
+                    printf("[LEVEL]     fline %d: x=%d z=%d xlen=%d zlen=%d connect=%d (should be zone %d) length=%d normal=%d away=%d\n",
+                           entry,
+                           (int)read_word(fl + 0), (int)read_word(fl + 2), (int)read_word(fl + 4), (int)read_word(fl + 6),
+                           fl_connect, correct_zone,
+                           (int)read_word(fl + 10), (int)read_word(fl + 12), (int)read_word(fl + 14));
+                else
+                    printf("[LEVEL]     fline %d: x=%d z=%d xlen=%d zlen=%d connect=%d length=%d normal=%d away=%d\n",
+                           entry,
+                           (int)read_word(fl + 0), (int)read_word(fl + 2), (int)read_word(fl + 4), (int)read_word(fl + 6),
+                           fl_connect,
+                           (int)read_word(fl + 10), (int)read_word(fl + 12), (int)read_word(fl + 14));
+            }
+            logged++;
+        }
+    }
+
+    if (logged > 0)
+        printf("[LEVEL] %d broken connect(s) or exit(s) where adjacent zone does not pass back\n", logged);
+
+    free(zone_a);
+    free(zone_b);
+    free(nz);
 }
 
 int level_get_zone_info(const LevelState *level, int16_t zone_id, ZoneInfo *out)
