@@ -1281,8 +1281,7 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
  *
  * Translated from AB3DI.s DrawInGun (lines 2426-2535).
  * Amiga: gun graphic from Objects+9, GUNYOFFS=20, 3 chunks × 32 = 96 wide,
- * 78-GUNYOFFS = 58 lines tall. We draw a placeholder pistol until real
- * gun graphics are loaded; match approximate size and position.
+ * 78-GUNYOFFS = 58 lines tall. If gun graphics are not loaded, nothing is drawn.
  * ----------------------------------------------------------------------- */
 void renderer_draw_gun(GameState *state)
 {
@@ -1372,49 +1371,7 @@ void renderer_draw_gun(GameState *state)
         }
     }
 
-    /* Placeholder when gun data not loaded or slot unused (narrower than WAD: 48 logical width) */
-    int placeholder_gun_w = 48 * gun_scale;
-    if (placeholder_gun_w < 1) placeholder_gun_w = 1;
-    int gx_ph = (rw - placeholder_gun_w) / 2;
-    uint32_t col_barrel = 0xFF808080u;
-    uint32_t col_body  = 0xFF606060u;
-    uint32_t col_grip  = 0xFF404040u;
-    const int mid_logical = 24;  /* 48/2 in source space */
-
-    for (int y = gy; y < gy + gun_h_draw && y < rh; y++) {
-        if (y < 0) continue;
-        int local_y = y - gy;
-        int local_y_logical = (int)((int64_t)local_y * (int64_t)gun_h_src / gun_h_draw);
-        for (int x = gx_ph; x < gx_ph + placeholder_gun_w && x < rw; x++) {
-            if (x < 0) continue;
-            int local_x = x - gx_ph;
-            int local_x_logical = (int)((int64_t)local_x * 48 / placeholder_gun_w);
-
-            int draw = 0;
-            uint32_t c = 0;
-
-            if (local_y_logical < gun_h_src * 2 / 5) {
-                if (local_x_logical >= mid_logical - 2 && local_x_logical <= mid_logical + 2) {
-                    draw = 1; c = col_barrel;
-                }
-            } else if (local_y_logical < gun_h_src * 3 / 5) {
-                if (local_x_logical >= mid_logical - 6 && local_x_logical <= mid_logical + 6) {
-                    draw = 1; c = col_body;
-                }
-            } else {
-                int w = 4 + (local_y_logical - gun_h_src * 3 / 5) / 4;
-                if (w > 10) w = 10;
-                if (local_x_logical >= mid_logical - w && local_x_logical <= mid_logical + w) {
-                    draw = 1; c = col_grip;
-                }
-            }
-
-            if (draw) {
-                buf[y * rw + x] = 15;
-                rgb[y * rw + x] = c;
-            }
-        }
-    }
+    /* Do not draw placeholder gun when real gun data is missing or slot unused */
 }
 
 /* -----------------------------------------------------------------------

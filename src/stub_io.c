@@ -947,7 +947,7 @@ static FILE *open_gun_file(const char *subpath, const char *filename, char *path
 
 /* -----------------------------------------------------------------------
  * Gun overlay (newgunsinhand.wad + .ptr + .pal)
- * Required for drawing the in-hand gun; falls back to placeholder if missing.
+ * Required for drawing the in-hand gun; if missing, no gun is drawn.
  * ----------------------------------------------------------------------- */
 #define GUN_PTR_FRAME_SIZE (96 * 4)
 #define GUN_PTR_MIN_SIZE   (GUN_PTR_FRAME_SIZE * 28)
@@ -1027,26 +1027,13 @@ void io_load_gun_graphics(void)
         fclose(f);
     } else {
         printf("[IO] Gun PAL not found (tried pal/, includes/, disk/includes/)\n");
-        /* Use a default 32-entry palette so the gun still draws (grayscale) */
-        if (g_renderer.gun_wad && g_renderer.gun_ptr) {
-            uint8_t *def = (uint8_t *)malloc(64);
-            if (def) {
-                for (int i = 0; i < 32; i++) {
-                    int level = (i * 15) / 31;  /* 0..15 for 32 shades */
-                    uint16_t v = (uint16_t)((level << 8) | (level << 4) | level);  /* 12-bit Amiga */
-                    def[i * 2]     = (uint8_t)(v >> 8);
-                    def[i * 2 + 1] = (uint8_t)(v & 0xFF);
-                }
-                g_renderer.gun_pal = def;
-                printf("[IO] Using default gun palette (add pal/newgunsinhand.pal for correct colors)\n");
-            }
-        }
+        /* Do not load a default palette; placeholder gun is not used. */
     }
 
     if (g_renderer.gun_wad && g_renderer.gun_ptr && g_renderer.gun_pal) {
         printf("[IO] Gun graphics loaded successfully\n");
     } else {
-        printf("[IO] Gun graphics incomplete - using placeholder (wad=%s ptr=%s pal=%s)\n",
+        printf("[IO] Gun graphics incomplete - in-hand gun will not be drawn (wad=%s ptr=%s pal=%s)\n",
                g_renderer.gun_wad ? "ok" : "missing",
                g_renderer.gun_ptr ? "ok" : "missing",
                g_renderer.gun_pal ? "ok" : "missing");

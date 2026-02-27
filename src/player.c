@@ -38,7 +38,7 @@
 #define STEP_DOWN_DEFAULT   100000
 
 /* Gun selection key -> gun index mapping (from GUNVALS in Plr1Control.s) */
-static const int8_t gun_key_map[5] = { 0, 7, 1, 4, 2 };
+static const int8_t gun_key_map[6] = { 0, 7, 1, 2, 3, 4 };
 
 /* -----------------------------------------------------------------------
  * Friction helper
@@ -108,12 +108,12 @@ static void player_always_keys(PlayerState *plr, const uint8_t *key_map,
     /* Weapon selection (keys 1-5) */
     /* Keys 1-5 are at Amiga raw codes $01-$05, which map to key_map[1..5] */
     for (int i = 0; i < 5; i++) {
-        if (key_map[i + 1]) {  /* keys 1-5 at positions 1-5 in key_map */
+        if (key_map[i + 1]) {
             int gun_idx = gun_key_map[i];
-            /* Check if weapon is available (visible flag in gun_data) */
-            if (plr->gun_data[gun_idx].visible) {
+            /* Check if weapon is available (visible flag in gun_data); skip placeholder */
+            //if (plr->gun_data[gun_idx].visible) {
                 plr->gun_selected = (int16_t)gun_idx;
-            }
+            //}
         }
     }
 }
