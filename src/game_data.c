@@ -333,7 +333,7 @@ const BulletTypeData bullet_types[8] = {
  *   [8] BigClaws.s: 10(a0) 0..9 like BigRedThing
  * ----------------------------------------------------------------------- */
 const EnemyParams enemy_params[] = {
-    /* [0] Normal Alien (NormalAlien.s ItsANasty) */
+    /* [0] Normal Alien (NormalAlien.s ItsANasty) - Amiga: screamsound #0 = scream */
     {
         .thing_height   = 80 * 128,
         .step_up        = 20 * 256,
@@ -354,9 +354,9 @@ const EnemyParams enemy_params[] = {
         .wander_timer   = 50,
         .hiss_timer_min = 300,
         .hiss_timer_range = 255,
-        .death_sound    = 40,
-        .scream_sound   = 40,
-        .hiss_sound     = 8,
+        .death_sound    = 0,        /* scream (Amiga screamsound #0) */
+        .scream_sound   = 0,        /* scream */
+        .hiss_sound     = 8,        /* low scream */
         .attack_sound   = -1,
         .death_frames   = {32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,
                            33,33,33,33,33,33,33,33,33,33,33, -1},

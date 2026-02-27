@@ -9,6 +9,7 @@
 #include "stub_audio.h"
 #include "stub_io.h"
 #include <SDL.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,11 +46,11 @@ static const char *const sfx_names[NUM_NAMED_SFX] = {
     "whoosh",      /* 20 */
     "shotgun",     /* 21 ShotGunName */
     "flame",       /* 22 */
-    "MuffledFoot", /* 23 */
+    "muffledfoot", /* 23 (Amiga: MuffledFoot) */
     "footclop",    /* 24 */
     "footclank",   /* 25 */
     "teleport",    /* 26 */
-    "HALFWORMPAIN" /* 27 */
+    "halfwormpain" /* 27 (Amiga: HALFWORMPAIN) */
 };
 
 /* One preloaded sample (converted to device format) */
@@ -104,6 +105,16 @@ static void audio_callback(void *userdata, Uint8 *stream, int len)
     }
 }
 
+/* Lowercase the filename part of path in place (from last '/' or '\\' to end). */
+static void path_filename_to_lower(char *path)
+{
+    char *p = strrchr(path, '/');
+    char *b = strrchr(path, '\\');
+    if (b && (!p || b > p)) p = b;
+    if (p) p++; else p = path;
+    for (; *p; p++) *p = (char)tolower((unsigned char)*p);
+}
+
 static int load_one_sample(int id)
 {
     char subpath[80];
@@ -120,7 +131,15 @@ static int load_one_sample(int id)
     Uint32 len = 0;
 
     if (!SDL_LoadWAV(path, &want, &buf, &len)) {
-        return 0;  /* not found - skip silently for high IDs */
+        /* Case-insensitive fallback: try path with filename lowercased */
+        char path_lower[512];
+        snprintf(path_lower, sizeof(path_lower), "%s", path);
+        path_filename_to_lower(path_lower);
+        if (!SDL_LoadWAV(path_lower, &want, &buf, &len)) {
+            return 0;  /* not found - skip silently for high IDs */
+        }
+        strncpy(path, path_lower, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
     }
 
     /* Convert to device format so we can mix in callback */
