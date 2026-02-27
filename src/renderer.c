@@ -2104,6 +2104,9 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                             int rows = 1 << use_valshift;
                             door_yoff_add = (int32_t)((int64_t)(draw_top - topwall) * rows / wall_full_h);
                         }
+                        /* Use clipped height for texture so the visible segment doesn't stretch. */
+                        wall_height_for_tex = (int16_t)((draw_bot - draw_top) >> 8);
+                        if (wall_height_for_tex < 1) wall_height_for_tex = 1;
                     }
                 }
                 /* Door override: clip wall to door opening when wall matches zone extent (full-height door panel). */
@@ -2124,6 +2127,9 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                             int rows = 1 << use_valshift;
                             door_yoff_add = (int32_t)((int64_t)door_top_offset * rows / wall_full_h);
                         }
+                        /* Use clipped height for texture so the door panel doesn't stretch. */
+                        wall_height_for_tex = (int16_t)((zone_floor_rel - zone_roof_rel) >> 8);
+                        if (wall_height_for_tex < 1) wall_height_for_tex = 1;
                     }
                 }
 
