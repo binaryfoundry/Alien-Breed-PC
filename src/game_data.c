@@ -318,6 +318,19 @@ const BulletTypeData bullet_types[8] = {
 /* -----------------------------------------------------------------------
  * Enemy type parameters
  * Consolidated from all enemy .s files
+ *
+ * death_frames: stored in display order (index 0 = first frame shown).
+ * Amiga indexes .dyinganim by ThirdTimer which counts DOWN, so table is
+ * reversed here to match (Amiga shows table[high] first, we show frames[0] first).
+ *   [0] NormalAlien.s .dyinganim: dcb.w 11,33; dcb.w 15,32 -> display: 15×32, 11×33
+ *   [1] Robot: no sequence (explodes)
+ *   [2] BigRedThing.s: 10(a0) 0..9 (increment each tick)
+ *   [3] HalfWorm.s .dyinganim: 6×20,10×19,10×18 -> display: 10×18,10×19,6×20
+ *   [4] FlameMarine.s .dyinganim: 6×18,10×17,10×16 -> display: 10×16,10×17,6×18
+ *   [5] ToughMarine.s same as FlameMarine
+ *   [6] MutantMarine.s same as FlameMarine
+ *   [7] BigUglyAlien.s: no sequence (deadframe only)
+ *   [8] BigClaws.s: 10(a0) 0..9 like BigRedThing
  * ----------------------------------------------------------------------- */
 const EnemyParams enemy_params[] = {
     /* [0] Normal Alien (NormalAlien.s ItsANasty) */
@@ -345,8 +358,8 @@ const EnemyParams enemy_params[] = {
         .scream_sound   = 40,
         .hiss_sound     = 8,
         .attack_sound   = -1,
-        .death_frames   = {33,33,33,33,33,33,33,33,33,33,33,
-                           32,32,32,32,32,32,32,32,32,32,32,32,32,32,32, -1},
+        .death_frames   = {32,32,32,32,32,32,32,32,32,32,32,32,32,32,32,
+                           33,33,33,33,33,33,33,33,33,33,33, -1},
     },
     /* [1] Robot (Robot.s ItsARobot) */
     {
@@ -375,7 +388,7 @@ const EnemyParams enemy_params[] = {
         .attack_sound   = -1,
         .death_frames   = {-1},
     },
-    /* [2] Big Red Thing (BigRedThing.s) */
+    /* [2] Big Red Thing (BigRedThing.s) - death: add.w #1,10(a0) 0..9 then onfloordead */
     {
         .thing_height   = 456 * 128,
         .step_up        = 40 * 256,
@@ -400,7 +413,7 @@ const EnemyParams enemy_params[] = {
         .scream_sound   = 27,
         .hiss_sound     = 8,
         .attack_sound   = -1,
-        .death_frames   = {9, -1},
+        .death_frames   = {0,1,2,3,4,5,6,7,8,9, -1},
     },
     /* [3] Half Worm (HalfWorm.s) */
     {
@@ -427,8 +440,8 @@ const EnemyParams enemy_params[] = {
         .scream_sound   = 27,
         .hiss_sound     = 8,
         .attack_sound   = -1,
-        .death_frames   = {20,20,20,20,20,20, 19,19,19,19,19,19,19,19,19,19,
-                           18,18,18,18,18,18,18,18,18,18, -1},
+        .death_frames   = {18,18,18,18,18,18,18,18,18,18, 19,19,19,19,19,19,19,19,19,19,
+                           20,20,20,20,20,20, -1},
     },
     /* [4] Flame Marine (FlameMarine.s) */
     {
@@ -455,8 +468,8 @@ const EnemyParams enemy_params[] = {
         .scream_sound   = 27,
         .hiss_sound     = 8,
         .attack_sound   = 21,
-        .death_frames   = {18,18,18,18,18,18, 17,17,17,17,17,17,17,17,17,17,
-                           16,16,16,16,16,16,16,16,16,16, -1},
+        .death_frames   = {16,16,16,16,16,16,16,16,16,16, 17,17,17,17,17,17,17,17,17,17,
+                           18,18,18,18,18,18, -1},
     },
     /* [5] Tough Marine (ToughMarine.s) */
     {
@@ -483,8 +496,8 @@ const EnemyParams enemy_params[] = {
         .scream_sound   = 27,
         .hiss_sound     = 8,
         .attack_sound   = -1,
-        .death_frames   = {18,18,18,18,18,18, 17,17,17,17,17,17,17,17,17,17,
-                           16,16,16,16,16,16,16,16,16,16, -1},
+        .death_frames   = {16,16,16,16,16,16,16,16,16,16, 17,17,17,17,17,17,17,17,17,17,
+                           18,18,18,18,18,18, -1},
     },
     /* [6] Mutant Marine (MutantMarine.s) */
     {
@@ -511,8 +524,8 @@ const EnemyParams enemy_params[] = {
         .scream_sound   = 27,
         .hiss_sound     = 8,
         .attack_sound   = 3,
-        .death_frames   = {18,18,18,18,18,18, 17,17,17,17,17,17,17,17,17,17,
-                           16,16,16,16,16,16,16,16,16,16, -1},
+        .death_frames   = {16,16,16,16,16,16,16,16,16,16, 17,17,17,17,17,17,17,17,17,17,
+                           18,18,18,18,18,18, -1},
     },
     /* [7] Big Ugly Alien (BigUglyAlien.s ItsABigNasty) */
     {
@@ -541,7 +554,7 @@ const EnemyParams enemy_params[] = {
         .attack_sound   = -1,
         .death_frames   = {-1},
     },
-    /* [8] Big Claws (BigClaws.s) */
+    /* [8] Big Claws (BigClaws.s) - death: add.w #1,10(a0) 0..9 then onfloordead (same as BigRedThing) */
     {
         .thing_height   = 256 * 128,
         .step_up        = 20 * 256,
@@ -566,7 +579,7 @@ const EnemyParams enemy_params[] = {
         .scream_sound   = 27,
         .hiss_sound     = 8,
         .attack_sound   = -1,
-        .death_frames   = {9, -1},
+        .death_frames   = {0,1,2,3,4,5,6,7,8,9, -1},
     },
     /* [9] Flying Scaly Ball (FlyingScalyBall.s ItsAFlyingNasty) */
     {
