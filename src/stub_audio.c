@@ -20,8 +20,17 @@
 #define DEFAULT_FREQ     44100
 #define DEFAULT_FORMAT  AUDIO_S16SYS
 #define DEFAULT_CHANNELS 1
+#define PLAYBACK_SPEED_DIV 1  /* 1 = normal speed; 2 = half speed (each source byte output twice) */
 
-/* Amiga LoadFromDisk.s SFX_NAMES order: sample_id -> disk/sounds/<name> (we use sounds/<name>.wav) */
+/* Amiga LoadFromDisk.s SFX_NAMES: raw sample byte sizes (no header, 8-bit unsigned, 8363 Hz) */
+static const unsigned int amiga_sfx_sizes[NUM_NAMED_SFX] = {
+    4400, 7200, 5400, 4600, 3400, 8400, 8000, 4000, 8600, 6200,
+    1200, 4000, 2200, 3000, 5600, 11600, 7200, 7400, 9200, 5000,
+    4000, 8800, 9000, 1800, 3400, 1600, 11000, 8400
+};
+#define AMIGA_SFX_RATE 8363  /* PAL Amiga typical SFX rate (3579545/428) */
+
+/* Amiga LoadFromDisk.s SFX_NAMES order: sample_id -> disk/sounds/<name> (we use sounds/<name>.wav or raw) */
 static const char *const sfx_names[NUM_NAMED_SFX] = {
     "scream",      /* 0 */
     "fire!",       /* 1 ShootName */
@@ -85,18 +94,21 @@ static void audio_callback(void *userdata, Uint8 *stream, int len)
         if (ch->sample_data == NULL || ch->position >= ch->sample_len)
             continue;
 
+        /* Normal speed (PLAYBACK_SPEED_DIV 1): consume len bytes per callback */
         Uint32 remain = ch->sample_len - ch->position;
-        Uint32 to_mix = (Uint32)len;
+        Uint32 to_mix = (Uint32)len / PLAYBACK_SPEED_DIV;
         if (to_mix > remain)
             to_mix = remain;
 
-        /* SDL_MixAudioFormat expects volume 0-128 */
         int mix_vol = ch->volume;
         if (mix_vol > 255) mix_vol = 255;
         mix_vol = (mix_vol * 128) / 255;
 
         SDL_MixAudioFormat(stream, ch->sample_data + ch->position,
-                           g_spec.format, (Uint32)to_mix, mix_vol);
+                           g_spec.format, to_mix, mix_vol);
+        if (PLAYBACK_SPEED_DIV > 1 && to_mix * 2 <= (Uint32)len)
+            SDL_MixAudioFormat(stream + to_mix, ch->sample_data + ch->position,
+                              g_spec.format, to_mix, mix_vol);
         ch->position += to_mix;
 
         if (ch->position >= ch->sample_len) {
@@ -115,10 +127,101 @@ static void path_filename_to_lower(char *path)
     for (; *p; p++) *p = (char)tolower((unsigned char)*p);
 }
 
+/* Try to load Amiga raw SFX (no header, 8-bit unsigned, 8363 Hz). Returns 1 with buf/len/spec set, 0 on failure. */
+static int load_amiga_raw(int id, char *path_out, size_t path_size,
+                          SDL_AudioSpec *spec_out, Uint8 **buf_out, Uint32 *len_out)
+{
+    if (id >= NUM_NAMED_SFX) return 0;
+
+    const char *name = sfx_names[id];
+    unsigned int expect_len = amiga_sfx_sizes[id];
+    char path[512];
+    char path_lower[512];
+    FILE *f = NULL;
+
+    /* Try sounds/<name> then sounds/<name>.raw (case-insensitive) */
+    io_make_data_path(path, sizeof(path), "sounds/");
+    size_t base_len = strlen(path);
+    snprintf(path + base_len, sizeof(path) - base_len, "%s", name);
+    f = fopen(path, "rb");
+    if (!f) {
+        strncpy(path_lower, path, sizeof(path_lower) - 1);
+        path_lower[sizeof(path_lower) - 1] = '\0';
+        path_filename_to_lower(path_lower);
+        f = fopen(path_lower, "rb");
+        if (f) { (void)strncpy(path, path_lower, sizeof(path) - 1); path[sizeof(path) - 1] = '\0'; }
+    }
+    if (!f) {
+        snprintf(path + base_len, sizeof(path) - base_len, "%s.raw", name);
+        f = fopen(path, "rb");
+        if (!f) {
+            strncpy(path_lower, path, sizeof(path_lower) - 1);
+            path_lower[sizeof(path_lower) - 1] = '\0';
+            path_filename_to_lower(path_lower);
+            f = fopen(path_lower, "rb");
+            if (f) { (void)strncpy(path, path_lower, sizeof(path) - 1); path[sizeof(path) - 1] = '\0'; }
+        }
+    }
+    if (!f) return 0;
+
+    fseek(f, 0, SEEK_END);
+    long file_len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (file_len <= 0) {
+        fclose(f);
+        return 0;
+    }
+    /* Read up to expected Amiga size (file may be exact, shorter, or slightly longer) */
+    unsigned int to_read = (unsigned int)(file_len > (long)expect_len ? expect_len : file_len);
+    Uint8 *raw = (Uint8 *)SDL_malloc(to_read);
+    if (!raw) { fclose(f); return 0; }
+    if (fread(raw, 1, to_read, f) != to_read) {
+        SDL_free(raw);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+
+    /* Paula AUDxLEN is in 16-bit words (SoundPlayer.s: sub.l d1,d0; lsr.l #1,d0 -> words).
+     * So the buffer is to_read bytes = (to_read/2) words; only the high byte of each word
+     * is the sample (big-endian). Thus we have (to_read/2) samples. */
+    Uint32 samples = to_read / 2;
+    if (samples == 0) { SDL_free(raw); return 0; }
+    Uint32 s16_len = samples * 2;
+    Sint16 *s16 = (Sint16 *)SDL_malloc(s16_len);
+    if (!s16) { SDL_free(raw); return 0; }
+    /* Paula: 8-bit unsigned (0-255), 128 = silence. High byte of each word = sample. */
+    for (Uint32 i = 0; i < samples; i++) {
+        int u8 = (int)(raw[i * 2]);  /* high byte of word (even byte index) */
+        int sample = (u8 - 128) * 256;
+        if (sample > 32767) sample = 32767;
+        if (sample < -32768) sample = -32768;
+        s16[i] = (Sint16)sample;
+    }
+    SDL_free(raw);
+
+    spec_out->freq = AMIGA_SFX_RATE;
+    spec_out->format = AUDIO_S16SYS;
+    spec_out->channels = 1;
+    *buf_out = (Uint8 *)s16;
+    *len_out = s16_len;
+    if (path_out && path_size) {
+        strncpy(path_out, path, path_size - 1);
+        path_out[path_size - 1] = '\0';
+    }
+    return 1;
+}
+
 static int load_one_sample(int id)
 {
-    char subpath[80];
     char path[512];
+    SDL_AudioSpec want;
+    Uint8 *buf = NULL;
+    Uint32 len = 0;
+    int from_amiga = 0;
+
+    /* Try converted WAV first (sounds/<name>.wav), then Amiga raw originals if missing */
+    char subpath[80];
     if (id < NUM_NAMED_SFX) {
         snprintf(subpath, sizeof(subpath), "sounds/%s.wav", sfx_names[id]);
     } else {
@@ -126,20 +229,21 @@ static int load_one_sample(int id)
     }
     io_make_data_path(path, sizeof(path), subpath);
 
-    SDL_AudioSpec want;
-    Uint8 *buf = NULL;
-    Uint32 len = 0;
-
     if (!SDL_LoadWAV(path, &want, &buf, &len)) {
-        /* Case-insensitive fallback: try path with filename lowercased */
         char path_lower[512];
         snprintf(path_lower, sizeof(path_lower), "%s", path);
         path_filename_to_lower(path_lower);
         if (!SDL_LoadWAV(path_lower, &want, &buf, &len)) {
-            return 0;  /* not found - skip silently for high IDs */
+            /* No WAV: for named SFX try Amiga raw (sounds/<name> or sounds/<name>.raw) */
+            if (id < NUM_NAMED_SFX && load_amiga_raw(id, path, sizeof(path), &want, &buf, &len)) {
+                from_amiga = 1;
+            } else {
+                return 0;  /* not found - skip silently for high IDs */
+            }
+        } else {
+            strncpy(path, path_lower, sizeof(path) - 1);
+            path[sizeof(path) - 1] = '\0';
         }
-        strncpy(path, path_lower, sizeof(path) - 1);
-        path[sizeof(path) - 1] = '\0';
     }
 
     /* Convert to device format so we can mix in callback */
@@ -147,7 +251,7 @@ static int load_one_sample(int id)
     if (SDL_BuildAudioCVT(&cvt, want.format, want.channels, want.freq,
                            g_spec.format, g_spec.channels, g_spec.freq) < 0) {
         printf("[AUDIO] sample %d: unsupported format (%s)\n", id, path);
-        SDL_FreeWAV(buf);
+        if (from_amiga) SDL_free(buf); else SDL_FreeWAV(buf);
         return 0;
     }
 
@@ -155,11 +259,11 @@ static int load_one_sample(int id)
     cvt.buf = (Uint8 *)SDL_malloc((size_t)len * cvt.len_mult);
     if (!cvt.buf) {
         printf("[AUDIO] sample %d: out of memory\n", id);
-        SDL_FreeWAV(buf);
+        if (from_amiga) SDL_free(buf); else SDL_FreeWAV(buf);
         return 0;
     }
     memcpy(cvt.buf, buf, (size_t)len);
-    SDL_FreeWAV(buf);
+    if (from_amiga) SDL_free(buf); else SDL_FreeWAV(buf);
 
     if (SDL_ConvertAudio(&cvt) < 0) {
         printf("[AUDIO] sample %d: convert failed\n", id);
@@ -170,8 +274,8 @@ static int load_one_sample(int id)
     g_samples[id].data = cvt.buf;
     g_samples[id].length = (Uint32)(cvt.len_cvt);
     g_samples[id].loaded = 1;
-    printf("[AUDIO] loaded %d (%s): %s (%u bytes)\n",
-           id, id < NUM_NAMED_SFX ? sfx_names[id] : "?", path, (unsigned)g_samples[id].length);
+    printf("[AUDIO] loaded %d (%s): %s%s (%u bytes)\n",
+           id, id < NUM_NAMED_SFX ? sfx_names[id] : "?", path, from_amiga ? " [Amiga raw]" : "", (unsigned)g_samples[id].length);
     return 1;
 }
 
