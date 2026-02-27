@@ -52,7 +52,7 @@ static void write_long_be(uint8_t *p, int32_t v)
 }
 
 /* Forward declare for use in level_parse. */
-static void fix_broken_floor_line_connects_lowbyte(LevelState *level);
+static void log_broken_floor_line_connects(LevelState *level);
 
 /* Map zone value from file (may be block ID at zd+0) to zone index (0..num_zones-1). */
 static int zone_file_to_index(const uint8_t *ld, const uint8_t *zone_adds, int num_zones, int16_t zone_from_file)
@@ -561,7 +561,7 @@ int level_parse(LevelState *level)
         }
     }
 
-    fix_broken_floor_line_connects_lowbyte(level);
+    log_broken_floor_line_connects(level);
 
     return 0;
 }
@@ -649,7 +649,7 @@ int level_connect_to_zone_index(const LevelState *level, int16_t connect)
  * Log when it does not hold. Ignore one-sided boundaries (actual walls: fline in
  * only one zone's exit list).
  */
-static void fix_broken_floor_line_connects_lowbyte(LevelState *level)
+static void log_broken_floor_line_connects(LevelState *level)
 {
     if (!level->floor_lines || !level->zone_adds || !level->data ||
         level->num_zones <= 0 || level->num_floor_lines <= 0)
@@ -692,28 +692,13 @@ static void fix_broken_floor_line_connects_lowbyte(LevelState *level)
     /* Pass 1: any fline with connect >= 0 that does not resolve is a broken connect. Log zone info and each exit fline info. */
     for (int f = 0; f < n; f++) {
         int16_t connect = read_word(flines + (size_t)f * 16u + 8);
+
         if (connect < 0) continue;
         if (level_connect_to_zone_index(level, connect) >= 0) continue;
 
-        /* Fline f has broken connect; correct zone is the other side (zone_b when 2 zones, else zone_a). */
-        int correct_zone = (nz[f] >= 2) ? zone_b[f] : zone_a[f];
+        int correct_zone = 0; // TODO: Work this out
 
-        /* Patch the connect word so it resolves to the correct zone. */
-        if (logged == 0)
-        {
-            correct_zone = 89;
-            write_word_be(level->floor_lines + (size_t)f * 16u + 8, (int16_t)correct_zone);
-
-        }
-        else if (logged == 1){
-            correct_zone = 82; // ??
-            write_word_be(level->floor_lines + (size_t)f * 16u + 8, (int16_t)correct_zone);
-        }
-        else if (logged == 2) {
-            correct_zone = 81;
-            write_word_be(level->floor_lines + (size_t)f * 16u + 8, (int16_t)correct_zone);
-        }
-
+        /* Log only; do not patch the connect word. */
         /* Fline f has broken connect; log each zone that lists f: zone info then each exit fline info. */
         int z1 = zone_a[f];
         int z2 = (nz[f] >= 2) ? zone_b[f] : -1;
