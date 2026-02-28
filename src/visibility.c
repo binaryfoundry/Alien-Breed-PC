@@ -252,9 +252,14 @@ uint8_t can_it_be_seen(const LevelState *level,
         return 0;
     }
 
-    /* Same room (insameroom): visible only if same floor */
+    /* Same room (insameroom): visible if on same floor.
+     * For single-floor zones (no upper floor), ignore floor flags entirely
+     * since byte 63 of enemy records may not be meaningful there. */
     if (from_room == to_room) {
-        return (viewer_top == target_top) ? 0x03u : 0u;
+        int has_upper = (read_be32(from_room + ZONE_UPPER_FLOOR) != 0);
+        if (!has_upper || viewer_top == target_top)
+            return 0x03u;
+        return 0u;
     }
 
     if (!level->zone_adds) return 0;

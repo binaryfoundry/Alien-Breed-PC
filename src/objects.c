@@ -956,37 +956,25 @@ void object_handle_marine(GameObject *obj, GameState *state)
     int8_t lives = NASTY_LIVES(*obj);
     if (lives <= 0) return;
 
-    /* Run AI control (from AI.s ItsAMarine) */
-    AIParams ai;
-    ai.aggression = 15;
-    ai.movement = 0;
-    ai.cooperation = 30;
-    ai.ident = 0;
-    ai.enemies = 0x01;           /* players are enemies (%1) */
-    ai.friends = 0xA0;           /* other marines are friends (%10100000) */
-    ai.armed = true;
-
-    /* Shot parameters per marine type (from AlienControl.s SHOT* globals) */
-    if (type == OBJ_NBR_TOUGH_MARINE) {
-        ai.shot_type = 6; ai.shot_power = 7; ai.shot_speed = 32; ai.shot_shift = 2;
-    } else if (type == OBJ_NBR_FLAME_MARINE) {
-        ai.shot_type = 0; ai.shot_power = 2; ai.shot_speed = 16; ai.shot_shift = 3;
-    } else { /* Mutant marine */
-        ai.shot_type = 0; ai.shot_power = 4; ai.shot_speed = 16; ai.shot_shift = 3;
-    }
-
-    /* Update can_see before AI control and attack decisions */
     enemy_update_can_see(obj, state);
 
-    ai_control(obj, state, &ai);
-
-    /* Bit 0 = player 1 visible, bit 1 = player 2 visible */
+    /* Armed marines advance at half speed (Amiga AI.s: armed units get speed >>= 1).
+     * Halve NASTY_MAXSPD temporarily so enemy_attack uses the slower tactical pace,
+     * then restore the original value for the next frame's wander/cooldown logic. */
     int8_t can_see = obj->obj.can_see;
     if (can_see & 0x01) {
+        int16_t orig_spd = NASTY_MAXSPD(*obj);
+        int16_t use_spd  = (orig_spd != 0) ? orig_spd : 6;
+        NASTY_SET_MAXSPD(*obj, (int16_t)(use_spd >> 1));
         enemy_attack(obj, params, state, 1);
+        NASTY_SET_MAXSPD(*obj, orig_spd);
     } else if (can_see & 0x02) {
+        int16_t orig_spd = NASTY_MAXSPD(*obj);
+        int16_t use_spd  = (orig_spd != 0) ? orig_spd : 6;
+        NASTY_SET_MAXSPD(*obj, (int16_t)(use_spd >> 1));
         enemy_attack(obj, params, state, 2);
-    } else if (!state->level.object_data) {
+        NASTY_SET_MAXSPD(*obj, orig_spd);
+    } else {
         enemy_wander(obj, params, state);
     }
 
