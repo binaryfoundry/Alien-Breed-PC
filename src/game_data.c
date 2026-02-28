@@ -640,7 +640,8 @@ const EnemyParams enemy_params[] = {
         .death_frames   = {16,16,16,16,16,16,16,16,16,16, 17,17,17,17,17,17,17,17,17,17,
                            18,18,18,18,18,18, -1},
     },
-    /* [6] Mutant Marine (MutantMarine.s) */
+    /* [6] Mutant Marine (MutantMarine.s) - fires gun (Amiga: hitscan via ShootPlayer1,
+     * approximated here with a fast plasma projectile for visible gameplay) */
     {
         .thing_height   = 128 * 128,
         .step_up        = 20 * 256,
@@ -650,12 +651,12 @@ const EnemyParams enemy_params[] = {
         .nas_height     = 64,
         .melee_damage   = 4,
         .melee_cooldown = 50,
-        .melee_range    = 80,
-        .shot_type      = -1,       /* hitscan */
+        .melee_range    = 80,       /* also used as min range for shot */
+        .shot_type      = 0,        /* plasma bolt (Amiga used hitscan, this is approx) */
         .shot_power     = 4,
-        .shot_speed     = 0,
-        .shot_shift     = 0,
-        .shot_cooldown  = 50,
+        .shot_speed     = 32,       /* fast projectile */
+        .shot_shift     = 2,
+        .shot_cooldown  = 40,
         .damage_shift   = 0,
         .explode_threshold = 40,
         .wander_timer   = 50,

@@ -302,7 +302,8 @@ uint8_t can_it_be_seen(const LevelState *level,
     int32_t dx = (int32_t)target_x - (int32_t)viewer_x;
     int32_t dz = (int32_t)target_z - (int32_t)viewer_z;
 
-    /* Clip check (left/right) when clips/points available */
+    /* Clip check (left/right) when clips/points available.
+     * Amiga: d4 = (pz-vz)*dx - (px-vx)*dz; left=ble outlist, right=bge outlist. */
     if (in_list && clip_off >= 0 && level->clips && level->points) {
         const uint8_t *clip_ptr = level->clips + (unsigned)clip_off * 2u;
         for (;;) {
@@ -310,7 +311,8 @@ uint8_t can_it_be_seen(const LevelState *level,
             if (pt_idx < 0) break;
             int16_t px = read_be16(level->points + (unsigned)pt_idx * 4u);
             int16_t pz = read_be16(level->points + (unsigned)pt_idx * 4u + 2u);
-            int32_t cross = ((int32_t)px - (int32_t)viewer_x) * dz - ((int32_t)pz - (int32_t)viewer_z) * dx;
+            /* Amiga: (pz-vz)*dx - (px-vx)*dz <= 0 → not visible */
+            int32_t cross = ((int32_t)pz - (int32_t)viewer_z) * dx - ((int32_t)px - (int32_t)viewer_x) * dz;
             if (cross <= 0) return 0;
             clip_ptr += 2;
         }
@@ -320,19 +322,21 @@ uint8_t can_it_be_seen(const LevelState *level,
             if (pt_idx < 0) break;
             int16_t px = read_be16(level->points + (unsigned)pt_idx * 4u);
             int16_t pz = read_be16(level->points + (unsigned)pt_idx * 4u + 2u);
-            int32_t cross = ((int32_t)px - (int32_t)viewer_x) * dz - ((int32_t)pz - (int32_t)viewer_z) * dx;
+            /* Amiga: (pz-vz)*dx - (px-vx)*dz >= 0 → not visible */
+            int32_t cross = ((int32_t)pz - (int32_t)viewer_z) * dx - ((int32_t)px - (int32_t)viewer_x) * dz;
             if (cross >= 0) return 0;
             clip_ptr += 2;
         }
     }
 
-    /* GoThroughZones */
+    /* GoThroughZones (Amiga ObjectMove.s lines 1564-1664).
+     * For each exit of current_room, test if viewer→target ray crosses the exit line,
+     * then advance into the next zone. Repeat until we reach to_room or fail. */
     int32_t dy = (int32_t)target_y - (int32_t)viewer_y;
     const uint8_t *current_room = from_room;
     int8_t d2 = viewer_top;
-    int max_depth = 20;
 
-    for (int depth = 0; depth < max_depth; depth++) {
+    for (int depth = 0; depth < 20; depth++) {
         int16_t exit_rel = read_be16(current_room + ZONE_EXIT_LIST);
         if (exit_rel == 0) break;
 
@@ -341,66 +345,82 @@ uint8_t can_it_be_seen(const LevelState *level,
 
         for (int i = 0; i < 50; i++) {
             int16_t line_idx = read_be16(exit_list + i * 2);
+            /* Negative sentinel → end of list, no path found → not visible */
             if (line_idx < 0) break;
 
             const uint8_t *fline = level->floor_lines + (unsigned)line_idx * (unsigned)FLINE_SIZE;
-            int16_t lx = read_be16(fline + FLINE_X);
-            int16_t lz = read_be16(fline + FLINE_Z);
+            int16_t lx    = read_be16(fline + FLINE_X);
+            int16_t lz    = read_be16(fline + FLINE_Z);
             int16_t lxlen = read_be16(fline + FLINE_XLEN);
             int16_t lzlen = read_be16(fline + FLINE_ZLEN);
             int16_t connect = read_be16(fline + FLINE_CONNECT);
 
-            int32_t d3 = (int32_t)viewer_x - (int32_t)lx;
-            int32_t d4 = (int32_t)viewer_z - (int32_t)lz;
-            int32_t view_side = d3 * (int32_t)lzlen - d4 * (int32_t)lxlen;
-            if (view_side <= 0) continue;
+            /* Amiga viewer side test (FindWayOut):
+             * d4 = (lz-vz)*dx - (lx-vx)*dz  > 0 → viewer on correct side */
+            int32_t lx_off = (int32_t)lx - (int32_t)viewer_x;  /* lx - vx */
+            int32_t lz_off = (int32_t)lz - (int32_t)viewer_z;  /* lz - vz */
+            int32_t viewer_side = lz_off * dx - lx_off * dz;
+            if (viewer_side <= 0) continue;
 
-            int32_t d5 = d3 + (int32_t)lxlen;
-            int32_t d6 = d4 + (int32_t)lzlen;
-            int32_t targ_side = d5 * (int32_t)lzlen - d6 * (int32_t)lxlen;
-            if (targ_side >= 0) continue;
+            /* Amiga target side test (using line END = start + (lxlen,lzlen)):
+             * d6 = (lz+lzlen-vz)*dx - (lx+lxlen-vx)*dz  < 0 → target on correct side */
+            int32_t le_x_off = lx_off + (int32_t)lxlen;  /* lx+lxlen - vx */
+            int32_t le_z_off = lz_off + (int32_t)lzlen;  /* lz+lzlen - vz */
+            int32_t target_side = le_z_off * dx - le_x_off * dz;
+            if (target_side >= 0) continue;
 
+            /* Wall (no exit) → not visible (Amiga: blt outlist) */
             if (connect < 0) return 0;
             int connect_index = level_connect_to_zone_index(level, connect);
             if (connect_index < 0) continue;
 
+            /* Height at which ray crosses this exit line.
+             * Amiga d4 = (tz-lz)*lxlen - (tx-lx)*lzlen  (target signed distance, negated)
+             * Amiga d5 = (vx-lx)*lzlen - (vz-lz)*lxlen  (viewer signed distance)
+             * crossing_y = viewer_y + d5*dy / (d5+d4) */
             int16_t divisor = read_be16(fline + FLINE_DIVISOR);
             if (divisor == 0) divisor = 1;
-            int32_t num_t = (int32_t)(target_x - lx) * (int32_t)lzlen - (int32_t)(target_z - lz) * (int32_t)lxlen;
-            int32_t num_v = (int32_t)(viewer_x - lx) * (int32_t)lzlen - (int32_t)(viewer_z - lz) * (int32_t)lxlen;
+            int32_t num_t = (int32_t)(target_z - lz) * (int32_t)lxlen
+                          - (int32_t)(target_x - lx) * (int32_t)lzlen; /* = Amiga d4 */
+            int32_t num_v = (int32_t)(viewer_x - lx) * (int32_t)lzlen
+                          - (int32_t)(viewer_z - lz) * (int32_t)lxlen; /* = Amiga d5 */
             num_t /= (int32_t)divisor;
             num_v /= (int32_t)divisor;
-            int32_t den = num_t + num_v;
-            int32_t cross_y_16 = (int16_t)viewer_y;
+            int32_t den = num_v + num_t;  /* Amiga: d5 + d4 */
+            int32_t cross_y_16 = (int32_t)viewer_y;
             if (den != 0) {
-                int32_t frac = (int32_t)dy * num_v / den;
-                cross_y_16 = (int16_t)viewer_y + (int16_t)frac;
+                cross_y_16 = (int32_t)viewer_y + (int32_t)dy * num_v / den;
             }
-            int32_t cross_y = (int32_t)cross_y_16 << 7;
+            int32_t cross_y = cross_y_16 << 7;
 
+            /* Current room height clearance (Amiga: comparewithbottom / top section) */
             int32_t floor_h = read_be32(current_room + ZONE_FLOOR_HEIGHT);
-            int32_t roof_h = read_be32(current_room + ZONE_ROOF_HEIGHT);
+            int32_t roof_h  = read_be32(current_room + ZONE_ROOF_HEIGHT);
             if (d2) {
                 floor_h = read_be32(current_room + ZONE_UPPER_FLOOR);
-                roof_h = read_be32(current_room + ZONE_UPPER_ROOF);
+                roof_h  = read_be32(current_room + ZONE_UPPER_ROOF);
             }
             if (cross_y < roof_h || cross_y > floor_h) continue;
 
+            /* Advance into next zone (Amiga: GotIn) */
             int32_t next_off = read_be32(level->zone_adds + (unsigned)connect_index * 4u);
             const uint8_t *next_zone = level->data + next_off;
 
             int32_t next_floor = read_be32(next_zone + ZONE_FLOOR_HEIGHT);
-            int32_t next_roof = read_be32(next_zone + ZONE_ROOF_HEIGHT);
-            int8_t entry_top = 0;
+            int32_t next_roof  = read_be32(next_zone + ZONE_ROOF_HEIGHT);
             if (cross_y > next_floor) return 0;
-            if (cross_y <= next_roof) {
+
+            int8_t entry_top;
+            /* Amiga: bgt.s GotIn → if cross_y > next_roof → enter at bottom (entry_top=0) */
+            if (cross_y > next_roof) {
                 entry_top = 0;
             } else {
-                int32_t up_floor = read_be32(next_zone + ZONE_UPPER_FLOOR);
-                int32_t up_roof = read_be32(next_zone + ZONE_UPPER_ROOF);
-                if (cross_y > up_floor) return 0;
-                if (cross_y < up_roof) return 0;
+                /* Entering upper section */
                 entry_top = 1;
+                int32_t up_floor = read_be32(next_zone + ZONE_UPPER_FLOOR);
+                int32_t up_roof  = read_be32(next_zone + ZONE_UPPER_ROOF);
+                if (cross_y > up_floor) return 0;
+                if (cross_y < up_roof)  return 0;
             }
 
             if (next_zone == to_room) {

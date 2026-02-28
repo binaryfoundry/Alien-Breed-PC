@@ -18,6 +18,7 @@
 #include "movement.h"
 #include "math_tables.h"
 #include "stub_audio.h"
+#include "visibility.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -54,6 +55,97 @@ int16_t plr2_obj_dists[MAX_OBJECTS];
 
 /* Animation timer (from Anims.s) */
 static int16_t anim_timer = 2;
+
+/* Walk-cycle counter (Amiga: alan[] table / alanptr, advances each game tick).
+ * Range 0-31 (wraps at 32). Each frame step spans 8 ticks → step = counter >> 3, range 0-3.
+ * Amiga: alan[] has 8 copies of each value 0-3 → 32 entries, cycles at game tick rate. */
+static uint8_t walk_cycle = 0;
+
+/* -----------------------------------------------------------------------
+ * enemy_viewpoint - Amiga AlienControl.s ViewpointToDraw
+ * Returns 0=towards, 1=right, 2=away, 3=left based on angle between
+ * enemy facing direction and enemy-to-player direction vector.
+ *
+ * Exact translation of Amiga assembly:
+ *   d0 = dx*sin + dz*cos  (forward: > 0 means player is ahead)
+ *   d4 = dx*cos - dz*sin  (lateral: > 0 means player is to enemy's right)
+ * ----------------------------------------------------------------------- */
+static int enemy_viewpoint(GameObject *obj, int16_t plr_x, int16_t plr_z,
+                            const LevelState *level)
+{
+    int cid = (int)OBJ_CID(obj);
+    int16_t ox = 0, oz = 0;
+    if (level->object_points && cid >= 0 && cid < level->num_object_points) {
+        const uint8_t *p = level->object_points + cid * 8;
+        ox = be16(p);
+        oz = be16(p + 4);
+    }
+
+    /* dx, dz = direction from enemy toward player (as in HeadTowards) */
+    int32_t dx = (int32_t)plr_x - ox;
+    int32_t dz = (int32_t)plr_z - oz;
+
+    int16_t facing = NASTY_FACING(*obj);
+    int32_t sf = sin_lookup(facing);  /* Amiga: d2 = SineTable[facing] */
+    int32_t cf = cos_lookup(facing);  /* Amiga: d3 = SineTable[facing+1024] */
+
+    /* Amiga: d0 = dx*sin + dz*cos (forward), d4 = dx*cos - dz*sin (lateral) */
+    int32_t fwd  = dx * sf + dz * cf;   /* positive = player ahead of enemy */
+    int32_t lat  = dx * cf - dz * sf;   /* positive = player to enemy's right */
+
+    /* Amiga quadrant logic (tst/cmp/bgt chain):
+     *   FacingTowardsPlayer (fwd > 0):
+     *     lat > 0 && lat > fwd  → RIGHT(1)
+     *     lat > 0 && lat <= fwd → TOWARDS(0)
+     *     lat <= 0 && -lat > fwd → LEFT(3)
+     *     lat <= 0 && -lat <= fwd → TOWARDS(0)
+     *   FacingAway (fwd <= 0):
+     *     lat > 0 && lat > -fwd → RIGHT(1)
+     *     lat > 0 && lat <= -fwd → AWAY(2)
+     *     lat <= 0 && -lat > -fwd → LEFT(3)
+     *     lat <= 0 && -lat <= -fwd → AWAY(2)
+     */
+    if (fwd > 0) {
+        if (lat > 0)
+            return (lat > fwd)  ? 1 : 0;  /* RIGHT or TOWARDS */
+        else
+            return (-lat > fwd) ? 3 : 0;  /* LEFT  or TOWARDS */
+    } else {
+        int32_t afwd = -fwd;
+        if (lat > 0)
+            return (lat > afwd)  ? 1 : 2; /* RIGHT or AWAY */
+        else
+            return (-lat > afwd) ? 3 : 2; /* LEFT  or AWAY */
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * enemy_update_anim - set raw[8..11] (OBJ_DEADH|OBJ_DEADL) each tick.
+ * Translates Amiga: asl.l #2,d0; add.l alframe,d0 [; add.l #vectnum_high,d0]; move.l d0,8(a0)
+ * vect_num is the sprite WAD index for this enemy type (high word of 8(a0)).
+ * frame = angle*4 + walk_step (0-15, low word of 8(a0)).
+ * ----------------------------------------------------------------------- */
+static void enemy_update_anim(GameObject *obj, GameState *state, int16_t vect_num)
+{
+    /* Which player to use for viewpoint (use player 1, or 2 if 1 has invalid zone) */
+    int16_t plr_x, plr_z;
+    if (state->plr1.zone >= 0) {
+        plr_x = (int16_t)state->plr1.p_xoff;
+        plr_z = (int16_t)state->plr1.p_zoff;
+    } else {
+        plr_x = (int16_t)state->plr2.p_xoff;
+        plr_z = (int16_t)state->plr2.p_zoff;
+    }
+
+    int angle = enemy_viewpoint(obj, plr_x, plr_z, &state->level);
+    int walk_step = (walk_cycle >> 3) & 3;  /* 0-3, steps every 8 ticks */
+    int16_t frame = (int16_t)(angle * 4 + walk_step);
+
+    /* Store as big-endian long at raw[8..11]:
+     * raw[8..9] = vect_num (high word), raw[10..11] = frame (low word) */
+    wbe16(obj->raw + 8,  vect_num);
+    wbe16(obj->raw + 10, frame);
+}
 
 /* -----------------------------------------------------------------------
  * Set world width/height in each object record from type defaults when unset (Amiga: each type sets 6(a0)).
@@ -130,23 +222,9 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
 
         /* Amiga: ExplodeIntoBits is always called on death when damage > 1.
          * explode_threshold > 0 means "instant kill threshold" (skip death animation),
-         * not the gib-spawn threshold. */
+         * not the gib-spawn threshold.
+         * All enemies: gibs only, no explosion animation. */
         if (damage > 1) {
-            int idx = (int)OBJ_CID(obj);
-            int16_t ex, ez;
-            get_object_pos(&state->level, idx, &ex, &ez);
-            int32_t y_floor = ((int32_t)obj_w(obj->raw + 4) + (int32_t)(int8_t)obj->raw[7]) << 7;
-            if ((int8_t)obj->raw[7] == 0) y_floor = ((int32_t)obj_w(obj->raw + 4) + 32) << 7;
-            y_floor += (88 << 7);
-            {
-                const int num_particles = 6;
-                const int spread = 112;
-                for (int p = 0; p < num_particles && state->num_explosions < MAX_EXPLOSIONS; p++) {
-                    int16_t px = (int16_t)(ex + (int16_t)((rand() & (2*spread - 1)) - spread));
-                    int16_t pz = (int16_t)(ez + (int16_t)((rand() & (2*spread - 1)) - spread));
-                    explosion_spawn(state, px, pz, OBJ_ZONE(obj), y_floor);
-                }
-            }
             explode_into_bits(obj, state);
         }
 
@@ -384,6 +462,75 @@ static int obj_type_to_enemy_index(int8_t obj_type)
 }
 
 /* -----------------------------------------------------------------------
+ * Update obj->obj.can_see via CanItBeSeen for both players.
+ * Bit 0 = can see player 1, bit 1 = can see player 2.
+ * Called by every enemy handler each tick (Amiga: each NormalAlien / MutantMarine
+ * calls CanItBeSeen itself in its prowl/attack routine).
+ * ----------------------------------------------------------------------- */
+static void enemy_update_can_see(GameObject *obj, GameState *state)
+{
+    int16_t enemy_zone = OBJ_ZONE(obj);
+    if (enemy_zone < 0) return;
+    const uint8_t *from_room = level_get_zone_data_ptr(&state->level, enemy_zone);
+    if (!from_room) return;
+
+    int enemy_cid = (int)OBJ_CID(obj);
+    int16_t enemy_x = 0, enemy_z = 0;
+    get_object_pos(&state->level, enemy_cid, &enemy_x, &enemy_z);
+    int16_t viewer_y = (int16_t)obj_w(obj->raw + 4);
+
+    obj->obj.can_see = 0;
+
+    /* Player 1 → bit 0 */
+    {
+        int16_t plr_zone = state->plr1.zone;
+        const uint8_t *to_room = level_get_zone_data_ptr(&state->level, plr_zone);
+        if (to_room) {
+            int16_t plr_x    = (int16_t)state->plr1.p_xoff;
+            int16_t plr_z    = (int16_t)state->plr1.p_zoff;
+            int16_t target_y = (int16_t)(state->plr1.p_yoff >> 7);
+            uint8_t vis = can_it_be_seen(&state->level,
+                                         from_room, to_room, plr_zone,
+                                         enemy_x, enemy_z, viewer_y,
+                                         plr_x, plr_z, target_y,
+                                         obj->obj.in_top, 0);
+            if (vis) obj->obj.can_see |= 0x01;
+        }
+    }
+    /* Player 2 → bit 1 */
+    {
+        int16_t plr_zone = state->plr2.zone;
+        const uint8_t *to_room = level_get_zone_data_ptr(&state->level, plr_zone);
+        if (to_room) {
+            int16_t plr_x    = (int16_t)state->plr2.p_xoff;
+            int16_t plr_z    = (int16_t)state->plr2.p_zoff;
+            int16_t target_y = (int16_t)(state->plr2.p_yoff >> 7);
+            uint8_t vis = can_it_be_seen(&state->level,
+                                         from_room, to_room, plr_zone,
+                                         enemy_x, enemy_z, viewer_y,
+                                         plr_x, plr_z, target_y,
+                                         obj->obj.in_top, 0);
+            if (vis) obj->obj.can_see |= 0x02;
+        }
+    }
+
+    if (obj->obj.can_see != 0) {
+        printf("[VIS-HIT] type=%d zone=%d plr1_zone=%d pos(%d,%d) plr(%d,%d) can_see=0x%02x\n",
+               (int)obj->obj.number, (int)enemy_zone, (int)state->plr1.zone,
+               (int)enemy_x, (int)enemy_z,
+               (int)(int16_t)state->plr1.p_xoff, (int)(int16_t)state->plr1.p_zoff,
+               (int)obj->obj.can_see);
+    } else if (enemy_zone == state->plr1.zone) {
+        printf("[VIS-SAME-MISS] zone=%d enemy(%d,%d) plr(%d,%d) from=%p to=%p in_top=%d\n",
+               (int)enemy_zone, (int)enemy_x, (int)enemy_z,
+               (int)(int16_t)state->plr1.p_xoff, (int)(int16_t)state->plr1.p_zoff,
+               (void*)from_room,
+               (void*)level_get_zone_data_ptr(&state->level, state->plr1.zone),
+               (int)obj->obj.in_top);
+    }
+}
+
+/* -----------------------------------------------------------------------
  * Generic enemy handler - used by all enemy types
  * ----------------------------------------------------------------------- */
 static void enemy_generic(GameObject *obj, GameState *state, int param_index)
@@ -399,15 +546,51 @@ static void enemy_generic(GameObject *obj, GameState *state, int param_index)
     int8_t lives = NASTY_LIVES(*obj);
     if (lives <= 0) return;
 
-    /* Check visibility */
-    int8_t can_see = obj->obj.can_see;
+    enemy_update_can_see(obj, state);
 
-    if (can_see & 0x02) {
+    /* Bit 0 = player 1 visible, bit 1 = player 2 visible */
+    int8_t can_see = obj->obj.can_see;
+    if (can_see & 0x01) {
         enemy_attack(obj, params, state, 1);
-    } else if (can_see & 0x01) {
+    } else if (can_see & 0x02) {
         enemy_attack(obj, params, state, 2);
     } else {
         enemy_wander(obj, params, state);
+    }
+
+    /* Update sprite animation frame (Amiga: ViewpointToDraw + alframe → 8(a0)).
+     * Vect_num per type from Amiga .s files: NormalAlien=0, Robot=$5, BigNasty=$3,
+     * FlyingNasty=0(EyeBall), Worm=$d, HugeRed/BigClaws=$e, SmallRed/BigRed=$e,
+     * Tree=$f, EyeBall=0. */
+    {
+        static const int16_t vect_by_type[] = {
+            /* OBJ_NBR_ALIEN(0)*/       0,
+            /* OBJ_NBR_MEDIKIT(1)*/    -1,
+            /* OBJ_NBR_BULLET(2)*/     -1,
+            /* OBJ_NBR_BIG_GUN(3)*/    -1,
+            /* OBJ_NBR_KEY(4)*/        -1,
+            /* OBJ_NBR_PLR1(5)*/       -1,
+            /* OBJ_NBR_ROBOT(6)*/       5,
+            /* OBJ_NBR_BIG_NASTY(7)*/   3,
+            /* OBJ_NBR_FLYING_NASTY(8)*/4,
+            /* OBJ_NBR_AMMO(9)*/       -1,
+            /* OBJ_NBR_BARREL(10)*/    -1,
+            /* OBJ_NBR_PLR2(11)*/      -1,
+            /* OBJ_NBR_MARINE(12)*/    10,
+            /* OBJ_NBR_WORM(13)*/      13,
+            /* OBJ_NBR_HUGE_RED(14)*/  14,
+            /* OBJ_NBR_SMALL_RED(15)*/ 14,
+            /* OBJ_NBR_TREE(16)*/      15,
+            /* OBJ_NBR_EYEBALL(17)*/    0,
+            /* OBJ_NBR_TOUGH(18)*/     16,
+            /* OBJ_NBR_FLAME(19)*/     17,
+        };
+        int8_t otype = obj->obj.number;
+        if (otype >= 0 && otype < (int8_t)(sizeof(vect_by_type)/sizeof(vect_by_type[0]))) {
+            int16_t vn = vect_by_type[(int)otype];
+            if (vn >= 0)
+                enemy_update_anim(obj, state, vn);
+        }
     }
 }
 
@@ -472,6 +655,10 @@ void objects_update(GameState *state)
         /* Swap RipTear/otherrip buffers (for rendering) */
     }
 
+    /* Advance walk-cycle counter (Amiga: alanptr steps through alan[] table each game tick).
+     * walk_cycle 0-31 wraps; walk_step = walk_cycle >> 3 gives 0-3 (8 ticks per step). */
+    walk_cycle = (uint8_t)((walk_cycle + (uint8_t)state->temp_frames) & 31u);
+
     int obj_index = 0;
     while (1) {
         GameObject *obj = get_object(&state->level, obj_index);
@@ -482,12 +669,9 @@ void objects_update(GameState *state)
             continue;
         }
 
-        /* Check worry flag */
-        if (obj->obj.worry == 0) {
-            obj_index++;
-            continue;
-        }
-        obj->obj.worry--;
+        /* Amiga processes all objects with zone >= 0 every frame.
+         * Just refresh worry so other systems (e.g. rendering hints) still work. */
+        obj->obj.worry = 1;
 
         /* Update rendering Y position from zone floor height.
          * Anims.s: each handler writes 4(a0) = (ToZoneFloor >> 7) - offset.
@@ -786,16 +970,26 @@ void object_handle_marine(GameObject *obj, GameState *state)
         ai.shot_type = 0; ai.shot_power = 4; ai.shot_speed = 16; ai.shot_shift = 3;
     }
 
+    /* Update can_see before AI control and attack decisions */
+    enemy_update_can_see(obj, state);
+
     ai_control(obj, state, &ai);
 
-    /* If AI didn't move (no level data), fall back to generic behavior */
+    /* Bit 0 = player 1 visible, bit 1 = player 2 visible */
     int8_t can_see = obj->obj.can_see;
-    if (can_see & 0x02) {
+    if (can_see & 0x01) {
         enemy_attack(obj, params, state, 1);
-    } else if (can_see & 0x01) {
+    } else if (can_see & 0x02) {
         enemy_attack(obj, params, state, 2);
     } else if (!state->level.object_data) {
         enemy_wander(obj, params, state);
+    }
+
+    /* Update sprite animation frame */
+    {
+        int16_t vn = (type == OBJ_NBR_TOUGH_MARINE) ? 16 :
+                     (type == OBJ_NBR_FLAME_MARINE)  ? 17 : 10;
+        enemy_update_anim(obj, state, vn);
     }
 }
 
@@ -842,15 +1036,19 @@ void object_handle_flying_nasty(GameObject *obj, GameState *state)
     OBJ_SET_TD_L(obj, 24, accypos);
     OBJ_SET_TD_W(obj, 6, yvel);
 
-    /* Check visibility and attack */
+    /* Update visibility and attack */
+    enemy_update_can_see(obj, state);
     int8_t can_see = obj->obj.can_see;
-    if (can_see & 0x02) {
+    if (can_see & 0x01) {
         enemy_attack(obj, params, state, 1);
-    } else if (can_see & 0x01) {
+    } else if (can_see & 0x02) {
         enemy_attack(obj, params, state, 2);
     } else {
         enemy_wander(obj, params, state);
     }
+
+    int16_t vn_fly = (obj->obj.number == OBJ_NBR_EYEBALL) ? 0 : 4;
+    enemy_update_anim(obj, state, vn_fly);
 }
 
 /* -----------------------------------------------------------------------
