@@ -301,7 +301,8 @@ uint8_t can_it_be_seen(const LevelState *level,
                        int16_t to_zone_id,
                        int16_t viewer_x, int16_t viewer_z, int16_t viewer_y,
                        int16_t target_x, int16_t target_z, int16_t target_y,
-                       int8_t viewer_top, int8_t target_top)
+                       int8_t viewer_top, int8_t target_top,
+                       int full_height)
 {
     if (!level->data || !level->floor_lines) {
         return 0;
@@ -467,37 +468,66 @@ uint8_t can_it_be_seen(const LevelState *level,
             }
             int32_t cross_y = cross_y_16 << 7;
 
-            /* Current room height clearance (Amiga: comparewithbottom / top section) */
-            int32_t floor_h = read_be32(current_room + ZONE_FLOOR_HEIGHT);
-            int32_t roof_h  = read_be32(current_room + ZONE_ROOF_HEIGHT);
-            if (d2) {
-                floor_h = read_be32(current_room + ZONE_UPPER_FLOOR);
-                roof_h  = read_be32(current_room + ZONE_UPPER_ROOF);
-            }
-            if (cross_y < roof_h || cross_y > floor_h) continue;
-
             /* Advance into next zone (Amiga: GotIn) */
             int32_t next_off = read_be32(level->zone_adds + (unsigned)connect_index * 4u);
             const uint8_t *next_zone = level->data + next_off;
 
-            int32_t next_floor = read_be32(next_zone + ZONE_FLOOR_HEIGHT);
-            int32_t next_roof  = read_be32(next_zone + ZONE_ROOF_HEIGHT);
-            if (cross_y > next_floor) return 0;
-
             int8_t entry_top;
-            /* Amiga: bgt.s GotIn → if cross_y > next_roof → enter at bottom (entry_top=0) */
-            if (cross_y > next_roof) {
+            if (full_height) {
+                /* Hitscan: check crossing height against the FULL height
+                 * envelope of the zone (both lower and upper sections)
+                 * rather than only the viewer's current section.  This
+                 * allows cross-section shots while still rejecting exits
+                 * at heights outside the zone's physical bounds —
+                 * preventing the ray from routing around closed doors
+                 * through height-separated alternative exits. */
+                int32_t floor_h = read_be32(current_room + ZONE_FLOOR_HEIGHT);
+                int32_t roof_h  = read_be32(current_room + ZONE_ROOF_HEIGHT);
+                int32_t cur_up  = read_be32(current_room + ZONE_UPPER_FLOOR);
+                if (cur_up != 0) {
+                    int32_t cur_up_roof = read_be32(current_room + ZONE_UPPER_ROOF);
+                    if (cur_up_roof < roof_h) roof_h = cur_up_roof;
+                }
+                if (cross_y < roof_h || cross_y > floor_h) continue;
+
+                int32_t next_floor = read_be32(next_zone + ZONE_FLOOR_HEIGHT);
+                int32_t next_roof  = read_be32(next_zone + ZONE_ROOF_HEIGHT);
+                int32_t next_up    = read_be32(next_zone + ZONE_UPPER_FLOOR);
+                if (next_up != 0) {
+                    int32_t next_up_roof = read_be32(next_zone + ZONE_UPPER_ROOF);
+                    if (next_up_roof < next_roof) next_roof = next_up_roof;
+                }
+                if (cross_y < next_roof || cross_y > next_floor) return 0;
+
                 entry_top = 0;
             } else {
-                /* Entering upper section */
-                entry_top = 1;
-                int32_t up_floor = read_be32(next_zone + ZONE_UPPER_FLOOR);
-                int32_t up_roof  = read_be32(next_zone + ZONE_UPPER_ROOF);
-                if (cross_y > up_floor) return 0;
-                if (cross_y < up_roof)  return 0;
+                /* Current room height clearance (Amiga: comparewithbottom / top section) */
+                int32_t floor_h = read_be32(current_room + ZONE_FLOOR_HEIGHT);
+                int32_t roof_h  = read_be32(current_room + ZONE_ROOF_HEIGHT);
+                if (d2) {
+                    floor_h = read_be32(current_room + ZONE_UPPER_FLOOR);
+                    roof_h  = read_be32(current_room + ZONE_UPPER_ROOF);
+                }
+                if (cross_y < roof_h || cross_y > floor_h) continue;
+
+                int32_t next_floor = read_be32(next_zone + ZONE_FLOOR_HEIGHT);
+                int32_t next_roof  = read_be32(next_zone + ZONE_ROOF_HEIGHT);
+                if (cross_y > next_floor) return 0;
+
+                /* Amiga: bgt.s GotIn → if cross_y > next_roof → enter at bottom */
+                if (cross_y > next_roof) {
+                    entry_top = 0;
+                } else {
+                    entry_top = 1;
+                    int32_t up_floor = read_be32(next_zone + ZONE_UPPER_FLOOR);
+                    int32_t up_roof  = read_be32(next_zone + ZONE_UPPER_ROOF);
+                    if (cross_y > up_floor) return 0;
+                    if (cross_y < up_roof)  return 0;
+                }
             }
 
             if (next_zone == to_room) {
+                if (full_height) return 0x03u;
                 return (entry_top == target_top) ? 0x03u : 0u;
             }
             current_room = next_zone;
