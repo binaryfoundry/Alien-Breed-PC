@@ -175,6 +175,7 @@ static inline void obj_sl(uint8_t *p, int32_t v) {
 #define SHOT_XVEL(o)      obj_w((o).raw + 18)   /* td[0]  abs 18 */
 #define SHOT_ZVEL(o)      obj_w((o).raw + 22)   /* td[4]  abs 22 */
 #define SHOT_POWER(o)     (*(int8_t*)&(o).raw[28])  /* td[10] byte - OK */
+#define SHOT_ANIM(o)      (*(uint8_t*)&(o).raw[29]) /* td[11] byte: shotanim counter */
 #define SHOT_STATUS(o)    (*(int8_t*)&(o).raw[30])  /* td[12] byte - OK */
 #define SHOT_SIZE(o)      (*(int8_t*)&(o).raw[31])  /* td[13] byte - OK */
 #define SHOT_YVEL(o)      obj_w((o).raw + 42)   /* td[24] abs 42 */

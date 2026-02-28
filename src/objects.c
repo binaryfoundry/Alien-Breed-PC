@@ -1150,6 +1150,28 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     life += state->temp_frames;
     SHOT_SET_LIFE(*obj, life);
 
+    /* Advance bullet animation (Amiga ItsABullet notpopping path).
+     * BulletTypes[shot_size].anim_ptr drives size/vect/frame each tick. */
+    if (shot_status == 0 && shot_size >= 0 && shot_size < 8 && bullet_anim_tables[shot_size]) {
+        uint8_t anim_idx = SHOT_ANIM(*obj);
+        const BulletAnimFrame *f = &bullet_anim_tables[shot_size][anim_idx];
+        /* Wrap at end-of-sequence sentinel (width == -1) */
+        if (f->width == (int8_t)-1) {
+            anim_idx = 0;
+            f = &bullet_anim_tables[shot_size][0];
+        }
+        /* Write size to obj[6:7], vect to obj[8:9], frame to obj[10:11] */
+        obj->obj.width_or_3d  = f->width;
+        obj->obj.world_height = f->height;
+        obj_sw(obj->raw + 8,  f->vect_num);
+        obj_sw(obj->raw + 10, f->frame_num);
+        /* Also update src_cols/rows (obj[14:15]) from BulletSizes so frame extraction is correct */
+        obj->raw[14] = bullet_fly_src_cols[shot_size];
+        obj->raw[15] = bullet_fly_src_rows[shot_size];
+        /* Advance for next tick */
+        SHOT_ANIM(*obj) = anim_idx + 1;
+    }
+
     /* Apply gravity to Y velocity */
     if (grav != 0) {
         int32_t grav_delta = (int32_t)grav * state->temp_frames;

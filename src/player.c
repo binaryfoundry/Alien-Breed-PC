@@ -1410,6 +1410,21 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
         bullet->obj.number = OBJ_NBR_BULLET;
         bullet->obj.in_top = plr->stood_in_top;
 
+        /* Initialise sprite from first frame of the bullet animation table.
+         * object_handle_bullet will advance SHOT_ANIM each tick. */
+        if (gun_idx >= 0 && gun_idx < 8 && bullet_anim_tables[gun_idx]) {
+            const BulletAnimFrame *f = &bullet_anim_tables[gun_idx][0];
+            if (f->width != (int8_t)-1) {
+                bullet->obj.width_or_3d  = f->width;
+                bullet->obj.world_height = f->height;
+                obj_sw(bullet->raw + 8,  f->vect_num);
+                obj_sw(bullet->raw + 10, f->frame_num);
+            }
+        }
+        bullet->raw[14] = bullet_fly_src_cols[gun_idx]; /* src cols (from BulletSizes) */
+        bullet->raw[15] = bullet_fly_src_rows[gun_idx]; /* src rows */
+        SHOT_ANIM(*bullet) = 0;
+
         int16_t bspd = gun->bullet_speed;
         SHOT_SET_XVEL(*bullet, (int16_t)((sin_val * bspd) >> 14));
         SHOT_SET_ZVEL(*bullet, (int16_t)((cos_val * bspd) >> 14));

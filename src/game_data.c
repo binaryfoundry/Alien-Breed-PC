@@ -316,6 +316,99 @@ const BulletTypeData bullet_types[8] = {
 };
 
 /* -----------------------------------------------------------------------
+ * Bullet animation tables
+ * Translated from Anims.s Bul1Anim, Bul2Anim, RockAnim, FlameAnim,
+ * grenAnim, Bul4Anim, Bul5Anim.
+ * BulletTypes[n] = { anim_ptr, pop_ptr } - only the anim tables here.
+ * ----------------------------------------------------------------------- */
+
+/* Bul1Anim: gun 0 (unused - pistol is instant-hit) and gun 7 */
+static const BulletAnimFrame anim_bul1[] = {
+    { 20, 15,  6,  8, 0 },
+    { 17, 17,  6,  9, 0 },
+    { 15, 20,  6, 10, 0 },
+    { 17, 17,  6, 11, 0 },
+    { -1 }
+};
+
+/* Bul2Anim: gun 1 (plasma gun) - uses vect 2 (bigbullet), frames 0-7 */
+static const BulletAnimFrame anim_bul2[] = {
+    { 25, 25,  2,  0, 0 },
+    { 25, 25,  2,  1, 0 },
+    { 25, 25,  2,  2, 0 },
+    { 25, 25,  2,  3, 0 },
+    { 25, 25,  2,  4, 0 },
+    { 25, 25,  2,  5, 0 },
+    { 25, 25,  2,  6, 0 },
+    { 25, 25,  2,  7, 0 },
+    { -1 }
+};
+
+/* RockAnim: gun 2 (rocket) - uses vect 6 (rockets), frames 0-3 */
+static const BulletAnimFrame anim_rock[] = {
+    { 16, 16,  6,  0, 0 },
+    { 16, 16,  6,  1, 0 },
+    { 16, 16,  6,  2, 0 },
+    { 16, 16,  6,  3, 0 },
+    { -1 }
+};
+
+/* FlameAnim: gun 3 (flamethrower) - uses vect 8 (explosion sheet), frames 0-5, growing size */
+static const BulletAnimFrame anim_flame[] = {
+    { 10, 10,  8,  0, 0 },
+    { 14, 14,  8,  1, 0 },
+    { 18, 18,  8,  2, 0 },
+    { 22, 22,  8,  3, 0 },
+    { 26, 26,  8,  4, 0 },
+    { 30, 30,  8,  4, 0 },
+    { -1 }
+};
+
+/* grenAnim: gun 4 (grenade) - uses vect 1 (alien sheet), frames 21-24 */
+static const BulletAnimFrame anim_gren[] = {
+    { 25, 25,  1, 21, 0 },
+    { 25, 25,  1, 22, 0 },
+    { 25, 25,  1, 23, 0 },
+    { 25, 25,  1, 24, 0 },
+    { -1 }
+};
+
+/* Bul4Anim: gun 5 (worm spit) - uses vect 6, frames 4-7 */
+static const BulletAnimFrame anim_bul4[] = {
+    { 25, 25,  6,  4, 0 },
+    { 25, 25,  6,  5, 0 },
+    { 25, 25,  6,  6, 0 },
+    { 25, 25,  6,  7, 0 },
+    { -1 }
+};
+
+/* Bul5Anim: gun 6 (marine shot) - uses vect 6, frames 4-7, small */
+static const BulletAnimFrame anim_bul5[] = {
+    { 10, 10,  6,  4, 0 },
+    { 10, 10,  6,  5, 0 },
+    { 10, 10,  6,  6, 0 },
+    { 10, 10,  6,  7, 0 },
+    { -1 }
+};
+
+/* Indexed by SHOT_SIZE (= gun_idx set at spawn) */
+const BulletAnimFrame *const bullet_anim_tables[8] = {
+    anim_bul1,  /* 0: pistol (instant-hit but used by enemy type 0) */
+    anim_bul2,  /* 1: plasma gun */
+    anim_rock,  /* 2: rocket */
+    anim_flame, /* 3: flamethrower */
+    anim_gren,  /* 4: grenade */
+    anim_bul4,  /* 5: worm spit */
+    anim_bul5,  /* 6: marine shot */
+    anim_bul1,  /* 7: big shot / shotgun fallback */
+};
+
+/* BulletSizes[n][0] (flying size word): high byte = src_cols, low byte = src_rows.
+ * From Anims.s BulletSizes line 2661: $1010,$808, $1010,$1010, etc. */
+const uint8_t bullet_fly_src_cols[8] = { 0x10, 0x10, 0x10, 0x20, 0x08, 0x10, 0x10, 0x08 };
+const uint8_t bullet_fly_src_rows[8] = { 0x10, 0x10, 0x10, 0x20, 0x08, 0x10, 0x10, 0x08 };
+
+/* -----------------------------------------------------------------------
  * Enemy type parameters
  * Consolidated from all enemy .s files
  *

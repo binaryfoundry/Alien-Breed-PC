@@ -119,6 +119,29 @@ typedef struct {
 extern const BulletTypeData bullet_types[8];
 
 /* -----------------------------------------------------------------------
+ * Bullet animation frame
+ * Translated from Anims.s BulletTypes anim sub-tables (Bul1Anim etc.)
+ * Each entry is 8 bytes matching the Amiga layout:
+ *   byte 0: display width  (written to obj[6])
+ *   byte 1: display height (written to obj[7])
+ *   word +2: vect_num      (written to obj[8..9])
+ *   word +4: frame_num     (written to obj[10..11])
+ *   word +6: y_offset delta (added to accypos via <<7)
+ * width == -1 is the end-of-sequence sentinel (wraps to frame 0).
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    int8_t   width;
+    int8_t   height;
+    int16_t  vect_num;
+    int16_t  frame_num;
+    int16_t  y_offset;
+} BulletAnimFrame;
+
+extern const BulletAnimFrame *const bullet_anim_tables[8];  /* indexed by SHOT_SIZE / gun_idx */
+extern const uint8_t bullet_fly_src_cols[8];  /* obj[14]: src columns (from BulletSizes[n][0] high byte) */
+extern const uint8_t bullet_fly_src_rows[8];  /* obj[15]: src rows   (from BulletSizes[n][0] low  byte) */
+
+/* -----------------------------------------------------------------------
  * Enemy type parameters
  * Consolidated from all enemy .s files
  * ----------------------------------------------------------------------- */
