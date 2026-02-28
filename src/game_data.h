@@ -137,9 +137,11 @@ typedef struct {
     int16_t  y_offset;
 } BulletAnimFrame;
 
-extern const BulletAnimFrame *const bullet_anim_tables[8];  /* indexed by SHOT_SIZE / gun_idx */
-extern const uint8_t bullet_fly_src_cols[8];  /* obj[14]: src columns (from BulletSizes[n][0] high byte) */
-extern const uint8_t bullet_fly_src_rows[8];  /* obj[15]: src rows   (from BulletSizes[n][0] low  byte) */
+/* SHOT_SIZE 0-7: player gun bullets. 50-53: gibs (Explode1-4Anim). */
+#define MAX_BULLET_ANIM_IDX  54
+extern const BulletAnimFrame *const bullet_anim_tables[MAX_BULLET_ANIM_IDX];
+extern const uint8_t bullet_fly_src_cols[MAX_BULLET_ANIM_IDX];
+extern const uint8_t bullet_fly_src_rows[MAX_BULLET_ANIM_IDX];
 
 /* -----------------------------------------------------------------------
  * Enemy type parameters

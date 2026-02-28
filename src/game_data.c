@@ -391,22 +391,70 @@ static const BulletAnimFrame anim_bul5[] = {
     { -1 }
 };
 
-/* Indexed by SHOT_SIZE (= gun_idx set at spawn) */
-const BulletAnimFrame *const bullet_anim_tables[8] = {
-    anim_bul1,  /* 0: pistol (instant-hit but used by enemy type 0) */
-    anim_bul2,  /* 1: plasma gun */
-    anim_rock,  /* 2: rocket */
-    anim_flame, /* 3: flamethrower */
-    anim_gren,  /* 4: grenade */
-    anim_bul4,  /* 5: worm spit */
-    anim_bul5,  /* 6: marine shot */
-    anim_bul1,  /* 7: big shot / shotgun fallback */
+/* Explode anim tables: used by gibs (SHOT_SIZE 50-53).
+ * All use vect=0 (alien sprite sheet), gib frames 16-31.
+ * From Anims.s Explode1Anim..Explode4Anim. */
+static const BulletAnimFrame anim_explode1[] = {
+    { 25, 25,  0, 16, 0 },
+    { 25, 25,  0, 17, 0 },
+    { 25, 25,  0, 18, 0 },
+    { 25, 25,  0, 19, 0 },
+    { -1 }
+};
+static const BulletAnimFrame anim_explode2[] = {
+    { 20, 20,  0, 20, 0 },
+    { 20, 20,  0, 21, 0 },
+    { 20, 20,  0, 22, 0 },
+    { 20, 20,  0, 23, 0 },
+    { -1 }
+};
+static const BulletAnimFrame anim_explode3[] = {
+    { 20, 20,  0, 24, 0 },
+    { 20, 20,  0, 25, 0 },
+    { 20, 20,  0, 26, 0 },
+    { 20, 20,  0, 27, 0 },
+    { -1 }
+};
+static const BulletAnimFrame anim_explode4[] = {
+    { 30, 30,  0, 28, 0 },
+    { 30, 30,  0, 29, 0 },
+    { 30, 30,  0, 30, 0 },
+    { 30, 30,  0, 31, 0 },
+    { -1 }
 };
 
-/* BulletSizes[n][0] (flying size word): high byte = src_cols, low byte = src_rows.
- * From Anims.s BulletSizes line 2661: $1010,$808, $1010,$1010, etc. */
-const uint8_t bullet_fly_src_cols[8] = { 0x10, 0x10, 0x10, 0x20, 0x08, 0x10, 0x10, 0x08 };
-const uint8_t bullet_fly_src_rows[8] = { 0x10, 0x10, 0x10, 0x20, 0x08, 0x10, 0x10, 0x08 };
+/* Indexed by SHOT_SIZE.
+ * Indices 0-7: player guns. Indices 8-49: NULL (unused). Indices 50-53: gibs. */
+const BulletAnimFrame *const bullet_anim_tables[MAX_BULLET_ANIM_IDX] = {
+    anim_bul1,     /* 0 */
+    anim_bul2,     /* 1: plasma gun */
+    anim_rock,     /* 2: rocket */
+    anim_flame,    /* 3: flamethrower */
+    anim_gren,     /* 4: grenade */
+    anim_bul4,     /* 5: worm spit */
+    anim_bul5,     /* 6: marine shot */
+    anim_bul1,     /* 7 */
+    /* 8-49: NULL */
+    NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,  /* 8-17 */
+    NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,  /* 18-27 */
+    NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,  /* 28-37 */
+    NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,  /* 38-47 */
+    NULL,NULL,                                          /* 48-49 */
+    anim_explode1, /* 50 */
+    anim_explode2, /* 51 */
+    anim_explode3, /* 52 */
+    anim_explode4, /* 53 */
+};
+
+/* BulletSizes flying src cols/rows (obj[14]/obj[15]).
+ * Indices 0-7: from Anims.s BulletSizes. Indices 8-53: 0 (default 32 in renderer). */
+const uint8_t bullet_fly_src_cols[MAX_BULLET_ANIM_IDX] = {
+    0x10,0x10,0x10,0x20,0x08,0x10,0x10,0x08,  /* 0-7 */
+    /* 8-53: 0 (gibs and unused use renderer default of 32) */
+};
+const uint8_t bullet_fly_src_rows[MAX_BULLET_ANIM_IDX] = {
+    0x10,0x10,0x10,0x20,0x08,0x10,0x10,0x08,  /* 0-7 */
+};
 
 /* -----------------------------------------------------------------------
  * Enemy type parameters

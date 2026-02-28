@@ -128,15 +128,16 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
             audio_play_sample(params->death_sound, 64);
         }
 
-        /* Check for explosion death (Amiga: explode_threshold 0 = always explode on death) */
-        if ((params->explode_threshold == 0) || (params->explode_threshold > 0 && damage >= params->explode_threshold)) {
+        /* Amiga: ExplodeIntoBits is always called on death when damage > 1.
+         * explode_threshold > 0 means "instant kill threshold" (skip death animation),
+         * not the gib-spawn threshold. */
+        if (damage > 1) {
             int idx = (int)OBJ_CID(obj);
             int16_t ex, ez;
             get_object_pos(&state->level, idx, &ex, &ez);
             int32_t y_floor = ((int32_t)obj_w(obj->raw + 4) + (int32_t)(int8_t)obj->raw[7]) << 7;
             if ((int8_t)obj->raw[7] == 0) y_floor = ((int32_t)obj_w(obj->raw + 4) + 32) << 7;
-            y_floor += (88 << 7);   /* lower explosions so they sit on the ground */
-            /* Multiple explosion particles: same spread/count as barrel. */
+            y_floor += (88 << 7);
             {
                 const int num_particles = 6;
                 const int spread = 112;
@@ -149,8 +150,11 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
             explode_into_bits(obj, state);
         }
 
-        /* Play death animation or remove */
-        if (params->death_frames[0] >= 0) {
+        /* Instant kill (Amiga: damage/4 >= 40 → zone=-1, no animation).
+         * explode_threshold > 0: skip death animation if damage >= threshold. */
+        bool instant_kill = (params->explode_threshold > 0 && damage >= params->explode_threshold);
+
+        if (!instant_kill && params->death_frames[0] >= 0) {
             /* Store original type so we can advance animation and render (type_data[0]=death index, [1]=original type) */
             int8_t original_type = obj->obj.number;
             obj->obj.type_data[0] = 0;   /* death frame index */
@@ -160,7 +164,7 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
             obj->obj.number = OBJ_NBR_DEAD;
             /* Keep zone so object is still processed for death advance and drawing */
         } else {
-            OBJ_SET_ZONE(obj, -1); /* No animation: remove from active */
+            OBJ_SET_ZONE(obj, -1); /* Instant kill or no animation: remove from active */
         }
         return true;
     }
@@ -1152,7 +1156,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
 
     /* Advance bullet animation (Amiga ItsABullet notpopping path).
      * BulletTypes[shot_size].anim_ptr drives size/vect/frame each tick. */
-    if (shot_status == 0 && shot_size >= 0 && shot_size < 8 && bullet_anim_tables[shot_size]) {
+    if (shot_status == 0 && shot_size >= 0 && shot_size < MAX_BULLET_ANIM_IDX && bullet_anim_tables[shot_size]) {
         uint8_t anim_idx = SHOT_ANIM(*obj);
         const BulletAnimFrame *f = &bullet_anim_tables[shot_size][anim_idx];
         /* Wrap at end-of-sequence sentinel (width == -1) */
@@ -1165,9 +1169,9 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         obj->obj.world_height = f->height;
         obj_sw(obj->raw + 8,  f->vect_num);
         obj_sw(obj->raw + 10, f->frame_num);
-        /* Also update src_cols/rows (obj[14:15]) from BulletSizes so frame extraction is correct */
-        obj->raw[14] = bullet_fly_src_cols[shot_size];
-        obj->raw[15] = bullet_fly_src_rows[shot_size];
+        /* Update src_cols/rows (obj[14:15]) from BulletSizes (0 = renderer default 32 for gibs) */
+        obj->raw[14] = bullet_fly_src_cols[(uint8_t)shot_size < MAX_BULLET_ANIM_IDX ? (uint8_t)shot_size : 0];
+        obj->raw[15] = bullet_fly_src_rows[(uint8_t)shot_size < MAX_BULLET_ANIM_IDX ? (uint8_t)shot_size : 0];
         /* Advance for next tick */
         SHOT_ANIM(*obj) = anim_idx + 1;
     }
@@ -1186,6 +1190,10 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     /* Position is in object_points at OBJ_CID (works for both object_data and nasty_shot_data bullets). */
     int idx = (int)OBJ_CID(obj);
     if (idx < 0 || (state->level.object_points && idx >= state->level.num_object_points)) {
+        if (shot_size >= 50) {
+            printf("[GIB-KILL] CID=%d out of range (num_pts=%d) size=%d\n",
+                   idx, state->level.num_object_points, (int)shot_size);
+        }
         OBJ_SET_ZONE(obj, -1);
         return;
     }
@@ -1214,6 +1222,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         int32_t roof = (int32_t)((zd[6+zd_off]<<24)|(zd[7+zd_off]<<16)|
                        (zd[8+zd_off]<<8)|zd[9+zd_off]);
         if (roof - accypos >= 10 * 128) {
+            if (shot_size >= 50) printf("[GIB-ROOF] roof=%d accypos=%d diff=%d\n",(int)roof,(int)accypos,(int)(roof-accypos));
             if (flags & 1) {
                 /* Bounce off roof */
                 SHOT_SET_YVEL(*obj, (int16_t)(-yvel));
@@ -1232,6 +1241,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         int32_t floor_h = (int32_t)((zd[2+zd_off]<<24)|(zd[3+zd_off]<<16)|
                           (zd[4+zd_off]<<8)|zd[5+zd_off]);
         if (floor_h - accypos <= 10 * 128) {
+            if (shot_size >= 50) printf("[GIB-FLOOR] floor=%d accypos=%d diff=%d\n",(int)floor_h,(int)accypos,(int)(floor_h-accypos));
             if (flags & 1) {
                 /* Bounce off floor */
                 if (yvel > 0) {

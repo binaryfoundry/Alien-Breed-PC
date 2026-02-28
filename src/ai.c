@@ -5,6 +5,7 @@
  * Translated from: AI.s, ObjectMove.s (GoInDirection)
  */
 
+#include <stdio.h>
 #include "ai.h"
 #include "level.h"
 #include "objects.h"
@@ -83,42 +84,66 @@ void explode_into_bits(GameObject *obj, GameState *state)
         }
         if (!bit || slot_j < 0) break;
 
-        /* Set up debris fragment as a bullet with random velocity */
+        /* Preserve the slot's pre-assigned CID (from level data) before clearing,
+         * just like player bullets do - it is the index into object_points for this slot. */
+        int16_t saved_cid = OBJ_CID(bit);
         memset(bit, 0, OBJECT_SIZE);
-        OBJ_SET_CID(bit, (int16_t)slot_j);  /* so position is read/written in object_points[slot_j] */
+        OBJ_SET_CID(bit, saved_cid);
         bit->obj.number = OBJ_NBR_BULLET;
         OBJ_SET_ZONE(bit, OBJ_ZONE(obj));
         bit->obj.in_top = obj->obj.in_top;
-        bit->raw[4] = obj->raw[4];
-        bit->raw[5] = obj->raw[5];
 
-        int32_t y_pos = (int32_t)((obj->raw[4] << 8) | obj->raw[5]);
-        SHOT_SET_ACCYPOS(*bit, y_pos << 7);
+        /* Y position from source object's render Y (Amiga: (obj[4]+6) << 7) */
+        int32_t y_pos = (int32_t)obj_w(obj->raw + 4);
+        SHOT_SET_ACCYPOS(*bit, (y_pos + 6) << 7);
+
+        /* SHOT_SIZE 50-53: maps to Explode1-4Anim (vect=0, gib frames 16-31) */
+        int8_t gib_type = (int8_t)(50 + (rand() & 3));
+        SHOT_SIZE(*bit) = gib_type;
         SHOT_STATUS(*bit) = 0;
-        SHOT_SIZE(*bit) = 0; /* default bullet graphics */
+        SHOT_ANIM(*bit) = 0;
+        SHOT_POWER(*bit) = 0;
+        SHOT_SET_LIFE(*bit, -1);   /* infinite lifetime */
+        SHOT_SET_GRAV(*bit, 40);   /* Amiga: shotgrav = 40 */
+        SHOT_SET_FLAGS(*bit, 0);   /* Amiga: shotflags = 0 (no bounce) */
 
-        /* Random velocities */
-        SHOT_SET_XVEL(*bit, (int16_t)((rand() & 0xFF) - 128));
-        SHOT_SET_ZVEL(*bit, (int16_t)((rand() & 0xFF) - 128));
-        SHOT_SET_YVEL(*bit, (int16_t)(-(rand() & 0x7F)));
-        SHOT_SET_GRAV(*bit, 64); /* gravity pulls debris down */
-        SHOT_SET_FLAGS(*bit, 3); /* bounce + friction */
-        SHOT_POWER(*bit) = 0; /* debris does no damage */
-        SHOT_SET_LIFE(*bit, 0);
+        /* Initialise sprite from first frame of gib anim table */
+        {
+            const BulletAnimFrame *f = &bullet_anim_tables[gib_type][0];
+            bit->obj.width_or_3d  = f->width;
+            bit->obj.world_height = f->height;
+            obj_sw(bit->raw + 8,  f->vect_num);
+            obj_sw(bit->raw + 10, f->frame_num);
+            /* src_cols/rows 0 → renderer defaults to 32 (matches alien sprite frame size) */
+            bit->raw[14] = 0;
+            bit->raw[15] = 0;
+        }
 
-        /* Copy position from source object (Amiga: position is in ObjectPoints at CID, not object index) */
+        /* Random XZ velocity: Amiga ≈ ±0-3 int units from random angle + impact.
+         * Use simple uniform random ±3 to approximate. */
+        SHOT_SET_XVEL(*bit, (int16_t)((rand() % 7) - 3));
+        SHOT_SET_ZVEL(*bit, (int16_t)((rand() % 7) - 3));
+        /* Y velocity: upward, Amiga range -(256 + rand & 1023) = -256 to -1279 */
+        SHOT_SET_YVEL(*bit, (int16_t)(-(256 + (rand() & 1023))));
+
+        /* Copy XZ position from source object */
         if (state->level.object_points) {
-            int src_idx = (int)OBJ_CID(obj);   /* point index where enemy position lives */
+            int src_idx = (int)OBJ_CID(obj);
             int dst_idx = (int)OBJ_CID(bit);
             if (src_idx >= 0 && dst_idx >= 0 &&
                 src_idx < state->level.num_object_points && dst_idx < state->level.num_object_points) {
                 uint8_t *sp = state->level.object_points + src_idx * 8;
                 uint8_t *dp = state->level.object_points + dst_idx * 8;
-                memcpy(dp, sp, 2); memcpy(dp + 4, sp + 4, 2); /* copy X, Z */
+                memcpy(dp, sp, 2); memcpy(dp + 4, sp + 4, 2);
             }
         }
 
         bit->obj.worry = 127;
+
+        printf("[GIB] slot=%d saved_cid=%d zone=%d gib_type=%d num_pts=%d yvel=%d accypos=%d\n",
+               slot_j, (int)saved_cid, (int)OBJ_ZONE(bit), (int)gib_type,
+               state->level.num_object_points,
+               (int)SHOT_YVEL(*bit), (int)SHOT_ACCYPOS(*bit));
     }
 }
 
