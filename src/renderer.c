@@ -1704,7 +1704,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
                 case OBJ_NBR_ROBOT:           vect_num = 10; break;
                 case OBJ_NBR_BIG_NASTY:       vect_num = 11; break;
                 case OBJ_NBR_FLYING_NASTY:    vect_num = 4;  break;
-                case OBJ_NBR_AMMO:            vect_num = 6;  break;
+                case OBJ_NBR_AMMO:            vect_num = 1;  break; /* PICKUPS sprite */
                 case OBJ_NBR_BARREL:          vect_num = 7;  break;
                 case OBJ_NBR_WORM:            vect_num = 13; break;
                 case OBJ_NBR_HUGE_RED_THING:  vect_num = 14; break;

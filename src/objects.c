@@ -1254,6 +1254,13 @@ void object_handle_medikit(GameObject *obj, GameState *state)
  * ----------------------------------------------------------------------- */
 void object_handle_ammo(GameObject *obj, GameState *state)
 {
+    /* Amiga ItsAnAmmoClip: set vect=PICKUPS(1) and frame from AMGR table every tick */
+    int16_t ammo_gun_type = OBJ_TD_W(obj, 0);  /* AmmoType EQU 18 */
+    if (ammo_gun_type >= 0 && ammo_gun_type < 8) {
+        obj_sw(obj->raw + 8,  1);  /* objVectNumber  = PICKUPS vect */
+        obj_sw(obj->raw + 10, (int16_t)ammo_graphic_table[(int)ammo_gun_type]);
+    }
+
     if (pickup_distance_check(obj, state, 1)) {
         PlayerState *plr = &state->plr1;
         int gun_idx = plr->gun_selected;
