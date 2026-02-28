@@ -1188,10 +1188,10 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         const uint8_t *zd = state->level.data + zone_off;
         int zd_off = obj->obj.in_top ? 8 : 0;
 
-        /* Roof check: if roof - accypos < 10*128, hit roof */
+        /* Roof check (Amiga: blt .nohitroof → hit when roof - accypos >= 10*128) */
         int32_t roof = (int32_t)((zd[6+zd_off]<<24)|(zd[7+zd_off]<<16)|
                        (zd[8+zd_off]<<8)|zd[9+zd_off]);
-        if (roof - accypos < 10 * 128) {
+        if (roof - accypos >= 10 * 128) {
             if (flags & 1) {
                 /* Bounce off roof */
                 SHOT_SET_YVEL(*obj, (int16_t)(-yvel));
@@ -1206,10 +1206,10 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             }
         }
 
-        /* Floor check: if floor - accypos > -10*128, hit floor */
+        /* Floor check (Amiga: bgt .nohitfloor → hit when floor - accypos <= 10*128) */
         int32_t floor_h = (int32_t)((zd[2+zd_off]<<24)|(zd[3+zd_off]<<16)|
                           (zd[4+zd_off]<<8)|zd[5+zd_off]);
-        if (floor_h - accypos > 10 * 128) {
+        if (floor_h - accypos <= 10 * 128) {
             if (flags & 1) {
                 /* Bounce off floor */
                 if (yvel > 0) {

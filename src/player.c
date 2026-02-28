@@ -1243,9 +1243,9 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
     int16_t sin_val = plr->sinval;
     int16_t cos_val = plr->cosval;
 
-    /* Normalize direction */
-    int32_t dir_x = -sin_val; /* forward X */
-    int32_t dir_z = -cos_val; /* forward Z */
+    /* Forward direction matches Amiga: (sin, cos) not negated */
+    int32_t dir_x = sin_val;
+    int32_t dir_z = cos_val;
 
     /* 5. Auto-aim system */
     int16_t bulyspd = 0; /* bullet Y velocity for vertical auto-aim */
@@ -1368,11 +1368,13 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             }
         }
     } else {
-        /* Projectile weapon */
-        if (!state->level.player_shot_data) return;
+        /* Projectile weapon.
+         * Amiga uses a shared shot pool; we put player bullets into nasty_shot_data
+         * (slots 0-19) so they are updated and rendered by the same path as enemy shots. */
+        if (!state->level.nasty_shot_data) return;
 
-        /* Find free slot in PlayerShotData */
-        uint8_t *shots = state->level.player_shot_data;
+        /* Find free slot in nasty_shot_data */
+        uint8_t *shots = state->level.nasty_shot_data;
         GameObject *bullet = NULL;
         for (int i = 0; i < 20; i++) {
             GameObject *candidate = (GameObject*)(shots + i * OBJECT_SIZE);
@@ -1384,25 +1386,43 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
 
         if (!bullet) return; /* No free slot */
 
+        /* Save CID before memset (it's baked into the slot by level data) */
+        int16_t saved_cid = OBJ_CID(bullet);
+
         /* Set up bullet */
         memset(bullet, 0, OBJECT_SIZE);
+
+        /* Spawn bullet slightly in front of the player.
+         * Amiga spawns at exact player pos; we add a small forward offset so
+         * the rotated z > 0 (visible) on the first frame instead of culled. */
+        int16_t spawn_x = (int16_t)(plr->p_xoff + ((sin_val * 32) >> 14));
+        int16_t spawn_z = (int16_t)(plr->p_zoff + ((cos_val * 32) >> 14));
+
+        /* Restore CID and write spawn position into that object point */
+        obj_sw(bullet->raw, saved_cid);
+        if (saved_cid >= 0 && state->level.object_points) {
+            uint8_t *pt = state->level.object_points + (int)saved_cid * 8;
+            obj_sw(pt,     spawn_x);
+            obj_sw(pt + 4, spawn_z);
+        }
+
         OBJ_SET_ZONE(bullet, plr->zone);
         bullet->obj.number = OBJ_NBR_BULLET;
+        bullet->obj.in_top = plr->stood_in_top;
 
         int16_t bspd = gun->bullet_speed;
-
-        SHOT_SET_XVEL(*bullet, (int16_t)((dir_x * bspd) >> 14));
-        SHOT_SET_ZVEL(*bullet, (int16_t)((dir_z * bspd) >> 14));
+        SHOT_SET_XVEL(*bullet, (int16_t)((sin_val * bspd) >> 14));
+        SHOT_SET_ZVEL(*bullet, (int16_t)((cos_val * bspd) >> 14));
         SHOT_SET_YVEL(*bullet, bulyspd + gun->bullet_y_offset);
         SHOT_POWER(*bullet) = gun->shot_power;
-        SHOT_STATUS(*bullet) = 0; /* bullet type based on gun */
+        SHOT_STATUS(*bullet) = 0;
         SHOT_SET_LIFE(*bullet, 0);
         SHOT_SET_GRAV(*bullet, gun->shot_gravity);
         SHOT_SET_FLAGS(*bullet, gun->shot_flags);
-        SHOT_SET_ACCYPOS(*bullet, plr->yoff + 20 * 128); /* Shoot from chest height */
-        /* So projectile can hit enemies: object_handle_bullet checks NASTY_EFLAGS(*obj) */
+        SHOT_SET_ACCYPOS(*bullet, plr->p_yoff + 20 * 128);
         NASTY_SET_EFLAGS(*bullet, enemy_flags);
-        SHOT_SIZE(*bullet) = (int8_t)gun_idx; /* correct hit sound and explosive force per gun */
+        SHOT_SIZE(*bullet) = (int8_t)gun_idx;
+        bullet->obj.worry = 127;
     }
 }
 

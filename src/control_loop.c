@@ -397,14 +397,15 @@ void play_game(GameState *state)
     /* ---- Setup default game ---- */
     game_state_setup_default(state);
 
-    /* ---- Give player starting weapons ----
-     * The original game gives the pistol (gun 0) by default.
-     * In a real level load, weapons come from save/password data. */
-    state->plr1.gun_data[0].visible = -1;  /* Pistol acquired */
-    state->plr1.gun_data[0].ammo = 999 * 8;  /* Starting pistol ammo (999 display units) */
+    /* ---- Give player starting weapons and lots of ammo ----
+     * All weapons acquired with full ammo (999 display units each). */
+    for (int g = 0; g < MAX_GUNS; g++) {
+        state->plr1.gun_data[g].visible = -1;
+        state->plr1.gun_data[g].ammo = 999 * 8;
+        state->plr2.gun_data[g].visible = -1;
+        state->plr2.gun_data[g].ammo = 999 * 8;
+    }
     state->plr1.gun_selected = 0;
-    state->plr2.gun_data[0].visible = -1;
-    state->plr2.gun_data[0].ammo = 999 * 8;
     state->plr2.gun_selected = 0;
 
     /* ---- Bypass menu: go straight to level 1 ---- */

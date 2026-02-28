@@ -1,0 +1,2496 @@
+﻿=== Alien Breed 3D I - PC Port ===
+SetupGame
+[IO] init
+[DISPLAY] SDL2 init
+[RENDERER] Initialized: 768x640
+[DISPLAY] SDL2 ready: 768x640 (resizable)
+[INPUT] SDL2 input init
+[AUDIO] init
+[IO] Found data at: data/
+[AUDIO] Loading sound effects from data/sounds (e.g. data/sounds/scream.wav)
+[AUDIO] loaded 0 (scream): data/sounds/scream.wav (24234 bytes)
+[AUDIO] loaded 1 (fire!): data/sounds/fire!.wav (39656 bytes)
+[AUDIO] loaded 2 (munch): data/sounds/munch.wav (29742 bytes)
+[AUDIO] loaded 3 (shoot.dm): data/sounds/shoot.dm.wav (25336 bytes)
+[AUDIO] loaded 4 (collect): data/sounds/collect.wav (18726 bytes)
+[AUDIO] loaded 5 (newdoor): data/sounds/newdoor.wav (46266 bytes)
+[AUDIO] loaded 6 (splash): data/sounds/splash.wav (44064 bytes)
+[AUDIO] loaded 7 (footstep3): data/sounds/footstep3.wav (22032 bytes)
+[AUDIO] loaded 8 (lowscream): data/sounds/lowscream.wav (47368 bytes)
+[AUDIO] loaded 9 (baddiegun): data/sounds/baddiegun.wav (34148 bytes)
+[AUDIO] loaded 10 (switch): data/sounds/switch.wav (6608 bytes)
+[AUDIO] loaded 11 (switch1.sfx): data/sounds/switch1.sfx.wav (22032 bytes)
+[AUDIO] loaded 12 (noammo): data/sounds/noammo.wav (12116 bytes)
+[AUDIO] loaded 13 (splotch): data/sounds/splotch.wav (16524 bytes)
+[AUDIO] loaded 14 (splatpop): data/sounds/splatpop.wav (30844 bytes)
+[AUDIO] loaded 15 (boom): data/sounds/boom.wav (63892 bytes)
+[AUDIO] loaded 16 (newhiss): data/sounds/newhiss.wav (39656 bytes)
+[AUDIO] loaded 17 (howl1): data/sounds/howl1.wav (40758 bytes)
+[AUDIO] loaded 18 (howl2): data/sounds/howl2.wav (50672 bytes)
+[AUDIO] loaded 19 (pant): data/sounds/pant.wav (27540 bytes)
+[AUDIO] loaded 20 (whoosh): data/sounds/whoosh.wav (22032 bytes)
+[AUDIO] loaded 21 (shotgun): data/sounds/shotgun.wav (48470 bytes)
+[AUDIO] loaded 22 (flame): data/sounds/flame.wav (49572 bytes)
+[AUDIO] loaded 23 (muffledfoot): data/sounds/muffledfoot.wav (9914 bytes)
+[AUDIO] loaded 24 (footclop): data/sounds/footclop.wav (18726 bytes)
+[AUDIO] loaded 25 (footclank): data/sounds/footclank.wav (8812 bytes)
+[AUDIO] loaded 26 (teleport): data/sounds/teleport.wav (66558 bytes)
+[AUDIO] loaded 27 (halfwormpain): data/sounds/halfwormpain.wav (46266 bytes)
+[AUDIO] Loaded 28 sound effect(s): scream, fire!, munch, shoot.dm, collect, newdoor, splash, footstep3, lowscream, baddiegun, switch, switch1.sfx, noammo, splotch, splatpop, boom, newhiss, howl1, howl2, pant, whoosh, shotgun, flame, muffledfoot, footclop, footclank, teleport, halfwormpain
+SetupGame complete
+
+[CONTROL] PlayGame starting
+[IO] Loading wall textures...
+[SB] Decompressed: data/includes/walls/GreenMechanic.wad -> 18560 bytes (expected 18560)
+[IO] Wall  0: GreenMechanic.wad (18560 bytes)
+[SB] Decompressed: data/includes/walls/BlueGreyMetal.wad -> 13056 bytes (expected 13056)
+[IO] Wall  1: BlueGreyMetal.wad (13056 bytes)
+[SB] Decompressed: data/includes/walls/TechnoDetail.wad -> 13056 bytes (expected 13056)
+[IO] Wall  2: TechnoDetail.wad (13056 bytes)
+[SB] Decompressed: data/includes/walls/BlueStone.wad -> 4864 bytes (expected 4864)
+[IO] Wall  3: BlueStone.wad (4864 bytes)
+[SB] Decompressed: data/includes/walls/RedAlert.wad -> 7552 bytes (expected 7552)
+[IO] Wall  4: RedAlert.wad (7552 bytes)
+[SB] Decompressed: data/includes/walls/rock.wad -> 10368 bytes (expected 10368)
+[IO] Wall  5: rock.wad (10368 bytes)
+[SB] Decompressed: data/includes/walls/scummy.wad -> 13056 bytes (expected 13056)
+[IO] Wall  6: scummy.wad (13056 bytes)
+[SB] Decompressed: data/includes/walls/stairfronts.wad -> 2400 bytes (expected 2400)
+[IO] Wall  7: stairfronts.wad (2400 bytes)
+[SB] Decompressed: data/includes/walls/BIGDOOR.wad -> 13056 bytes (expected 13056)
+[IO] Wall  8: BIGDOOR.wad (13056 bytes)
+[SB] Decompressed: data/includes/walls/RedRock.wad -> 13056 bytes (expected 13056)
+[IO] Wall  9: RedRock.wad (13056 bytes)
+[SB] Decompressed: data/includes/walls/dirt.wad -> 24064 bytes (expected 24064)
+[IO] Wall 10: dirt.wad (24064 bytes)
+[SB] Decompressed: data/includes/walls/switches.wad -> 3456 bytes (expected 3456)
+[IO] Wall 11: switches.wad (3456 bytes)
+[SB] Decompressed: data/includes/walls/shinymetal.wad -> 24064 bytes (expected 24064)
+[IO] Wall 12: shinymetal.wad (24064 bytes)
+[SB] Decompressed: data/includes/walls/bluemechanic.wad -> 15744 bytes (expected 15744)
+[IO] Wall 13: bluemechanic.wad (15744 bytes)
+[IO] Loading floor texture...
+[IO] Trying floor tile path: data/includes/floortile
+[IO] Floor tile: 65536 bytes from data/includes/floortile
+[IO] Trying palette path: data/includes/FloorPalScaled
+[IO] Trying palette path: data/pal/FloorPalScaled.s
+[IO] FloorPalScaled: parsed 7680 bytes from data/pal/FloorPalScaled.s
+[IO] Loading gun graphics...
+[IO] Gun WAD: 20270 bytes from data/includes/newgunsinhand.wad
+[IO] Gun PTR: 10752 bytes from data/includes/newgunsinhand.ptr
+[IO] Gun PAL: 64 bytes from data/pal/newgunsinhand.pal
+[IO] Gun graphics loaded successfully
+[IO] Dumped textures/wall_00.bmp (387x64)
+[IO] Dumped textures/wall_01.bmp (258x64)
+[IO] Dumped textures/wall_02.bmp (258x64)
+[IO] Dumped textures/wall_03.bmp (66x64)
+[IO] Dumped textures/wall_04.bmp (129x64)
+[IO] Dumped textures/wall_05.bmp (195x64)
+[IO] Dumped textures/wall_06.bmp (258x64)
+[IO] Dumped textures/wall_07.bmp (33x16)
+[IO] Dumped textures/wall_08.bmp (129x128)
+[IO] Dumped textures/wall_09.bmp (258x64)
+[IO] Dumped textures/wall_10.bmp (258x128)
+[IO] Dumped textures/wall_11.bmp (66x32)
+[IO] Dumped textures/wall_12.bmp (258x128)
+[IO] Dumped textures/wall_13.bmp (321x64)
+[IO] Dumped textures/floor.bmp (64x64)
+[IO] Texture dump complete. Check the textures/ folder.
+[IO] Loading object sprites...
+[SB] Raw file (not =SB= compressed): data/includes/ALIEN2.wad (21786 bytes)
+[IO] Sprite  0 WAD: ALIEN2.wad (21786 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/ALIEN2.ptr (4864 bytes)
+[IO] Sprite  0 PTR: ALIEN2.ptr (4864 bytes)
+[IO] Sprite  0 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/PICKUPS.wad (8124 bytes)
+[IO] Sprite  1 WAD: PICKUPS.wad (8124 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/PICKUPS.ptr (1280 bytes)
+[IO] Sprite  1 PTR: PICKUPS.ptr (1280 bytes)
+[IO] Sprite  1 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/bigbullet.wad (9574 bytes)
+[IO] Sprite  2 WAD: bigbullet.wad (9574 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/bigbullet.ptr (1280 bytes)
+[IO] Sprite  2 PTR: bigbullet.ptr (1280 bytes)
+[IO] Sprite  2 PAL: table (960 bytes)
+[IO] Sprite  3 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/flyingalien.wad (28162 bytes)
+[IO] Sprite  4 WAD: flyingalien.wad (28162 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/flyingalien.ptr (5376 bytes)
+[IO] Sprite  4 PTR: flyingalien.ptr (5376 bytes)
+[IO] Sprite  4 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/keys.wad (2144 bytes)
+[IO] Sprite  5 WAD: keys.wad (2144 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/keys.ptr (256 bytes)
+[IO] Sprite  5 PTR: keys.ptr (256 bytes)
+[IO] Sprite  5 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/rockets.wad (5284 bytes)
+[IO] Sprite  6 WAD: rockets.wad (5284 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/rockets.ptr (768 bytes)
+[IO] Sprite  6 PTR: rockets.ptr (768 bytes)
+[IO] Sprite  6 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/barrel.wad (1482 bytes)
+[IO] Sprite  7 WAD: barrel.wad (1482 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/barrel.ptr (256 bytes)
+[IO] Sprite  7 PTR: barrel.ptr (256 bytes)
+[IO] Sprite  7 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/explosion.wad (16538 bytes)
+[IO] Sprite  8 WAD: explosion.wad (16538 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/explosion.ptr (2304 bytes)
+[IO] Sprite  8 PTR: explosion.ptr (2304 bytes)
+[IO] Sprite  8 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/newgunsinhand.wad (20270 bytes)
+[IO] Sprite  9 WAD: newgunsinhand.wad (20270 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/newgunsinhand.ptr (10752 bytes)
+[IO] Sprite  9 PTR: newgunsinhand.ptr (10752 bytes)
+[IO] Sprite  9 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/newmarine.wad (16416 bytes)
+[IO] Sprite 10 WAD: newmarine.wad (16416 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/newmarine.ptr (4864 bytes)
+[IO] Sprite 10 PTR: newmarine.ptr (4864 bytes)
+[IO] Sprite 10 PAL: table (960 bytes)
+[SB] Cannot open: data/includes/BIGSCARYALIEN.wad
+[SB] Cannot open: data/disk/includes/BIGSCARYALIEN.wad
+[IO] Sprite 11 WAD: BIGSCARYALIEN.wad (not found)
+[SB] Cannot open: data/includes/BIGSCARYALIEN.ptr
+[SB] Cannot open: data/disk/includes/BIGSCARYALIEN.ptr
+[IO] Sprite 11 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/lamps.wad (766 bytes)
+[IO] Sprite 12 WAD: lamps.wad (766 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/lamps.ptr (256 bytes)
+[IO] Sprite 12 PTR: lamps.ptr (256 bytes)
+[IO] Sprite 12 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/worm.wad (52102 bytes)
+[IO] Sprite 13 WAD: worm.wad (52102 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/worm.ptr (7560 bytes)
+[IO] Sprite 13 PTR: worm.ptr (7560 bytes)
+[IO] Sprite 13 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/bigclaws.wad (49590 bytes)
+[IO] Sprite 14 WAD: bigclaws.wad (49590 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/bigclaws.ptr (9216 bytes)
+[IO] Sprite 14 PTR: bigclaws.ptr (9216 bytes)
+[IO] Sprite 14 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/tree.wad (8106 bytes)
+[IO] Sprite 15 WAD: tree.wad (8106 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/tree.ptr (1536 bytes)
+[IO] Sprite 15 PTR: tree.ptr (1536 bytes)
+[IO] Sprite 15 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/newmarine.wad (16416 bytes)
+[IO] Sprite 16 WAD: newmarine.wad (16416 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/newmarine.ptr (4864 bytes)
+[IO] Sprite 16 PTR: newmarine.ptr (4864 bytes)
+[IO] Sprite 16 PAL: table (960 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/newmarine.wad (16416 bytes)
+[IO] Sprite 17 WAD: newmarine.wad (16416 bytes)
+[SB] Raw file (not =SB= compressed): data/includes/newmarine.ptr (4864 bytes)
+[IO] Sprite 17 PTR: newmarine.ptr (4864 bytes)
+[IO] Sprite 17 PAL: table (960 bytes)
+[IO] load_sfx (stub)
+[CONTROL] Bypassing menu - starting level 1 directly
+[IO] load_panel (stub)
+[GAME] === PlayTheGame: level 0 ===
+[SB] Decompressed: data/levels/level_a/twolev.bin -> 68380 bytes (expected 68380)
+[IO] Loaded level data: data/levels/level_a/twolev.bin (68380 bytes)
+[SB] Decompressed: data/levels/level_a/twolev.graph.bin -> 23540 bytes (expected 23540)
+[IO] Loaded level graphics: data/levels/level_a/twolev.graph.bin (23540 bytes)
+[SB] Decompressed: data/levels/level_a/twolev.clips -> 21954 bytes (expected 21954)
+[IO] Loaded level clips: data/levels/level_a/twolev.clips (21954 bytes)
+[LEVEL] Parsing level data...
+[LEVEL] Graphics header: door=22368 lift=22890 switch=23428 zone_graph=568
+[LEVEL] Zones: 137 zones (offset table big-endian)
+[LEVEL]   zone[0] offset 20774 id=0 floor=0 roof=-25600 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[1] offset 21188 id=1 floor=0 roof=-24576 bright=(1,0) anim=(static,static)
+[LEVEL]   zone[2] offset 21602 id=2 floor=0 roof=-24576 bright=(-11,0) anim=(static,static)
+[LEVEL]   zone[3] offset 22014 id=3 floor=0 roof=-65536 bright=(-15,0) anim=(static,static)
+[LEVEL]   zone[4] offset 22438 id=4 floor=0 roof=-65536 bright=(-15,0) anim=(static,static)
+[LEVEL]   zone[5] offset 22852 id=5 floor=0 roof=-65536 bright=(-15,0) anim=(static,static)
+[LEVEL]   zone[6] offset 23270 id=6 floor=0 roof=-65536 bright=(-15,0) anim=(static,static)
+[LEVEL]   zone[7] offset 23678 id=7 floor=0 roof=-65536 bright=(-15,0) anim=(static,static)
+[LEVEL]   zone[8] offset 24086 id=8 floor=0 roof=-65536 bright=(-15,0) anim=(static,static)
+[LEVEL]   zone[9] offset 24512 id=9 floor=0 roof=-65536 bright=(-15,0) anim=(static,static)
+[LEVEL]   zone[10] offset 24918 id=10 floor=-2048 roof=-32768 bright=(-7,0) anim=(static,static)
+[LEVEL]   zone[11] offset 25332 id=11 floor=-4096 roof=-32768 bright=(5,0) anim=(static,static)
+[LEVEL]   zone[12] offset 25742 id=12 floor=-12288 roof=-32768 bright=(5,0) anim=(static,static)
+[LEVEL]   zone[13] offset 26136 id=13 floor=-32768 roof=-32768 bright=(-7,0) anim=(static,static)
+[LEVEL]   zone[14] offset 26534 id=14 floor=-12288 roof=-32768 bright=(-5,0) anim=(static,static)
+[LEVEL]   zone[15] offset 26928 id=15 floor=-32768 roof=-32768 bright=(-7,0) anim=(static,static)
+[LEVEL]   zone[16] offset 27326 id=16 floor=-12288 roof=-32768 bright=(-5,0) anim=(static,static)
+[LEVEL]   zone[17] offset 27724 id=17 floor=-12288 roof=-32768 bright=(5,0) anim=(static,static)
+[LEVEL]   zone[18] offset 28126 id=18 floor=-6144 roof=-32768 bright=(12,0) anim=(static,static)
+[LEVEL]   zone[19] offset 28540 id=19 floor=-8192 roof=-32768 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[20] offset 29032 id=20 floor=-10240 roof=-32768 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[21] offset 29580 id=21 floor=-12288 roof=-40960 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[22] offset 30128 id=22 floor=-12288 roof=-40960 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[23] offset 30676 id=23 floor=-12288 roof=-40960 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[24] offset 31232 id=24 floor=-10240 roof=-77824 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[25] offset 31790 id=25 floor=-10240 roof=-65536 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[26] offset 32322 id=26 floor=-10240 roof=-65536 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[27] offset 32856 id=27 floor=-10240 roof=-77824 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[28] offset 33156 id=28 floor=-10240 roof=-34816 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[29] offset 33448 id=29 floor=-10240 roof=-36864 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[30] offset 33728 id=30 floor=-10240 roof=-34816 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[31] offset 34020 id=31 floor=-10240 roof=-77824 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[32] offset 34354 id=32 floor=-10240 roof=-34816 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[33] offset 34806 id=33 floor=-10240 roof=-36864 bright=(12,0) anim=(static,static)
+[LEVEL]   zone[34] offset 35176 id=34 floor=-10240 roof=-34816 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[35] offset 35494 id=35 floor=-12288 roof=-34816 bright=(7,0) anim=(static,static)
+[LEVEL]   zone[36] offset 35744 id=36 floor=-12288 roof=-36864 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[37] offset 35982 id=37 floor=-12288 roof=-34816 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[38] offset 36340 id=38 floor=-10240 roof=-32768 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[39] offset 36702 id=39 floor=-10240 roof=-32768 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[40] offset 37002 id=40 floor=-10240 roof=-32768 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[41] offset 37278 id=41 floor=-10240 roof=-32768 bright=(6,0) anim=(static,static)
+[LEVEL]   zone[42] offset 37562 id=42 floor=-10240 roof=-77824 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[43] offset 37834 id=43 floor=-10240 roof=-28672 bright=(13,0) anim=(static,static)
+[LEVEL]   zone[44] offset 38080 id=44 floor=-10240 roof=-28672 bright=(13,0) anim=(static,static)
+[LEVEL]   zone[45] offset 38328 id=45 floor=-10240 roof=-77824 bright=(3,0) anim=(static,static)
+[LEVEL]   zone[46] offset 38590 id=46 floor=-10240 roof=-77824 bright=(3,0) anim=(static,static)
+[LEVEL]   zone[47] offset 38862 id=47 floor=-20480 roof=-49152 bright=(-7,0) anim=(static,static)
+[LEVEL]   zone[48] offset 39118 id=48 floor=-14336 roof=-71680 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[49] offset 39390 id=49 floor=-20480 roof=-49152 bright=(-7,0) anim=(static,static)
+[LEVEL]   zone[50] offset 39670 id=50 floor=-18432 roof=-65536 bright=(-11,0) anim=(static,static)
+[LEVEL]   zone[51] offset 39942 id=51 floor=-14336 roof=-65536 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[52] offset 40252 id=52 floor=-16384 roof=-65536 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[53] offset 40604 id=53 floor=-14336 roof=-65536 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[54] offset 40934 id=54 floor=-12288 roof=-65536 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[55] offset 41270 id=55 floor=-10240 roof=-65536 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[56] offset 41600 id=56 floor=-12288 roof=-65536 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[57] offset 41870 id=57 floor=-51200 roof=-32768 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[58] offset 42152 id=58 floor=-51200 roof=-32768 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[59] offset 42456 id=59 floor=-10240 roof=-65536 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[60] offset 42852 id=60 floor=-18432 roof=-53248 bright=(8,0) anim=(static,static)
+[LEVEL]   zone[61] offset 43180 id=61 floor=-20480 roof=-53248 bright=(5,0) anim=(static,static)
+[LEVEL]   zone[62] offset 43528 id=62 floor=-22528 roof=-53248 bright=(2,0) anim=(static,static)
+[LEVEL]   zone[63] offset 43860 id=63 floor=-24576 roof=-53248 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[64] offset 44192 id=64 floor=-30720 roof=-53248 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[65] offset 44610 id=65 floor=-30720 roof=-53248 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[66] offset 45068 id=66 floor=-28672 roof=-53248 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[67] offset 45488 id=67 floor=-26624 roof=-53248 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[68] offset 45890 id=68 floor=-28672 roof=-53248 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[69] offset 46354 id=69 floor=-26624 roof=-53248 bright=(-6,0) anim=(static,static)
+[LEVEL]   zone[70] offset 46704 id=70 floor=-59392 roof=-94208 bright=(6,0) anim=(static,static)
+[LEVEL]   zone[71] offset 47084 id=71 floor=-30720 roof=-94208 bright=(6,0) anim=(static,static)
+[LEVEL]   zone[72] offset 47460 id=72 floor=-34816 roof=-94208 bright=(6,0) anim=(static,static)
+[LEVEL]   zone[73] offset 47830 id=73 floor=-38912 roof=-94208 bright=(6,0) anim=(static,static)
+[LEVEL]   zone[74] offset 48196 id=74 floor=-43008 roof=-94208 bright=(6,0) anim=(static,static)
+[LEVEL]   zone[75] offset 48566 id=75 floor=-47104 roof=-94208 bright=(6,0) anim=(static,static)
+[LEVEL]   zone[76] offset 48932 id=76 floor=-51200 roof=-94208 bright=(6,0) anim=(static,static)
+[LEVEL]   zone[77] offset 49312 id=77 floor=-55296 roof=-94208 bright=(6,0) anim=(static,static)
+[LEVEL]   zone[78] offset 49694 id=78 floor=-30720 roof=-51200 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[79] offset 50076 id=79 floor=-30720 roof=-51200 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[80] offset 50458 id=80 floor=-30720 roof=-51200 bright=(-2,0) anim=(static,static)
+[LEVEL]   zone[81] offset 50840 id=81 floor=-30720 roof=-94208 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[82] offset 51320 id=82 floor=-30720 roof=-53248 bright=(-7,0) anim=(static,static)
+[LEVEL]   zone[83] offset 51702 id=83 floor=-30720 roof=-55296 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[84] offset 52076 id=84 floor=-12288 roof=-94208 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[85] offset 52598 id=85 floor=-14336 roof=-94208 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[86] offset 53072 id=86 floor=-12288 roof=-94208 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[87] offset 53582 id=87 floor=-12288 roof=-94208 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[88] offset 54138 id=88 floor=-30720 roof=-53248 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[89] offset 54506 id=89 floor=-30720 roof=-94208 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[90] offset 55022 id=90 floor=-30720 roof=-94208 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[91] offset 55544 id=91 floor=-30720 roof=-94208 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[92] offset 56034 id=92 floor=-61440 roof=-77824 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[93] offset 56382 id=93 floor=-61440 roof=-77824 bright=(2,0) anim=(static,static)
+[LEVEL]   zone[94] offset 56754 id=94 floor=-61440 roof=-77824 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[95] offset 57100 id=95 floor=-30720 roof=-55296 bright=(-5,0) anim=(static,static)
+[LEVEL]   zone[96] offset 57482 id=96 floor=-30720 roof=-53248 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[97] offset 57852 id=97 floor=-30720 roof=-53248 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[98] offset 58222 id=98 floor=-30720 roof=-53248 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[99] offset 58592 id=99 floor=-30720 roof=-55296 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[100] offset 58988 id=100 floor=-30720 roof=-53248 bright=(3,0) anim=(static,static)
+[LEVEL]   zone[101] offset 59406 id=101 floor=-30720 roof=-53248 bright=(6,0) anim=(static,static)
+[LEVEL]   zone[102] offset 59824 id=102 floor=-30720 roof=-53248 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[103] offset 60022 id=103 floor=-30720 roof=-65536 bright=(17,0) anim=(static,static)
+[LEVEL]   zone[104] offset 60216 id=104 floor=-30720 roof=-47104 bright=(17,0) anim=(static,static)
+[LEVEL]   zone[105] offset 60382 id=105 floor=-30720 roof=-65536 bright=(20,0) anim=(static,static)
+[LEVEL]   zone[106] offset 60652 id=106 floor=-30720 roof=-65536 bright=(20,0) anim=(static,static)
+[LEVEL]   zone[107] offset 60908 id=107 floor=-30720 roof=-65536 bright=(20,0) anim=(static,static)
+[LEVEL]   zone[108] offset 61114 id=108 floor=-34816 roof=-65536 bright=(20,0) anim=(static,static)
+[LEVEL]   zone[109] offset 61320 id=109 floor=-26624 roof=-65536 bright=(20,0) anim=(static,static)
+[LEVEL]   zone[110] offset 61514 id=110 floor=-38912 roof=-65536 bright=(20,0) anim=(static,static)
+[LEVEL]   zone[111] offset 61712 id=111 floor=-22528 roof=-65536 bright=(20,0) anim=(static,static)
+[LEVEL]   zone[112] offset 61906 id=112 floor=-22528 roof=-40960 bright=(-20,0) anim=(static,static)
+[LEVEL]   zone[113] offset 62104 id=113 floor=-22528 roof=-40960 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[114] offset 62302 id=114 floor=-22528 roof=-40960 bright=(10,0) anim=(static,static)
+[LEVEL]   zone[115] offset 62496 id=115 floor=-61440 roof=-77824 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[116] offset 62828 id=116 floor=-61440 roof=-77824 bright=(2,0) anim=(static,static)
+[LEVEL]   zone[117] offset 63160 id=117 floor=-61440 roof=-77824 bright=(2,0) anim=(static,static)
+[LEVEL]   zone[118] offset 63494 id=118 floor=-61440 roof=-77824 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[119] offset 63832 id=119 floor=-18432 roof=-39936 bright=(-7,0) anim=(static,static)
+[LEVEL]   zone[120] offset 64104 id=120 floor=-18432 roof=-65536 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[121] offset 64388 id=121 floor=-10240 roof=-38912 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[122] offset 64666 id=122 floor=-10240 roof=-38912 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[123] offset 64940 id=123 floor=-10240 roof=-38912 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[124] offset 65188 id=124 floor=-6144 roof=-38912 bright=(7,0) anim=(static,static)
+[LEVEL]   zone[125] offset 65436 id=125 floor=-8192 roof=-38912 bright=(15,0) anim=(static,static)
+[LEVEL]   zone[126] offset 65714 id=126 floor=-4096 roof=-38912 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[127] offset 65928 id=127 floor=-4096 roof=-38912 bright=(4,0) anim=(static,static)
+[LEVEL]   zone[128] offset 66142 id=128 floor=-4096 roof=-38912 bright=(8,0) anim=(static,static)
+[LEVEL]   zone[129] offset 66380 id=129 floor=-8192 roof=-38912 bright=(11,0) anim=(static,static)
+[LEVEL]   zone[130] offset 66608 id=130 floor=-4096 roof=-38912 bright=(14,0) anim=(static,static)
+[LEVEL]   zone[131] offset 66834 id=131 floor=-4096 roof=-38912 bright=(2,0) anim=(static,static)
+[LEVEL]   zone[132] offset 66978 id=132 floor=-8192 roof=-38912 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[133] offset 67126 id=133 floor=-51200 roof=-61440 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[134] offset 67414 id=134 floor=0 roof=-61440 bright=(-10,0) anim=(static,static)
+[LEVEL]   zone[135] offset 67674 id=135 floor=0 roof=-32768 bright=(0,0) anim=(static,static)
+[LEVEL]   zone[136] offset 67772 id=136 floor=0 roof=-32768 bright=(0,0) anim=(static,static)
+[LEVEL] Parsed: 137 zones, 303 points, 120 obj_points, 594 floor_lines
+[LEVEL] Floor lines: offset=11200 count=594 (x, z, xlen, zlen, connect)
+[LEVEL]   fl[0] x=-544 z=272 xlen=32 zlen=0 connect=-1
+[LEVEL]   fl[1] x=-512 z=272 xlen=128 zlen=0 connect=1
+[LEVEL]   fl[2] x=-384 z=272 xlen=48 zlen=0 connect=-1
+[LEVEL]   fl[3] x=-336 z=272 xlen=0 zlen=-208 connect=-1
+[LEVEL]   fl[4] x=-336 z=64 xlen=-208 zlen=0 connect=-1
+[LEVEL]   fl[5] x=-544 z=64 xlen=0 zlen=208 connect=-1
+[LEVEL]   fl[6] x=-512 z=272 xlen=0 zlen=32 connect=-1
+[LEVEL]   fl[7] x=-512 z=304 xlen=128 zlen=0 connect=2
+[LEVEL]   fl[8] x=-384 z=304 xlen=0 zlen=-32 connect=-1
+[LEVEL]   fl[9] x=-384 z=272 xlen=-128 zlen=0 connect=0
+[LEVEL]   fl[10] x=-512 z=304 xlen=0 zlen=16 connect=-1
+[LEVEL]   fl[11] x=-512 z=320 xlen=128 zlen=0 connect=4
+[LEVEL]   fl[12] x=-384 z=320 xlen=0 zlen=-16 connect=-1
+[LEVEL]   fl[13] x=-384 z=304 xlen=-128 zlen=0 connect=1
+[LEVEL]   fl[14] x=-864 z=64 xlen=0 zlen=576 connect=-1
+[LEVEL]   fl[15] x=-864 z=640 xlen=64 zlen=0 connect=-1
+[LEVEL]   fl[16] x=-800 z=640 xlen=224 zlen=-320 connect=4
+[LEVEL]   fl[17] x=-576 z=320 xlen=0 zlen=-256 connect=-1
+[LEVEL]   fl[18] x=-576 z=64 xlen=-288 zlen=0 connect=-1
+[LEVEL]   fl[19] x=-800 z=640 xlen=416 zlen=0 connect=5
+[LEVEL]   fl[20] x=-384 z=640 xlen=64 zlen=0 connect=-1
+[LEVEL]   fl[21] x=-320 z=640 xlen=0 zlen=-320 connect=-1
+[LEVEL]   fl[22] x=-320 z=320 xlen=-64 zlen=0 connect=-1
+[LEVEL]   fl[23] x=-384 z=320 xlen=-128 zlen=0 connect=2
+[LEVEL]   ... and 570 more
+[LEVEL] door[0] zone=1 type=0 pos=0 top=-24576 bot=0 flags=0x0010 (16)
+[LEVEL] door[1] zone=22 type=0 pos=-12288 top=-40960 bot=-12288 flags=0x0000 (0)
+[LEVEL] door[2] zone=116 type=0 pos=-61440 top=-77824 bot=-61440 flags=0x0008 (8)
+[LEVEL] door[3] zone=117 type=0 pos=-61440 top=-77824 bot=-61440 flags=0x0008 (8)
+[LEVEL] door[4] zone=36 type=0 pos=-12288 top=-36864 bot=-12288 flags=0x0008 (8)
+[LEVEL] door[5] zone=82 type=0 pos=-30720 top=-53248 bot=-30720 flags=0x0004 (4)
+[LEVEL] door[6] zone=95 type=0 pos=-30720 top=-55296 bot=-30720 flags=0x0000 (0)
+[LEVEL] door[7] zone=113 type=0 pos=-22528 top=-40960 bot=-22528 flags=0x0020 (32)
+[LEVEL] door[8] zone=79 type=0 pos=-30720 top=-51200 bot=-30720 flags=0x0100 (256)
+[LEVEL] door[9] zone=129 type=0 pos=-8192 top=-38912 bot=-8192 flags=0x0080 (128)
+[LEVEL] door[10] zone=131 type=0 pos=-4096 top=-38912 bot=-4096 flags=0x0200 (512)
+[LEVEL] door[11] zone=40 type=0 pos=-10240 top=-32768 bot=-10240 flags=0x0000 (0)
+[LEVEL] door[12] zone=99 type=0 pos=-30720 top=-55296 bot=-30720 flags=0x0000 (0)
+[LEVEL] switch[0] zone=14 point_index=288 cond_bit=0x0010 (bit 4) pos=(0,0) opens_door_zone=1
+[LEVEL] switch[1] zone=110 point_index=290 cond_bit=0x0020 (bit 5) pos=(0,0) opens_door_zone=113
+[LEVEL] switch[2] zone=126 point_index=292 cond_bit=0x0040 (bit 6) pos=(0,0)
+[LEVEL] switch[3] zone=128 point_index=294 cond_bit=0x0080 (bit 7) pos=(0,0) opens_door_zone=129
+[LEVEL] switch[4] zone=90 point_index=296 cond_bit=0x0100 (bit 8) pos=(0,0) opens_door_zone=79
+[LEVEL] switch[5] zone=130 point_index=298 cond_bit=0x0200 (bit 9) pos=(0,0) opens_door_zone=131
+[LEVEL] lift[0] zone=120 type=0 pos=-58880 vel=0 top=-58880 bot=-18432
+[LEVEL] lift[1] zone=85 type=0 pos=-14336 vel=0 top=-30720 bot=-14336
+[LEVEL] lift[2] zone=33 type=0 pos=-36864 vel=0 top=-36864 bot=-10240
+[LEVEL] lift[3] zone=29 type=0 pos=-36864 vel=0 top=-36864 bot=-10240
+[LEVEL] lift[4] zone=127 type=0 pos=-38912 vel=0 top=-38912 bot=-4096
+[LEVEL] obj[0] zone=83 cid=0 type=-1 (other)
+[LEVEL] obj[1] zone=83 cid=1 type=-1 (other)
+[LEVEL] obj[2] zone=35 cid=2 type=-1 (other)
+[LEVEL] obj[3] zone=0 cid=3 type=9 (ammo)
+[LEVEL] obj[4] zone=70 cid=4 type=4 (key) key_byte17=8
+[LEVEL] obj[5] zone=120 cid=5 type=4 (key) key_byte17=2
+[LEVEL] obj[6] zone=17 cid=6 type=9 (ammo)
+[LEVEL] obj[7] zone=24 cid=7 type=9 (ammo)
+[LEVEL] obj[8] zone=31 cid=8 type=9 (ammo)
+[LEVEL] obj[9] zone=27 cid=9 type=9 (ammo)
+[LEVEL] obj[10] zone=45 cid=10 type=9 (ammo)
+[LEVEL] obj[11] zone=46 cid=11 type=9 (ammo)
+[LEVEL] obj[12] zone=44 cid=12 type=1 (medikit)
+[LEVEL] obj[13] zone=43 cid=13 type=1 (medikit)
+[LEVEL] obj[14] zone=112 cid=14 type=4 (key) key_byte17=4
+[LEVEL] obj[15] zone=31 cid=15 type=10 (other)
+[LEVEL] obj[16] zone=31 cid=16 type=10 (other)
+[LEVEL] obj[17] zone=27 cid=17 type=10 (other)
+[LEVEL] obj[18] zone=27 cid=18 type=10 (other)
+[LEVEL] obj[19] zone=27 cid=19 type=10 (other)
+[LEVEL] obj[20] zone=3 cid=20 type=9 (ammo)
+[LEVEL] obj[21] zone=4 cid=21 type=9 (ammo)
+[LEVEL] obj[22] zone=31 cid=22 type=0 (other)
+[LEVEL] obj[23] zone=27 cid=23 type=0 (other)
+[LEVEL] obj[24] zone=27 cid=24 type=0 (other)
+[LEVEL] obj[25] zone=53 cid=25 type=12 (other)
+[LEVEL] obj[26] zone=64 cid=26 type=12 (other)
+[LEVEL] obj[27] zone=106 cid=27 type=12 (other)
+[LEVEL] obj[28] zone=88 cid=28 type=0 (other)
+[LEVEL] obj[29] zone=91 cid=29 type=0 (other)
+[LEVEL] obj[30] zone=81 cid=30 type=0 (other)
+[LEVEL] obj[31] zone=89 cid=31 type=0 (other)
+[LEVEL] obj[32] zone=115 cid=32 type=12 (other)
+[LEVEL] obj[33] zone=118 cid=33 type=12 (other)
+[LEVEL] obj[34] zone=46 cid=34 type=0 (other)
+[LEVEL] obj[35] zone=45 cid=35 type=0 (other)
+[LEVEL] obj[36] zone=48 cid=36 type=0 (other)
+[LEVEL] obj[37] zone=43 cid=37 type=12 (other)
+[LEVEL] obj[38] zone=44 cid=38 type=12 (other)
+[LEVEL] obj[39] zone=44 cid=39 type=12 (other)
+[LEVEL] obj[40] zone=43 cid=40 type=12 (other)
+[LEVEL] obj[41] zone=120 cid=41 type=12 (other)
+[LEVEL] obj[42] zone=123 cid=42 type=12 (other)
+[LEVEL] obj[43] zone=124 cid=43 type=12 (other)
+[LEVEL] obj[44] zone=128 cid=44 type=0 (other)
+[LEVEL] obj[45] zone=128 cid=45 type=0 (other)
+[LEVEL] obj[46] zone=130 cid=46 type=12 (other)
+[LEVEL] obj[47] zone=130 cid=47 type=12 (other)
+[LEVEL] obj[48] zone=132 cid=48 type=-1 (other)
+[LEVEL] obj[49] zone=28 cid=49 type=-1 (other)
+[LEVEL] obj[50] zone=28 cid=50 type=-1 (other)
+[LEVEL] obj[51] zone=35 cid=51 type=-1 (other)
+[LEVEL] obj[52] zone=0 cid=52 type=1 (medikit)
+[LEVEL] obj[53] zone=86 cid=53 type=3 (big_gun)
+[LEVEL] obj[54] zone=86 cid=54 type=9 (ammo)
+[LEVEL] obj[55] zone=0 cid=55 type=3 (big_gun)
+[LEVEL] obj[56] zone=135 cid=56 type=9 (ammo)
+[LEVEL] obj[57] zone=135 cid=57 type=9 (ammo)
+[LEVEL] obj[58] zone=-1 cid=58 type=2 (other)
+[LEVEL] obj[59] zone=-1 cid=59 type=2 (other)
+[LEVEL] obj[60] zone=-1 cid=60 type=2 (other)
+[LEVEL] obj[61] zone=-1 cid=61 type=2 (other)
+[LEVEL] obj[62] zone=-1 cid=62 type=2 (other)
+[LEVEL] obj[63] zone=-1 cid=63 type=2 (other)
+[LEVEL] obj[64] zone=-1 cid=64 type=2 (other)
+[LEVEL] obj[65] zone=-1 cid=65 type=2 (other)
+[LEVEL] obj[66] zone=-1 cid=66 type=2 (other)
+[LEVEL] obj[67] zone=-1 cid=67 type=2 (other)
+[LEVEL] obj[68] zone=-1 cid=68 type=2 (other)
+[LEVEL] obj[69] zone=-1 cid=69 type=2 (other)
+[LEVEL] obj[70] zone=-1 cid=70 type=2 (other)
+[LEVEL] obj[71] zone=-1 cid=71 type=2 (other)
+[LEVEL] obj[72] zone=-1 cid=72 type=2 (other)
+[LEVEL] obj[73] zone=-1 cid=73 type=2 (other)
+[LEVEL] obj[74] zone=-1 cid=74 type=2 (other)
+[LEVEL] obj[75] zone=-1 cid=75 type=2 (other)
+[LEVEL] obj[76] zone=-1 cid=76 type=2 (other)
+[LEVEL] obj[77] zone=-1 cid=77 type=2 (other)
+[LEVEL] obj[78] zone=-1 cid=78 type=2 (other)
+[LEVEL] obj[79] zone=-1 cid=79 type=2 (other)
+[LEVEL] obj[80] zone=-1 cid=80 type=2 (other)
+[LEVEL] obj[81] zone=-1 cid=81 type=2 (other)
+[LEVEL] obj[82] zone=-1 cid=82 type=2 (other)
+[LEVEL] obj[83] zone=-1 cid=83 type=2 (other)
+[LEVEL] obj[84] zone=-1 cid=84 type=2 (other)
+[LEVEL] obj[85] zone=-1 cid=85 type=2 (other)
+[LEVEL] obj[86] zone=-1 cid=86 type=2 (other)
+[LEVEL] obj[87] zone=-1 cid=87 type=2 (other)
+[LEVEL] obj[88] zone=-1 cid=88 type=2 (other)
+[LEVEL] obj[89] zone=-1 cid=89 type=2 (other)
+[LEVEL] obj[90] zone=-1 cid=90 type=2 (other)
+[LEVEL] obj[91] zone=-1 cid=91 type=2 (other)
+[LEVEL] obj[92] zone=-1 cid=92 type=2 (other)
+[LEVEL] obj[93] zone=-1 cid=93 type=2 (other)
+[LEVEL] obj[94] zone=-1 cid=94 type=2 (other)
+[LEVEL] obj[95] zone=-1 cid=95 type=2 (other)
+[LEVEL] obj[96] zone=-1 cid=96 type=2 (other)
+[LEVEL] obj[97] zone=-1 cid=97 type=2 (other)
+[LEVEL] obj[98] zone=-1 cid=98 type=2 (other)
+[LEVEL] obj[99] zone=-1 cid=99 type=2 (other)
+[LEVEL] obj[100] zone=-1 cid=100 type=2 (other)
+[LEVEL] obj[101] zone=-1 cid=101 type=2 (other)
+[LEVEL] obj[102] zone=-1 cid=102 type=2 (other)
+[LEVEL] obj[103] zone=-1 cid=103 type=2 (other)
+[LEVEL] obj[104] zone=-1 cid=104 type=2 (other)
+[LEVEL] obj[105] zone=-1 cid=105 type=2 (other)
+[LEVEL] obj[106] zone=-1 cid=106 type=2 (other)
+[LEVEL] obj[107] zone=-1 cid=107 type=2 (other)
+[LEVEL] obj[108] zone=-1 cid=108 type=2 (other)
+[LEVEL] obj[109] zone=-1 cid=109 type=2 (other)
+[LEVEL] obj[110] zone=-1 cid=110 type=2 (other)
+[LEVEL] obj[111] zone=-1 cid=111 type=2 (other)
+[LEVEL] obj[112] zone=-1 cid=112 type=2 (other)
+[LEVEL] obj[113] zone=-1 cid=113 type=2 (other)
+[LEVEL] obj[114] zone=-1 cid=114 type=2 (other)
+[LEVEL] obj[115] zone=-1 cid=115 type=2 (other)
+[LEVEL] obj[116] zone=-1 cid=116 type=2 (other)
+[LEVEL] obj[117] zone=-1 cid=117 type=2 (other)
+[LEVEL] obj[118] zone=-1 cid=118 type=-1 (other)
+[LEVEL] obj[119] zone=-1 cid=119 type=-1 (other)
+[LEVEL] obj[120] zone=-1 cid=120 type=-1 (other)
+[LEVEL] obj[121] zone=640 cid=-1 type=1 (medikit)
+[LEVEL] obj[122] zone=704 cid=640 type=2 (other)
+[LEVEL] obj[123] zone=1216 cid=1472 type=5 (plr1)
+[LEVEL] obj[124] zone=1792 cid=1696 type=7 (other)
+[LEVEL] obj[125] zone=2272 cid=1792 type=8 (other)
+[LEVEL] obj[126] zone=1696 cid=2272 type=6 (other)
+[LEVEL] obj[127] zone=1344 cid=1632 type=7 (other)
+[LEVEL] obj[128] zone=1824 cid=1472 type=6 (other)
+[LEVEL] obj[129] zone=2336 cid=2400 type=9 (ammo)
+[LEVEL] obj[130] zone=2528 cid=2400 type=9 (ammo)
+[LEVEL] obj[131] zone=3056 cid=2720 type=11 (plr2)
+[LEVEL] obj[132] zone=2608 cid=2616 type=10 (other)
+[LEVEL] obj[133] zone=2512 cid=2704 type=10 (other)
+[LEVEL] obj[134] zone=2272 cid=2400 type=9 (ammo)
+[LEVEL] obj[135] zone=3088 cid=3008 type=11 (plr2)
+[LEVEL] obj[136] zone=2704 cid=2696 type=10 (other)
+[LEVEL] obj[137] zone=2144 cid=2560 type=8 (other)
+[LEVEL] obj[138] zone=2304 cid=2176 type=9 (ammo)
+[LEVEL] obj[139] zone=3088 cid=3200 type=12 (other)
+[LEVEL] obj[140] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[141] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[142] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[143] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[144] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[145] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[146] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[147] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[148] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[149] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[150] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[151] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[152] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[153] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[154] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[155] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[156] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[157] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[158] zone=0 cid=0 type=0 (other)
+[LEVEL] obj[159] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[160] zone=208 cid=0 type=0 (other)
+[LEVEL] obj[161] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[162] zone=16 cid=0 type=0 (other)
+[LEVEL] obj[163] zone=390 cid=0 type=0 (other)
+[LEVEL] obj[164] zone=64 cid=0 type=0 (other)
+[LEVEL] obj[165] zone=64 cid=0 type=0 (other)
+[LEVEL] obj[166] zone=64 cid=0 type=0 (other)
+[LEVEL] obj[167] zone=288 cid=0 type=0 (other)
+[LEVEL] obj[168] zone=143 cid=0 type=0 (other)
+[LEVEL] obj[169] zone=416 cid=0 type=0 (other)
+[LEVEL] obj[170] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[171] zone=96 cid=0 type=0 (other)
+[LEVEL] obj[172] zone=64 cid=0 type=0 (other)
+[LEVEL] obj[173] zone=192 cid=0 type=0 (other)
+[LEVEL] obj[174] zone=96 cid=0 type=0 (other)
+[LEVEL] obj[175] zone=64 cid=0 type=0 (other)
+[LEVEL] obj[176] zone=256 cid=0 type=0 (other)
+[LEVEL] obj[177] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[178] zone=64 cid=0 type=0 (other)
+[LEVEL] obj[179] zone=202 cid=0 type=0 (other)
+[LEVEL] obj[180] zone=64 cid=0 type=0 (other)
+[LEVEL] obj[181] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[182] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[183] zone=96 cid=0 type=0 (other)
+[LEVEL] obj[184] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[185] zone=352 cid=0 type=0 (other)
+[LEVEL] obj[186] zone=352 cid=0 type=0 (other)
+[LEVEL] obj[187] zone=352 cid=0 type=0 (other)
+[LEVEL] obj[188] zone=512 cid=0 type=0 (other)
+[LEVEL] obj[189] zone=576 cid=0 type=0 (other)
+[LEVEL] obj[190] zone=115 cid=0 type=0 (other)
+[LEVEL] obj[191] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[192] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[193] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[194] zone=352 cid=0 type=0 (other)
+[LEVEL] obj[195] zone=352 cid=0 type=0 (other)
+[LEVEL] obj[196] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[197] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[198] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[199] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[200] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[201] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[202] zone=352 cid=0 type=0 (other)
+[LEVEL] obj[203] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[204] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[205] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[206] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[207] zone=256 cid=0 type=0 (other)
+[LEVEL] obj[208] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[209] zone=416 cid=0 type=0 (other)
+[LEVEL] obj[210] zone=416 cid=0 type=0 (other)
+[LEVEL] obj[211] zone=303 cid=0 type=0 (other)
+[LEVEL] obj[212] zone=288 cid=0 type=0 (other)
+[LEVEL] obj[213] zone=135 cid=0 type=0 (other)
+[LEVEL] obj[214] zone=131 cid=0 type=0 (other)
+[LEVEL] obj[215] zone=90 cid=0 type=0 (other)
+[LEVEL] obj[216] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[217] zone=135 cid=0 type=0 (other)
+[LEVEL] obj[218] zone=90 cid=0 type=0 (other)
+[LEVEL] obj[219] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[220] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[221] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[222] zone=115 cid=0 type=0 (other)
+[LEVEL] obj[223] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[224] zone=186 cid=0 type=0 (other)
+[LEVEL] obj[225] zone=90 cid=0 type=0 (other)
+[LEVEL] obj[226] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[227] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[228] zone=96 cid=0 type=0 (other)
+[LEVEL] obj[229] zone=45 cid=0 type=0 (other)
+[LEVEL] obj[230] zone=64 cid=0 type=0 (other)
+[LEVEL] obj[231] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[232] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[233] zone=272 cid=0 type=0 (other)
+[LEVEL] obj[234] zone=384 cid=0 type=0 (other)
+[LEVEL] obj[235] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[236] zone=102 cid=0 type=0 (other)
+[LEVEL] obj[237] zone=256 cid=0 type=0 (other)
+[LEVEL] obj[238] zone=64 cid=0 type=0 (other)
+[LEVEL] obj[239] zone=101 cid=0 type=0 (other)
+[LEVEL] obj[240] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[241] zone=136 cid=0 type=0 (other)
+[LEVEL] obj[242] zone=136 cid=0 type=0 (other)
+[LEVEL] obj[243] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[244] zone=136 cid=0 type=0 (other)
+[LEVEL] obj[245] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[246] zone=24 cid=0 type=0 (other)
+[LEVEL] obj[247] zone=24 cid=0 type=0 (other)
+[LEVEL] obj[248] zone=208 cid=0 type=0 (other)
+[LEVEL] obj[249] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[250] zone=32 cid=0 type=0 (other)
+[LEVEL] obj[251] zone=128 cid=0 type=0 (other)
+[LEVEL] obj[252] zone=112 cid=0 type=0 (other)
+[LEVEL] obj[253] zone=112 cid=0 type=0 (other)
+[LEVEL] obj[254] zone=352 cid=0 type=0 (other)
+[LEVEL] obj[255] zone=288 cid=0 type=0 (other)
+[LEVEL]   zone 81 (fline 357 broken connect 137, should be zone 0): id=81 floor=-30720 roof=-94208 upper_floor=1280000 upper_roof=1280000 water=65536 bright=-10 upper_bright=0 tel_zone=-1 tel_x=0 tel_z=0
+[LEVEL]     fline 356: x=-528 z=2848 xlen=0 zlen=208 connect=-1 length=208 normal=5356 away=0
+[LEVEL]     fline 357: x=-528 z=3056 xlen=304 zlen=-48 connect=137 (should be zone 0) length=307 normal=-5392 away=0
+[LEVEL]     fline 358: x=-224 z=3008 xlen=-160 zlen=-160 connect=91 length=226 normal=28 away=0
+[LEVEL]     fline 359: x=-384 z=2848 xlen=-144 zlen=0 connect=88 length=144 normal=5140 away=0
+[LEVEL]   zone 84 (fline 371 broken connect 137, should be zone 0): id=84 floor=-12288 roof=-94208 upper_floor=1280000 upper_roof=1280000 water=-28672 bright=-10 upper_bright=0 tel_zone=-1 tel_x=0 tel_z=0
+[LEVEL]     fline 368: x=-224 z=3232 xlen=128 zlen=0 connect=89 length=128 normal=-4884 away=0
+[LEVEL]     fline 369: x=-96 z=3232 xlen=0 zlen=-96 connect=85 length=96 normal=-5100 away=0
+[LEVEL]     fline 370: x=-96 z=3136 xlen=-128 zlen=-128 connect=87 length=181 normal=28 away=0
+[LEVEL]     fline 371: x=-224 z=3008 xlen=0 zlen=224 connect=137 (should be zone 0) length=224 normal=5356 away=0
+[LEVEL]   zone 89 (fline 394 broken connect 137, should be zone 0): id=89 floor=-30720 roof=-94208 upper_floor=1280000 upper_roof=1280000 water=65536 bright=-10 upper_bright=0 tel_zone=-1 tel_x=0 tel_z=0
+[LEVEL]     fline 389: x=-288 z=3392 xlen=480 zlen=0 connect=-1 length=480 normal=-4884 away=0
+[LEVEL]     fline 390: x=192 z=3392 xlen=-64 zlen=-160 connect=90 length=172 normal=-2791 away=0
+[LEVEL]     fline 391: x=128 z=3232 xlen=-112 zlen=0 connect=86 length=112 normal=5140 away=0
+[LEVEL]     fline 392: x=16 z=3232 xlen=-112 zlen=0 connect=85 length=112 normal=5140 away=0
+[LEVEL]     fline 393: x=-96 z=3232 xlen=-128 zlen=0 connect=84 length=128 normal=5140 away=0
+[LEVEL]     fline 394: x=-224 z=3232 xlen=-64 zlen=160 connect=137 (should be zone 0) length=172 normal=6645 away=0
+[LEVEL] 3 broken connect(s) or exit(s) where adjacent zone does not pass back
+[LEVEL] Clips assigned, connect table at offset 20802
+[GAME] Level parsed: 137 zones
+[GAME] Control mode: mouse+kbd (default)
+[PLAYER] debug load: position/orientation overridden from data/debug_save.bin
+[PLAYER] init_from_level: PLR1 at (-720,264) zone 3 yoff=-10240 tyoff=-12288, PLR2 at (-2232,2864) zone 135
+[GAME] Entering main loop...
+[Game] Player zone: 3
+[Game]   exit fline 14: x=-864 z=64 xlen=0 zlen=576 connect=-1 ->zone_idx=-1 length=576 normal=5356 away=0
+[Game]   exit fline 15: x=-864 z=640 xlen=64 zlen=0 connect=-1 ->zone_idx=-1 length=64 normal=-4884 away=0
+[Game]   exit fline 16: x=-800 z=640 xlen=224 zlen=-320 connect=4 ->zone_idx=4 length=390 normal=-6908 away=0
+[Game]   exit fline 17: x=-576 z=320 xlen=0 zlen=-256 connect=-1 ->zone_idx=-1 length=256 normal=-5100 away=0
+[Game]   exit fline 18: x=-576 z=64 xlen=-288 zlen=0 connect=-1 ->zone_idx=-1 length=288 normal=5140 away=0
+[BULLET-Y] spawn accypos=-7680 (p_yoff=-10240)
+[BULLET] spawned gun1 cid=78 zone=3 pos=(-717,337) vel=(0,4)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7619 floor_raw=0 roof=-65536 (roof-acc=-57917 floor-acc=7619)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7558 floor_raw=0 roof=-65536 (roof-acc=-57978 floor-acc=7558)
+[REND] bullet slot=0 cid=78 zone=3 render_zone=26 num_pts=120
+[REND] bullet slot=0 DRAWING z=39
+[REND] bullet slot=0 DRAWING z=39
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7497 floor_raw=0 roof=-65536 (roof-acc=-58039 floor-acc=7497)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7436 floor_raw=0 roof=-65536 (roof-acc=-58100 floor-acc=7436)
+[REND] bullet slot=0 DRAWING z=43
+[REND] bullet slot=0 DRAWING z=43
+[REND] bullet slot=0 DRAWING z=43
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7375 floor_raw=0 roof=-65536 (roof-acc=-58161 floor-acc=7375)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7314 floor_raw=0 roof=-65536 (roof-acc=-58222 floor-acc=7314)
+[REND] bullet slot=0 DRAWING z=46
+[REND] bullet slot=0 DRAWING z=46
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7253 floor_raw=0 roof=-65536 (roof-acc=-58283 floor-acc=7253)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7192 floor_raw=0 roof=-65536 (roof-acc=-58344 floor-acc=7192)
+[REND] bullet slot=0 DRAWING z=51
+[REND] bullet slot=0 DRAWING z=51
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7131 floor_raw=0 roof=-65536 (roof-acc=-58405 floor-acc=7131)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7070 floor_raw=0 roof=-65536 (roof-acc=-58466 floor-acc=7070)
+[REND] bullet slot=0 DRAWING z=55
+[REND] bullet slot=0 DRAWING z=55
+[REND] bullet slot=0 DRAWING z=55
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7009 floor_raw=0 roof=-65536 (roof-acc=-58527 floor-acc=7009)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6948 floor_raw=0 roof=-65536 (roof-acc=-58588 floor-acc=6948)
+[REND] bullet slot=0 DRAWING z=59
+[REND] bullet slot=0 DRAWING z=59
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6887 floor_raw=0 roof=-65536 (roof-acc=-58649 floor-acc=6887)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6826 floor_raw=0 roof=-65536 (roof-acc=-58710 floor-acc=6826)
+[REND] bullet slot=0 DRAWING z=63
+[REND] bullet slot=0 DRAWING z=63
+[REND] bullet slot=0 DRAWING z=63
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6765 floor_raw=0 roof=-65536 (roof-acc=-58771 floor-acc=6765)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6704 floor_raw=0 roof=-65536 (roof-acc=-58832 floor-acc=6704)
+[REND] bullet slot=0 DRAWING z=68
+[REND] bullet slot=0 DRAWING z=68
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6643 floor_raw=0 roof=-65536 (roof-acc=-58893 floor-acc=6643)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6582 floor_raw=0 roof=-65536 (roof-acc=-58954 floor-acc=6582)
+[REND] bullet slot=0 DRAWING z=72
+[REND] bullet slot=0 DRAWING z=72
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6521 floor_raw=0 roof=-65536 (roof-acc=-59015 floor-acc=6521)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6460 floor_raw=0 roof=-65536 (roof-acc=-59076 floor-acc=6460)
+[REND] bullet slot=0 DRAWING z=76
+[REND] bullet slot=0 DRAWING z=76
+[REND] bullet slot=0 DRAWING z=76
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6399 floor_raw=0 roof=-65536 (roof-acc=-59137 floor-acc=6399)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6338 floor_raw=0 roof=-65536 (roof-acc=-59198 floor-acc=6338)
+[REND] bullet slot=0 DRAWING z=80
+[REND] bullet slot=0 DRAWING z=80
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6277 floor_raw=0 roof=-65536 (roof-acc=-59259 floor-acc=6277)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6216 floor_raw=0 roof=-65536 (roof-acc=-59320 floor-acc=6216)
+[REND] bullet slot=0 DRAWING z=84
+[REND] bullet slot=0 DRAWING z=84
+[REND] bullet slot=0 DRAWING z=84
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6155 floor_raw=0 roof=-65536 (roof-acc=-59381 floor-acc=6155)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6094 floor_raw=0 roof=-65536 (roof-acc=-59442 floor-acc=6094)
+[REND] bullet slot=0 DRAWING z=88
+[REND] bullet slot=0 DRAWING z=88
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6033 floor_raw=0 roof=-65536 (roof-acc=-59503 floor-acc=6033)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5972 floor_raw=0 roof=-65536 (roof-acc=-59564 floor-acc=5972)
+[REND] bullet slot=0 DRAWING z=92
+[REND] bullet slot=0 DRAWING z=92
+[REND] bullet slot=0 DRAWING z=92
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5911 floor_raw=0 roof=-65536 (roof-acc=-59625 floor-acc=5911)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5850 floor_raw=0 roof=-65536 (roof-acc=-59686 floor-acc=5850)
+[REND] bullet slot=0 DRAWING z=96
+[REND] bullet slot=0 DRAWING z=96
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5789 floor_raw=0 roof=-65536 (roof-acc=-59747 floor-acc=5789)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5728 floor_raw=0 roof=-65536 (roof-acc=-59808 floor-acc=5728)
+[REND] bullet slot=0 DRAWING z=99
+[REND] bullet slot=0 DRAWING z=99
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5667 floor_raw=0 roof=-65536 (roof-acc=-59869 floor-acc=5667)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5606 floor_raw=0 roof=-65536 (roof-acc=-59930 floor-acc=5606)
+[REND] bullet slot=0 DRAWING z=104
+[REND] bullet slot=0 DRAWING z=104
+[REND] bullet slot=0 DRAWING z=104
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5545 floor_raw=0 roof=-65536 (roof-acc=-59991 floor-acc=5545)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5484 floor_raw=0 roof=-65536 (roof-acc=-60052 floor-acc=5484)
+[REND] bullet slot=0 DRAWING z=108
+[REND] bullet slot=0 DRAWING z=108
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5423 floor_raw=0 roof=-65536 (roof-acc=-60113 floor-acc=5423)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5362 floor_raw=0 roof=-65536 (roof-acc=-60174 floor-acc=5362)
+[REND] bullet slot=0 DRAWING z=112
+[REND] bullet slot=0 DRAWING z=112
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5301 floor_raw=0 roof=-65536 (roof-acc=-60235 floor-acc=5301)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5240 floor_raw=0 roof=-65536 (roof-acc=-60296 floor-acc=5240)
+[REND] bullet slot=0 DRAWING z=116
+[REND] bullet slot=0 DRAWING z=116
+[REND] bullet slot=0 DRAWING z=116
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5179 floor_raw=0 roof=-65536 (roof-acc=-60357 floor-acc=5179)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5118 floor_raw=0 roof=-65536 (roof-acc=-60418 floor-acc=5118)
+[REND] bullet slot=0 DRAWING z=120
+[REND] bullet slot=0 DRAWING z=120
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-5057 floor_raw=0 roof=-65536 (roof-acc=-60479 floor-acc=5057)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-4996 floor_raw=0 roof=-65536 (roof-acc=-60540 floor-acc=4996)
+[REND] bullet slot=0 DRAWING z=124
+[REND] bullet slot=0 DRAWING z=124
+[REND] bullet slot=0 DRAWING z=124
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-4935 floor_raw=0 roof=-65536 (roof-acc=-60601 floor-acc=4935)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-4874 floor_raw=0 roof=-65536 (roof-acc=-60662 floor-acc=4874)
+[REND] bullet slot=0 DRAWING z=128
+[REND] bullet slot=0 DRAWING z=128
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-4813 floor_raw=0 roof=-65536 (roof-acc=-60723 floor-acc=4813)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4752 floor_raw=0 roof=-65536 (roof-acc=-60784 floor-acc=4752)
+[REND] bullet slot=0 DRAWING z=133
+[REND] bullet slot=0 DRAWING z=133
+[REND] bullet slot=0 DRAWING z=133
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4691 floor_raw=0 roof=-65536 (roof-acc=-60845 floor-acc=4691)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4630 floor_raw=0 roof=-65536 (roof-acc=-60906 floor-acc=4630)
+[REND] bullet slot=0 DRAWING z=140
+[REND] bullet slot=0 DRAWING z=140
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4569 floor_raw=0 roof=-65536 (roof-acc=-60967 floor-acc=4569)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4508 floor_raw=0 roof=-65536 (roof-acc=-61028 floor-acc=4508)
+[REND] bullet slot=0 DRAWING z=145
+[REND] bullet slot=0 DRAWING z=145
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4447 floor_raw=0 roof=-65536 (roof-acc=-61089 floor-acc=4447)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4386 floor_raw=0 roof=-65536 (roof-acc=-61150 floor-acc=4386)
+[REND] bullet slot=0 DRAWING z=151
+[REND] bullet slot=0 DRAWING z=151
+[REND] bullet slot=0 DRAWING z=151
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4325 floor_raw=0 roof=-65536 (roof-acc=-61211 floor-acc=4325)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4264 floor_raw=0 roof=-65536 (roof-acc=-61272 floor-acc=4264)
+[REND] bullet slot=0 DRAWING z=158
+[REND] bullet slot=0 DRAWING z=158
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4203 floor_raw=0 roof=-65536 (roof-acc=-61333 floor-acc=4203)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4142 floor_raw=0 roof=-65536 (roof-acc=-61394 floor-acc=4142)
+[REND] bullet slot=0 DRAWING z=164
+[REND] bullet slot=0 DRAWING z=164
+[REND] bullet slot=0 DRAWING z=164
+[BULLET-Y] spawn accypos=-7680 (p_yoff=-10240)
+[BULLET] spawned gun1 cid=79 zone=3 pos=(-709,436) vel=(0,4)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4081 floor_raw=0 roof=-65536 (roof-acc=-61455 floor-acc=4081)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7621 floor_raw=0 roof=-65536 (roof-acc=-57915 floor-acc=7621)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4020 floor_raw=0 roof=-65536 (roof-acc=-61516 floor-acc=4020)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7562 floor_raw=0 roof=-65536 (roof-acc=-57974 floor-acc=7562)
+[REND] bullet slot=1 cid=79 zone=3 render_zone=26 num_pts=120
+[REND] bullet slot=0 DRAWING z=171
+[REND] bullet slot=1 DRAWING z=38
+[REND] bullet slot=0 DRAWING z=171
+[REND] bullet slot=1 DRAWING z=38
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3959 floor_raw=0 roof=-65536 (roof-acc=-61577 floor-acc=3959)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7503 floor_raw=0 roof=-65536 (roof-acc=-58033 floor-acc=7503)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3898 floor_raw=0 roof=-65536 (roof-acc=-61638 floor-acc=3898)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7444 floor_raw=0 roof=-65536 (roof-acc=-58092 floor-acc=7444)
+[REND] bullet slot=0 DRAWING z=178
+[REND] bullet slot=1 DRAWING z=45
+[REND] bullet slot=0 DRAWING z=178
+[REND] bullet slot=1 DRAWING z=45
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3837 floor_raw=0 roof=-65536 (roof-acc=-61699 floor-acc=3837)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7385 floor_raw=0 roof=-65536 (roof-acc=-58151 floor-acc=7385)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3776 floor_raw=0 roof=-65536 (roof-acc=-61760 floor-acc=3776)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7326 floor_raw=0 roof=-65536 (roof-acc=-58210 floor-acc=7326)
+[REND] bullet slot=0 DRAWING z=184
+[REND] bullet slot=1 DRAWING z=52
+[REND] bullet slot=0 DRAWING z=184
+[REND] bullet slot=1 DRAWING z=52
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3715 floor_raw=0 roof=-65536 (roof-acc=-61821 floor-acc=3715)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7267 floor_raw=0 roof=-65536 (roof-acc=-58269 floor-acc=7267)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3654 floor_raw=0 roof=-65536 (roof-acc=-61882 floor-acc=3654)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7208 floor_raw=0 roof=-65536 (roof-acc=-58328 floor-acc=7208)
+[REND] bullet slot=0 DRAWING z=193
+[REND] bullet slot=1 DRAWING z=60
+[REND] bullet slot=0 DRAWING z=193
+[REND] bullet slot=1 DRAWING z=60
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3593 floor_raw=0 roof=-65536 (roof-acc=-61943 floor-acc=3593)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7149 floor_raw=0 roof=-65536 (roof-acc=-58387 floor-acc=7149)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3532 floor_raw=0 roof=-65536 (roof-acc=-62004 floor-acc=3532)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7090 floor_raw=0 roof=-65536 (roof-acc=-58446 floor-acc=7090)
+[REND] bullet slot=0 DRAWING z=200
+[REND] bullet slot=1 DRAWING z=66
+[REND] bullet slot=0 DRAWING z=200
+[REND] bullet slot=1 DRAWING z=66
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3471 floor_raw=0 roof=-65536 (roof-acc=-62065 floor-acc=3471)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7031 floor_raw=0 roof=-65536 (roof-acc=-58505 floor-acc=7031)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3410 floor_raw=0 roof=-65536 (roof-acc=-62126 floor-acc=3410)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6972 floor_raw=0 roof=-65536 (roof-acc=-58564 floor-acc=6972)
+[REND] bullet slot=0 DRAWING z=207
+[REND] bullet slot=1 DRAWING z=73
+[REND] bullet slot=0 DRAWING z=207
+[REND] bullet slot=1 DRAWING z=73
+[REND] bullet slot=0 DRAWING z=207
+[REND] bullet slot=1 DRAWING z=73
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3349 floor_raw=0 roof=-65536 (roof-acc=-62187 floor-acc=3349)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6913 floor_raw=0 roof=-65536 (roof-acc=-58623 floor-acc=6913)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3288 floor_raw=0 roof=-65536 (roof-acc=-62248 floor-acc=3288)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6854 floor_raw=0 roof=-65536 (roof-acc=-58682 floor-acc=6854)
+[REND] bullet slot=0 DRAWING z=214
+[REND] bullet slot=1 DRAWING z=80
+[REND] bullet slot=0 DRAWING z=214
+[REND] bullet slot=1 DRAWING z=80
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3227 floor_raw=0 roof=-65536 (roof-acc=-62309 floor-acc=3227)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6795 floor_raw=0 roof=-65536 (roof-acc=-58741 floor-acc=6795)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3166 floor_raw=0 roof=-65536 (roof-acc=-62370 floor-acc=3166)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6736 floor_raw=0 roof=-65536 (roof-acc=-58800 floor-acc=6736)
+[REND] bullet slot=0 DRAWING z=222
+[REND] bullet slot=1 DRAWING z=88
+[REND] bullet slot=0 DRAWING z=222
+[REND] bullet slot=1 DRAWING z=88
+[REND] bullet slot=0 DRAWING z=222
+[REND] bullet slot=1 DRAWING z=88
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3105 floor_raw=0 roof=-65536 (roof-acc=-62431 floor-acc=3105)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6677 floor_raw=0 roof=-65536 (roof-acc=-58859 floor-acc=6677)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-3044 floor_raw=0 roof=-65536 (roof-acc=-62492 floor-acc=3044)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6618 floor_raw=0 roof=-65536 (roof-acc=-58918 floor-acc=6618)
+[REND] bullet slot=0 DRAWING z=229
+[REND] bullet slot=1 DRAWING z=95
+[REND] bullet slot=0 DRAWING z=229
+[REND] bullet slot=1 DRAWING z=95
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2983 floor_raw=0 roof=-65536 (roof-acc=-62553 floor-acc=2983)
+[BULLET-UPDATE] cid=79 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6559 floor_raw=0 roof=-65536 (roof-acc=-58977 floor-acc=6559)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2922 floor_raw=0 roof=-65536 (roof-acc=-62614 floor-acc=2922)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6500 floor_raw=0 roof=-65536 (roof-acc=-59036 floor-acc=6500)
+[REND] bullet slot=0 DRAWING z=237
+[REND] bullet slot=1 DRAWING z=103
+[REND] bullet slot=0 DRAWING z=237
+[REND] bullet slot=1 DRAWING z=103
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2861 floor_raw=0 roof=-65536 (roof-acc=-62675 floor-acc=2861)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6441 floor_raw=0 roof=-65536 (roof-acc=-59095 floor-acc=6441)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2800 floor_raw=0 roof=-65536 (roof-acc=-62736 floor-acc=2800)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6382 floor_raw=0 roof=-65536 (roof-acc=-59154 floor-acc=6382)
+[REND] bullet slot=0 DRAWING z=245
+[REND] bullet slot=1 DRAWING z=111
+[REND] bullet slot=0 DRAWING z=245
+[REND] bullet slot=1 DRAWING z=111
+[REND] bullet slot=0 DRAWING z=245
+[REND] bullet slot=1 DRAWING z=111
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2739 floor_raw=0 roof=-65536 (roof-acc=-62797 floor-acc=2739)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6323 floor_raw=0 roof=-65536 (roof-acc=-59213 floor-acc=6323)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2678 floor_raw=0 roof=-65536 (roof-acc=-62858 floor-acc=2678)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6264 floor_raw=0 roof=-65536 (roof-acc=-59272 floor-acc=6264)
+[REND] bullet slot=0 DRAWING z=252
+[REND] bullet slot=1 DRAWING z=118
+[REND] bullet slot=0 DRAWING z=252
+[REND] bullet slot=1 DRAWING z=118
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2617 floor_raw=0 roof=-65536 (roof-acc=-62919 floor-acc=2617)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6205 floor_raw=0 roof=-65536 (roof-acc=-59331 floor-acc=6205)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2556 floor_raw=0 roof=-65536 (roof-acc=-62980 floor-acc=2556)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6146 floor_raw=0 roof=-65536 (roof-acc=-59390 floor-acc=6146)
+[REND] bullet slot=0 DRAWING z=260
+[REND] bullet slot=1 DRAWING z=126
+[REND] bullet slot=0 DRAWING z=260
+[REND] bullet slot=1 DRAWING z=126
+[REND] bullet slot=0 DRAWING z=260
+[REND] bullet slot=1 DRAWING z=126
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2495 floor_raw=0 roof=-65536 (roof-acc=-63041 floor-acc=2495)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6087 floor_raw=0 roof=-65536 (roof-acc=-59449 floor-acc=6087)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2434 floor_raw=0 roof=-65536 (roof-acc=-63102 floor-acc=2434)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6028 floor_raw=0 roof=-65536 (roof-acc=-59508 floor-acc=6028)
+[REND] bullet slot=0 DRAWING z=268
+[REND] bullet slot=1 DRAWING z=135
+[REND] bullet slot=0 DRAWING z=268
+[REND] bullet slot=1 DRAWING z=135
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2373 floor_raw=0 roof=-65536 (roof-acc=-63163 floor-acc=2373)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5969 floor_raw=0 roof=-65536 (roof-acc=-59567 floor-acc=5969)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2312 floor_raw=0 roof=-65536 (roof-acc=-63224 floor-acc=2312)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5910 floor_raw=0 roof=-65536 (roof-acc=-59626 floor-acc=5910)
+[REND] bullet slot=0 DRAWING z=276
+[REND] bullet slot=1 DRAWING z=143
+[REND] bullet slot=0 DRAWING z=276
+[REND] bullet slot=1 DRAWING z=143
+[REND] bullet slot=0 DRAWING z=276
+[REND] bullet slot=1 DRAWING z=143
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2251 floor_raw=0 roof=-65536 (roof-acc=-63285 floor-acc=2251)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5851 floor_raw=0 roof=-65536 (roof-acc=-59685 floor-acc=5851)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2190 floor_raw=0 roof=-65536 (roof-acc=-63346 floor-acc=2190)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5792 floor_raw=0 roof=-65536 (roof-acc=-59744 floor-acc=5792)
+[REND] bullet slot=0 DRAWING z=283
+[REND] bullet slot=1 DRAWING z=150
+[REND] bullet slot=0 DRAWING z=283
+[REND] bullet slot=1 DRAWING z=150
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2129 floor_raw=0 roof=-65536 (roof-acc=-63407 floor-acc=2129)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5733 floor_raw=0 roof=-65536 (roof-acc=-59803 floor-acc=5733)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-2068 floor_raw=0 roof=-65536 (roof-acc=-63468 floor-acc=2068)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5674 floor_raw=0 roof=-65536 (roof-acc=-59862 floor-acc=5674)
+[REND] bullet slot=0 DRAWING z=291
+[REND] bullet slot=1 DRAWING z=158
+[REND] bullet slot=0 DRAWING z=291
+[REND] bullet slot=1 DRAWING z=158
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2007 floor_raw=0 roof=-65536 (roof-acc=-63529 floor-acc=2007)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5615 floor_raw=0 roof=-65536 (roof-acc=-59921 floor-acc=5615)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1946 floor_raw=0 roof=-65536 (roof-acc=-63590 floor-acc=1946)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5556 floor_raw=0 roof=-65536 (roof-acc=-59980 floor-acc=5556)
+[REND] bullet slot=0 DRAWING z=299
+[REND] bullet slot=1 DRAWING z=166
+[REND] bullet slot=0 DRAWING z=299
+[REND] bullet slot=1 DRAWING z=166
+[REND] bullet slot=0 DRAWING z=299
+[REND] bullet slot=1 DRAWING z=166
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1885 floor_raw=0 roof=-65536 (roof-acc=-63651 floor-acc=1885)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5497 floor_raw=0 roof=-65536 (roof-acc=-60039 floor-acc=5497)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1824 floor_raw=0 roof=-65536 (roof-acc=-63712 floor-acc=1824)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5438 floor_raw=0 roof=-65536 (roof-acc=-60098 floor-acc=5438)
+[REND] bullet slot=0 DRAWING z=307
+[REND] bullet slot=1 DRAWING z=174
+[REND] bullet slot=0 DRAWING z=307
+[REND] bullet slot=1 DRAWING z=174
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1763 floor_raw=0 roof=-65536 (roof-acc=-63773 floor-acc=1763)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5379 floor_raw=0 roof=-65536 (roof-acc=-60157 floor-acc=5379)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1702 floor_raw=0 roof=-65536 (roof-acc=-63834 floor-acc=1702)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5320 floor_raw=0 roof=-65536 (roof-acc=-60216 floor-acc=5320)
+[REND] bullet slot=0 DRAWING z=315
+[REND] bullet slot=1 DRAWING z=181
+[REND] bullet slot=0 DRAWING z=315
+[REND] bullet slot=1 DRAWING z=181
+[REND] bullet slot=0 DRAWING z=315
+[REND] bullet slot=1 DRAWING z=181
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1641 floor_raw=0 roof=-65536 (roof-acc=-63895 floor-acc=1641)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5261 floor_raw=0 roof=-65536 (roof-acc=-60275 floor-acc=5261)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1580 floor_raw=0 roof=-65536 (roof-acc=-63956 floor-acc=1580)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5202 floor_raw=0 roof=-65536 (roof-acc=-60334 floor-acc=5202)
+[REND] bullet slot=0 DRAWING z=323
+[REND] bullet slot=1 DRAWING z=189
+[REND] bullet slot=0 DRAWING z=323
+[REND] bullet slot=1 DRAWING z=189
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1519 floor_raw=0 roof=-65536 (roof-acc=-64017 floor-acc=1519)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5143 floor_raw=0 roof=-65536 (roof-acc=-60393 floor-acc=5143)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1458 floor_raw=0 roof=-65536 (roof-acc=-64078 floor-acc=1458)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5084 floor_raw=0 roof=-65536 (roof-acc=-60452 floor-acc=5084)
+[REND] bullet slot=0 DRAWING z=331
+[REND] bullet slot=1 DRAWING z=197
+[REND] bullet slot=0 DRAWING z=331
+[REND] bullet slot=1 DRAWING z=197
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1397 floor_raw=0 roof=-65536 (roof-acc=-64139 floor-acc=1397)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5025 floor_raw=0 roof=-65536 (roof-acc=-60511 floor-acc=5025)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1336 floor_raw=0 roof=-65536 (roof-acc=-64200 floor-acc=1336)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4966 floor_raw=0 roof=-65536 (roof-acc=-60570 floor-acc=4966)
+[REND] bullet slot=0 DRAWING z=339
+[REND] bullet slot=1 DRAWING z=205
+[REND] bullet slot=0 DRAWING z=339
+[REND] bullet slot=1 DRAWING z=205
+[REND] bullet slot=0 DRAWING z=339
+[REND] bullet slot=1 DRAWING z=205
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1275 floor_raw=0 roof=-65536 (roof-acc=-64261 floor-acc=1275)
+[BULLET-Y] KILLED by floor
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4907 floor_raw=0 roof=-65536 (roof-acc=-60629 floor-acc=4907)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4848 floor_raw=0 roof=-65536 (roof-acc=-60688 floor-acc=4848)
+[REND] bullet slot=1 DRAWING z=213
+[REND] bullet slot=1 DRAWING z=213
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4789 floor_raw=0 roof=-65536 (roof-acc=-60747 floor-acc=4789)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4730 floor_raw=0 roof=-65536 (roof-acc=-60806 floor-acc=4730)
+[REND] bullet slot=1 DRAWING z=221
+[REND] bullet slot=1 DRAWING z=221
+[REND] bullet slot=1 DRAWING z=221
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4671 floor_raw=0 roof=-65536 (roof-acc=-60865 floor-acc=4671)
+[BULLET-UPDATE] cid=79 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4612 floor_raw=0 roof=-65536 (roof-acc=-60924 floor-acc=4612)
+[REND] bullet slot=1 DRAWING z=229
+[REND] bullet slot=1 DRAWING z=229
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4553 floor_raw=0 roof=-65536 (roof-acc=-60983 floor-acc=4553)
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4494 floor_raw=0 roof=-65536 (roof-acc=-61042 floor-acc=4494)
+[REND] bullet slot=1 DRAWING z=236
+[REND] bullet slot=1 DRAWING z=236
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4435 floor_raw=0 roof=-65536 (roof-acc=-61101 floor-acc=4435)
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4376 floor_raw=0 roof=-65536 (roof-acc=-61160 floor-acc=4376)
+[REND] bullet slot=1 DRAWING z=244
+[REND] bullet slot=1 DRAWING z=244
+[REND] bullet slot=1 DRAWING z=244
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4317 floor_raw=0 roof=-65536 (roof-acc=-61219 floor-acc=4317)
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4258 floor_raw=0 roof=-65536 (roof-acc=-61278 floor-acc=4258)
+[REND] bullet slot=1 DRAWING z=252
+[REND] bullet slot=1 DRAWING z=252
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4199 floor_raw=0 roof=-65536 (roof-acc=-61337 floor-acc=4199)
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4140 floor_raw=0 roof=-65536 (roof-acc=-61396 floor-acc=4140)
+[REND] bullet slot=1 DRAWING z=260
+[REND] bullet slot=1 DRAWING z=260
+[REND] bullet slot=1 DRAWING z=260
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4081 floor_raw=0 roof=-65536 (roof-acc=-61455 floor-acc=4081)
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4022 floor_raw=0 roof=-65536 (roof-acc=-61514 floor-acc=4022)
+[REND] bullet slot=1 DRAWING z=268
+[REND] bullet slot=1 DRAWING z=268
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3963 floor_raw=0 roof=-65536 (roof-acc=-61573 floor-acc=3963)
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3904 floor_raw=0 roof=-65536 (roof-acc=-61632 floor-acc=3904)
+[REND] bullet slot=1 DRAWING z=276
+[REND] bullet slot=1 DRAWING z=276
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3845 floor_raw=0 roof=-65536 (roof-acc=-61691 floor-acc=3845)
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3786 floor_raw=0 roof=-65536 (roof-acc=-61750 floor-acc=3786)
+[REND] bullet slot=1 DRAWING z=284
+[REND] bullet slot=1 DRAWING z=284
+[REND] bullet slot=1 DRAWING z=284
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3727 floor_raw=0 roof=-65536 (roof-acc=-61809 floor-acc=3727)
+[BULLET-UPDATE] cid=79 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3668 floor_raw=0 roof=-65536 (roof-acc=-61868 floor-acc=3668)
+[REND] bullet slot=1 DRAWING z=292
+[REND] bullet slot=1 DRAWING z=292
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3609 floor_raw=0 roof=-65536 (roof-acc=-61927 floor-acc=3609)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3550 floor_raw=0 roof=-65536 (roof-acc=-61986 floor-acc=3550)
+[REND] bullet slot=1 DRAWING z=300
+[REND] bullet slot=1 DRAWING z=300
+[REND] bullet slot=1 DRAWING z=300
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3491 floor_raw=0 roof=-65536 (roof-acc=-62045 floor-acc=3491)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3432 floor_raw=0 roof=-65536 (roof-acc=-62104 floor-acc=3432)
+[REND] bullet slot=1 DRAWING z=308
+[REND] bullet slot=1 DRAWING z=308
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3373 floor_raw=0 roof=-65536 (roof-acc=-62163 floor-acc=3373)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3314 floor_raw=0 roof=-65536 (roof-acc=-62222 floor-acc=3314)
+[REND] bullet slot=1 DRAWING z=315
+[REND] bullet slot=1 DRAWING z=315
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3255 floor_raw=0 roof=-65536 (roof-acc=-62281 floor-acc=3255)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3196 floor_raw=0 roof=-65536 (roof-acc=-62340 floor-acc=3196)
+[REND] bullet slot=1 DRAWING z=323
+[REND] bullet slot=1 DRAWING z=323
+[REND] bullet slot=1 DRAWING z=323
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3137 floor_raw=0 roof=-65536 (roof-acc=-62399 floor-acc=3137)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3078 floor_raw=0 roof=-65536 (roof-acc=-62458 floor-acc=3078)
+[REND] bullet slot=1 DRAWING z=331
+[REND] bullet slot=1 DRAWING z=331
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3019 floor_raw=0 roof=-65536 (roof-acc=-62517 floor-acc=3019)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2960 floor_raw=0 roof=-65536 (roof-acc=-62576 floor-acc=2960)
+[REND] bullet slot=1 DRAWING z=339
+[REND] bullet slot=1 DRAWING z=339
+[REND] bullet slot=1 DRAWING z=339
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2901 floor_raw=0 roof=-65536 (roof-acc=-62635 floor-acc=2901)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2842 floor_raw=0 roof=-65536 (roof-acc=-62694 floor-acc=2842)
+[REND] bullet slot=1 DRAWING z=347
+[REND] bullet slot=1 DRAWING z=347
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2783 floor_raw=0 roof=-65536 (roof-acc=-62753 floor-acc=2783)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2724 floor_raw=0 roof=-65536 (roof-acc=-62812 floor-acc=2724)
+[REND] bullet slot=1 DRAWING z=355
+[REND] bullet slot=1 DRAWING z=355
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2665 floor_raw=0 roof=-65536 (roof-acc=-62871 floor-acc=2665)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2606 floor_raw=0 roof=-65536 (roof-acc=-62930 floor-acc=2606)
+[REND] bullet slot=1 DRAWING z=363
+[REND] bullet slot=1 DRAWING z=363
+[REND] bullet slot=1 DRAWING z=363
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2547 floor_raw=0 roof=-65536 (roof-acc=-62989 floor-acc=2547)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2488 floor_raw=0 roof=-65536 (roof-acc=-63048 floor-acc=2488)
+[REND] bullet slot=1 DRAWING z=371
+[REND] bullet slot=1 DRAWING z=371
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2429 floor_raw=0 roof=-65536 (roof-acc=-63107 floor-acc=2429)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2370 floor_raw=0 roof=-65536 (roof-acc=-63166 floor-acc=2370)
+[REND] bullet slot=1 DRAWING z=379
+[REND] bullet slot=1 DRAWING z=379
+[REND] bullet slot=1 DRAWING z=379
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2311 floor_raw=0 roof=-65536 (roof-acc=-63225 floor-acc=2311)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2252 floor_raw=0 roof=-65536 (roof-acc=-63284 floor-acc=2252)
+[REND] bullet slot=1 DRAWING z=387
+[REND] bullet slot=1 DRAWING z=387
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2193 floor_raw=0 roof=-65536 (roof-acc=-63343 floor-acc=2193)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2134 floor_raw=0 roof=-65536 (roof-acc=-63402 floor-acc=2134)
+[REND] bullet slot=1 DRAWING z=395
+[REND] bullet slot=1 DRAWING z=395
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2075 floor_raw=0 roof=-65536 (roof-acc=-63461 floor-acc=2075)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2016 floor_raw=0 roof=-65536 (roof-acc=-63520 floor-acc=2016)
+[REND] bullet slot=1 DRAWING z=403
+[REND] bullet slot=1 DRAWING z=403
+[REND] bullet slot=1 DRAWING z=403
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1957 floor_raw=0 roof=-65536 (roof-acc=-63579 floor-acc=1957)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1898 floor_raw=0 roof=-65536 (roof-acc=-63638 floor-acc=1898)
+[REND] bullet slot=1 DRAWING z=411
+[REND] bullet slot=1 DRAWING z=411
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1839 floor_raw=0 roof=-65536 (roof-acc=-63697 floor-acc=1839)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1780 floor_raw=0 roof=-65536 (roof-acc=-63756 floor-acc=1780)
+[REND] bullet slot=1 DRAWING z=419
+[REND] bullet slot=1 DRAWING z=419
+[REND] bullet slot=1 DRAWING z=419
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1721 floor_raw=0 roof=-65536 (roof-acc=-63815 floor-acc=1721)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1662 floor_raw=0 roof=-65536 (roof-acc=-63874 floor-acc=1662)
+[REND] bullet slot=1 DRAWING z=427
+[REND] bullet slot=1 DRAWING z=427
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1603 floor_raw=0 roof=-65536 (roof-acc=-63933 floor-acc=1603)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1544 floor_raw=0 roof=-65536 (roof-acc=-63992 floor-acc=1544)
+[REND] bullet slot=1 DRAWING z=435
+[REND] bullet slot=1 DRAWING z=435
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1485 floor_raw=0 roof=-65536 (roof-acc=-64051 floor-acc=1485)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1426 floor_raw=0 roof=-65536 (roof-acc=-64110 floor-acc=1426)
+[REND] bullet slot=1 DRAWING z=443
+[REND] bullet slot=1 DRAWING z=443
+[REND] bullet slot=1 DRAWING z=443
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1367 floor_raw=0 roof=-65536 (roof-acc=-64169 floor-acc=1367)
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1308 floor_raw=0 roof=-65536 (roof-acc=-64228 floor-acc=1308)
+[REND] bullet slot=1 DRAWING z=451
+[REND] bullet slot=1 DRAWING z=451
+[BULLET-UPDATE] cid=79 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1249 floor_raw=0 roof=-65536 (roof-acc=-64287 floor-acc=1249)
+[BULLET-Y] KILLED by floor
+[BULLET-Y] spawn accypos=-7680 (p_yoff=-10240)
+[BULLET] spawned gun1 cid=78 zone=3 pos=(-706,446) vel=(0,4)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7615 floor_raw=0 roof=-65536 (roof-acc=-57921 floor-acc=7615)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7550 floor_raw=0 roof=-65536 (roof-acc=-57986 floor-acc=7550)
+[REND] bullet slot=0 DRAWING z=39
+[REND] bullet slot=0 DRAWING z=39
+[REND] bullet slot=0 DRAWING z=39
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7485 floor_raw=0 roof=-65536 (roof-acc=-58051 floor-acc=7485)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7420 floor_raw=0 roof=-65536 (roof-acc=-58116 floor-acc=7420)
+[REND] bullet slot=0 DRAWING z=46
+[REND] bullet slot=0 DRAWING z=46
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7355 floor_raw=0 roof=-65536 (roof-acc=-58181 floor-acc=7355)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7290 floor_raw=0 roof=-65536 (roof-acc=-58246 floor-acc=7290)
+[REND] bullet slot=0 DRAWING z=54
+[REND] bullet slot=0 DRAWING z=54
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7225 floor_raw=0 roof=-65536 (roof-acc=-58311 floor-acc=7225)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7160 floor_raw=0 roof=-65536 (roof-acc=-58376 floor-acc=7160)
+[REND] bullet slot=0 DRAWING z=62
+[REND] bullet slot=0 DRAWING z=62
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7095 floor_raw=0 roof=-65536 (roof-acc=-58441 floor-acc=7095)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-7030 floor_raw=0 roof=-65536 (roof-acc=-58506 floor-acc=7030)
+[REND] bullet slot=0 DRAWING z=70
+[REND] bullet slot=0 DRAWING z=70
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6965 floor_raw=0 roof=-65536 (roof-acc=-58571 floor-acc=6965)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6900 floor_raw=0 roof=-65536 (roof-acc=-58636 floor-acc=6900)
+[REND] bullet slot=0 DRAWING z=78
+[REND] bullet slot=0 DRAWING z=78
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6835 floor_raw=0 roof=-65536 (roof-acc=-58701 floor-acc=6835)
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6770 floor_raw=0 roof=-65536 (roof-acc=-58766 floor-acc=6770)
+[REND] bullet slot=0 DRAWING z=86
+[REND] bullet slot=0 DRAWING z=86
+[REND] bullet slot=0 DRAWING z=86
+[BULLET-UPDATE] cid=78 zone=3 vel=(0,4)
+[BULLET-Y] zone=3 accypos=-6705 floor_raw=0 roof=-65536 (roof-acc=-58831 floor-acc=6705)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6640 floor_raw=0 roof=-65536 (roof-acc=-58896 floor-acc=6640)
+[REND] bullet slot=0 DRAWING z=94
+[REND] bullet slot=0 DRAWING z=94
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6575 floor_raw=0 roof=-65536 (roof-acc=-58961 floor-acc=6575)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6510 floor_raw=0 roof=-65536 (roof-acc=-59026 floor-acc=6510)
+[REND] bullet slot=0 DRAWING z=102
+[REND] bullet slot=0 DRAWING z=102
+[REND] bullet slot=0 DRAWING z=102
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6445 floor_raw=0 roof=-65536 (roof-acc=-59091 floor-acc=6445)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6380 floor_raw=0 roof=-65536 (roof-acc=-59156 floor-acc=6380)
+[REND] bullet slot=0 DRAWING z=110
+[REND] bullet slot=0 DRAWING z=110
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6315 floor_raw=0 roof=-65536 (roof-acc=-59221 floor-acc=6315)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6250 floor_raw=0 roof=-65536 (roof-acc=-59286 floor-acc=6250)
+[REND] bullet slot=0 DRAWING z=118
+[REND] bullet slot=0 DRAWING z=118
+[REND] bullet slot=0 DRAWING z=118
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6185 floor_raw=0 roof=-65536 (roof-acc=-59351 floor-acc=6185)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6120 floor_raw=0 roof=-65536 (roof-acc=-59416 floor-acc=6120)
+[REND] bullet slot=0 DRAWING z=126
+[REND] bullet slot=0 DRAWING z=126
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-6055 floor_raw=0 roof=-65536 (roof-acc=-59481 floor-acc=6055)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5990 floor_raw=0 roof=-65536 (roof-acc=-59546 floor-acc=5990)
+[REND] bullet slot=0 DRAWING z=134
+[REND] bullet slot=0 DRAWING z=134
+[REND] bullet slot=0 DRAWING z=134
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5925 floor_raw=0 roof=-65536 (roof-acc=-59611 floor-acc=5925)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5860 floor_raw=0 roof=-65536 (roof-acc=-59676 floor-acc=5860)
+[REND] bullet slot=0 DRAWING z=142
+[REND] bullet slot=0 DRAWING z=142
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5795 floor_raw=0 roof=-65536 (roof-acc=-59741 floor-acc=5795)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5730 floor_raw=0 roof=-65536 (roof-acc=-59806 floor-acc=5730)
+[REND] bullet slot=0 DRAWING z=150
+[REND] bullet slot=0 DRAWING z=150
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5665 floor_raw=0 roof=-65536 (roof-acc=-59871 floor-acc=5665)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5600 floor_raw=0 roof=-65536 (roof-acc=-59936 floor-acc=5600)
+[REND] bullet slot=0 DRAWING z=158
+[REND] bullet slot=0 DRAWING z=158
+[REND] bullet slot=0 DRAWING z=158
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5535 floor_raw=0 roof=-65536 (roof-acc=-60001 floor-acc=5535)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5470 floor_raw=0 roof=-65536 (roof-acc=-60066 floor-acc=5470)
+[REND] bullet slot=0 DRAWING z=166
+[REND] bullet slot=0 DRAWING z=166
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5405 floor_raw=0 roof=-65536 (roof-acc=-60131 floor-acc=5405)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5340 floor_raw=0 roof=-65536 (roof-acc=-60196 floor-acc=5340)
+[REND] bullet slot=0 DRAWING z=174
+[REND] bullet slot=0 DRAWING z=174
+[REND] bullet slot=0 DRAWING z=174
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5275 floor_raw=0 roof=-65536 (roof-acc=-60261 floor-acc=5275)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5210 floor_raw=0 roof=-65536 (roof-acc=-60326 floor-acc=5210)
+[REND] bullet slot=0 DRAWING z=182
+[REND] bullet slot=0 DRAWING z=182
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5145 floor_raw=0 roof=-65536 (roof-acc=-60391 floor-acc=5145)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5080 floor_raw=0 roof=-65536 (roof-acc=-60456 floor-acc=5080)
+[REND] bullet slot=0 DRAWING z=190
+[REND] bullet slot=0 DRAWING z=190
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-5015 floor_raw=0 roof=-65536 (roof-acc=-60521 floor-acc=5015)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4950 floor_raw=0 roof=-65536 (roof-acc=-60586 floor-acc=4950)
+[REND] bullet slot=0 DRAWING z=198
+[REND] bullet slot=0 DRAWING z=198
+[REND] bullet slot=0 DRAWING z=198
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4885 floor_raw=0 roof=-65536 (roof-acc=-60651 floor-acc=4885)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4820 floor_raw=0 roof=-65536 (roof-acc=-60716 floor-acc=4820)
+[REND] bullet slot=0 DRAWING z=206
+[REND] bullet slot=0 DRAWING z=206
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4755 floor_raw=0 roof=-65536 (roof-acc=-60781 floor-acc=4755)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4690 floor_raw=0 roof=-65536 (roof-acc=-60846 floor-acc=4690)
+[REND] bullet slot=0 DRAWING z=214
+[REND] bullet slot=0 DRAWING z=214
+[REND] bullet slot=0 DRAWING z=214
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4625 floor_raw=0 roof=-65536 (roof-acc=-60911 floor-acc=4625)
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4560 floor_raw=0 roof=-65536 (roof-acc=-60976 floor-acc=4560)
+[REND] bullet slot=0 DRAWING z=222
+[REND] bullet slot=0 DRAWING z=222
+[BULLET-UPDATE] cid=78 zone=4 vel=(0,4)
+[BULLET-Y] zone=4 accypos=-4495 floor_raw=0 roof=-65536 (roof-acc=-61041 floor-acc=4495)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4430 floor_raw=0 roof=-65536 (roof-acc=-61106 floor-acc=4430)
+[REND] bullet slot=0 DRAWING z=230
+[REND] bullet slot=0 DRAWING z=230
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4365 floor_raw=0 roof=-65536 (roof-acc=-61171 floor-acc=4365)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4300 floor_raw=0 roof=-65536 (roof-acc=-61236 floor-acc=4300)
+[REND] bullet slot=0 DRAWING z=238
+[REND] bullet slot=0 DRAWING z=238
+[REND] bullet slot=0 DRAWING z=238
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4235 floor_raw=0 roof=-65536 (roof-acc=-61301 floor-acc=4235)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4170 floor_raw=0 roof=-65536 (roof-acc=-61366 floor-acc=4170)
+[REND] bullet slot=0 DRAWING z=245
+[REND] bullet slot=0 DRAWING z=245
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4105 floor_raw=0 roof=-65536 (roof-acc=-61431 floor-acc=4105)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-4040 floor_raw=0 roof=-65536 (roof-acc=-61496 floor-acc=4040)
+[REND] bullet slot=0 DRAWING z=253
+[REND] bullet slot=0 DRAWING z=253
+[REND] bullet slot=0 DRAWING z=253
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3975 floor_raw=0 roof=-65536 (roof-acc=-61561 floor-acc=3975)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3910 floor_raw=0 roof=-65536 (roof-acc=-61626 floor-acc=3910)
+[REND] bullet slot=0 DRAWING z=260
+[REND] bullet slot=0 DRAWING z=260
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3845 floor_raw=0 roof=-65536 (roof-acc=-61691 floor-acc=3845)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3780 floor_raw=0 roof=-65536 (roof-acc=-61756 floor-acc=3780)
+[REND] bullet slot=0 DRAWING z=264
+[REND] bullet slot=0 DRAWING z=264
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3715 floor_raw=0 roof=-65536 (roof-acc=-61821 floor-acc=3715)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3650 floor_raw=0 roof=-65536 (roof-acc=-61886 floor-acc=3650)
+[REND] bullet slot=0 DRAWING z=267
+[REND] bullet slot=0 DRAWING z=267
+[REND] bullet slot=0 DRAWING z=267
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3585 floor_raw=0 roof=-65536 (roof-acc=-61951 floor-acc=3585)
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3520 floor_raw=0 roof=-65536 (roof-acc=-62016 floor-acc=3520)
+[REND] bullet slot=0 DRAWING z=266
+[REND] bullet slot=0 DRAWING z=266
+[BULLET-UPDATE] cid=78 zone=5 vel=(0,4)
+[BULLET-Y] zone=5 accypos=-3455 floor_raw=0 roof=-65536 (roof-acc=-62081 floor-acc=3455)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3390 floor_raw=0 roof=-65536 (roof-acc=-62146 floor-acc=3390)
+[REND] bullet slot=0 DRAWING z=265
+[REND] bullet slot=0 DRAWING z=265
+[REND] bullet slot=0 DRAWING z=265
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3325 floor_raw=0 roof=-65536 (roof-acc=-62211 floor-acc=3325)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3260 floor_raw=0 roof=-65536 (roof-acc=-62276 floor-acc=3260)
+[REND] bullet slot=0 DRAWING z=265
+[REND] bullet slot=0 DRAWING z=265
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3195 floor_raw=0 roof=-65536 (roof-acc=-62341 floor-acc=3195)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3130 floor_raw=0 roof=-65536 (roof-acc=-62406 floor-acc=3130)
+[REND] bullet slot=0 DRAWING z=265
+[REND] bullet slot=0 DRAWING z=265
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3065 floor_raw=0 roof=-65536 (roof-acc=-62471 floor-acc=3065)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-3000 floor_raw=0 roof=-65536 (roof-acc=-62536 floor-acc=3000)
+[REND] bullet slot=0 DRAWING z=260
+[REND] bullet slot=0 DRAWING z=260
+[REND] bullet slot=0 DRAWING z=260
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2935 floor_raw=0 roof=-65536 (roof-acc=-62601 floor-acc=2935)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2870 floor_raw=0 roof=-65536 (roof-acc=-62666 floor-acc=2870)
+[REND] bullet slot=0 DRAWING z=251
+[REND] bullet slot=0 DRAWING z=251
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2805 floor_raw=0 roof=-65536 (roof-acc=-62731 floor-acc=2805)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2740 floor_raw=0 roof=-65536 (roof-acc=-62796 floor-acc=2740)
+[REND] bullet slot=0 DRAWING z=246
+[REND] bullet slot=0 DRAWING z=246
+[REND] bullet slot=0 DRAWING z=246
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2675 floor_raw=0 roof=-65536 (roof-acc=-62861 floor-acc=2675)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2610 floor_raw=0 roof=-65536 (roof-acc=-62926 floor-acc=2610)
+[REND] bullet slot=0 DRAWING z=247
+[REND] bullet slot=0 DRAWING z=247
+[Game] Player zone: 3
+[Game]   exit fline 14: x=-864 z=64 xlen=0 zlen=576 connect=-1 ->zone_idx=-1 length=576 normal=5356 away=0
+[Game]   exit fline 15: x=-864 z=640 xlen=64 zlen=0 connect=-1 ->zone_idx=-1 length=64 normal=-4884 away=0
+[Game]   exit fline 16: x=-800 z=640 xlen=224 zlen=-320 connect=4 ->zone_idx=4 length=390 normal=-6908 away=0
+[Game]   exit fline 17: x=-576 z=320 xlen=0 zlen=-256 connect=-1 ->zone_idx=-1 length=256 normal=-5100 away=0
+[Game]   exit fline 18: x=-576 z=64 xlen=-288 zlen=0 connect=-1 ->zone_idx=-1 length=288 normal=5140 away=0
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2545 floor_raw=0 roof=-65536 (roof-acc=-62991 floor-acc=2545)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2480 floor_raw=0 roof=-65536 (roof-acc=-63056 floor-acc=2480)
+[REND] bullet slot=0 DRAWING z=252
+[REND] bullet slot=0 DRAWING z=252
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2415 floor_raw=0 roof=-65536 (roof-acc=-63121 floor-acc=2415)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2350 floor_raw=0 roof=-65536 (roof-acc=-63186 floor-acc=2350)
+[REND] bullet slot=0 DRAWING z=258
+[REND] bullet slot=0 DRAWING z=258
+[REND] bullet slot=0 DRAWING z=258
+[BULLET-Y] spawn accypos=-7680 (p_yoff=-10240)
+[BULLET] spawned gun1 cid=79 zone=3 pos=(-664,428) vel=(3,3)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2285 floor_raw=0 roof=-65536 (roof-acc=-63251 floor-acc=2285)
+[BULLET-UPDATE] cid=79 zone=3 vel=(3,3)
+[BULLET-Y] zone=3 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2220 floor_raw=0 roof=-65536 (roof-acc=-63316 floor-acc=2220)
+[BULLET-UPDATE] cid=79 zone=3 vel=(3,3)
+[BULLET-Y] zone=3 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=0 DRAWING z=263
+[REND] bullet slot=1 DRAWING z=39
+[REND] bullet slot=0 DRAWING z=263
+[REND] bullet slot=1 DRAWING z=39
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2155 floor_raw=0 roof=-65536 (roof-acc=-63381 floor-acc=2155)
+[BULLET-UPDATE] cid=79 zone=3 vel=(3,3)
+[BULLET-Y] zone=3 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2090 floor_raw=0 roof=-65536 (roof-acc=-63446 floor-acc=2090)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=0 DRAWING z=269
+[REND] bullet slot=1 DRAWING z=48
+[REND] bullet slot=0 DRAWING z=269
+[REND] bullet slot=1 DRAWING z=48
+[REND] bullet slot=0 DRAWING z=269
+[REND] bullet slot=1 DRAWING z=48
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-2025 floor_raw=0 roof=-65536 (roof-acc=-63511 floor-acc=2025)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1960 floor_raw=0 roof=-65536 (roof-acc=-63576 floor-acc=1960)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=0 DRAWING z=275
+[REND] bullet slot=1 DRAWING z=55
+[REND] bullet slot=0 DRAWING z=275
+[REND] bullet slot=1 DRAWING z=55
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1895 floor_raw=0 roof=-65536 (roof-acc=-63641 floor-acc=1895)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1830 floor_raw=0 roof=-65536 (roof-acc=-63706 floor-acc=1830)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=0 DRAWING z=281
+[REND] bullet slot=1 DRAWING z=64
+[REND] bullet slot=0 DRAWING z=281
+[REND] bullet slot=1 DRAWING z=64
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1765 floor_raw=0 roof=-65536 (roof-acc=-63771 floor-acc=1765)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1700 floor_raw=0 roof=-65536 (roof-acc=-63836 floor-acc=1700)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=0 DRAWING z=286
+[REND] bullet slot=1 DRAWING z=72
+[REND] bullet slot=0 DRAWING z=286
+[REND] bullet slot=1 DRAWING z=72
+[REND] bullet slot=0 DRAWING z=286
+[REND] bullet slot=1 DRAWING z=72
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1635 floor_raw=0 roof=-65536 (roof-acc=-63901 floor-acc=1635)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1570 floor_raw=0 roof=-65536 (roof-acc=-63966 floor-acc=1570)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=0 DRAWING z=292
+[REND] bullet slot=1 DRAWING z=80
+[REND] bullet slot=0 DRAWING z=292
+[REND] bullet slot=1 DRAWING z=80
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1505 floor_raw=0 roof=-65536 (roof-acc=-64031 floor-acc=1505)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1440 floor_raw=0 roof=-65536 (roof-acc=-64096 floor-acc=1440)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=0 DRAWING z=298
+[REND] bullet slot=1 DRAWING z=89
+[REND] bullet slot=0 DRAWING z=298
+[REND] bullet slot=1 DRAWING z=89
+[REND] bullet slot=0 DRAWING z=298
+[REND] bullet slot=1 DRAWING z=89
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1375 floor_raw=0 roof=-65536 (roof-acc=-64161 floor-acc=1375)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1310 floor_raw=0 roof=-65536 (roof-acc=-64226 floor-acc=1310)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=0 DRAWING z=303
+[REND] bullet slot=1 DRAWING z=97
+[REND] bullet slot=0 DRAWING z=303
+[REND] bullet slot=1 DRAWING z=97
+[BULLET-UPDATE] cid=78 zone=6 vel=(0,4)
+[BULLET-Y] zone=6 accypos=-1245 floor_raw=0 roof=-65536 (roof-acc=-64291 floor-acc=1245)
+[BULLET-Y] KILLED by floor
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=105
+[REND] bullet slot=1 DRAWING z=105
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=114
+[REND] bullet slot=1 DRAWING z=114
+[REND] bullet slot=1 DRAWING z=114
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=122
+[REND] bullet slot=1 DRAWING z=122
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=131
+[REND] bullet slot=1 DRAWING z=131
+[REND] bullet slot=1 DRAWING z=131
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=138
+[REND] bullet slot=1 DRAWING z=138
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=146
+[REND] bullet slot=1 DRAWING z=146
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=153
+[REND] bullet slot=1 DRAWING z=153
+[REND] bullet slot=1 DRAWING z=153
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=160
+[REND] bullet slot=1 DRAWING z=160
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=167
+[REND] bullet slot=1 DRAWING z=167
+[REND] bullet slot=1 DRAWING z=167
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=172
+[REND] bullet slot=1 DRAWING z=172
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=178
+[REND] bullet slot=1 DRAWING z=178
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=184
+[REND] bullet slot=1 DRAWING z=184
+[REND] bullet slot=1 DRAWING z=184
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=189
+[REND] bullet slot=1 DRAWING z=189
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=195
+[REND] bullet slot=1 DRAWING z=195
+[REND] bullet slot=1 DRAWING z=195
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=201
+[REND] bullet slot=1 DRAWING z=201
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=206
+[REND] bullet slot=1 DRAWING z=206
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=211
+[REND] bullet slot=1 DRAWING z=211
+[REND] bullet slot=1 DRAWING z=211
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=216
+[REND] bullet slot=1 DRAWING z=216
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=221
+[REND] bullet slot=1 DRAWING z=221
+[REND] bullet slot=1 DRAWING z=221
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=227
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=231
+[REND] bullet slot=1 DRAWING z=231
+[REND] bullet slot=1 DRAWING z=231
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=236
+[REND] bullet slot=1 DRAWING z=236
+[REND] bullet slot=1 DRAWING z=236
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=241
+[REND] bullet slot=1 DRAWING z=241
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=246
+[REND] bullet slot=1 DRAWING z=246
+[REND] bullet slot=1 DRAWING z=246
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=250
+[REND] bullet slot=1 DRAWING z=250
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=255
+[REND] bullet slot=1 DRAWING z=255
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=260
+[REND] bullet slot=1 DRAWING z=260
+[REND] bullet slot=1 DRAWING z=260
+[BULLET-UPDATE] cid=79 zone=4 vel=(3,3)
+[BULLET-Y] zone=4 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=265
+[REND] bullet slot=1 DRAWING z=265
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=269
+[REND] bullet slot=1 DRAWING z=269
+[REND] bullet slot=1 DRAWING z=269
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=273
+[REND] bullet slot=1 DRAWING z=273
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=278
+[REND] bullet slot=1 DRAWING z=278
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=282
+[REND] bullet slot=1 DRAWING z=282
+[REND] bullet slot=1 DRAWING z=282
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=287
+[REND] bullet slot=1 DRAWING z=287
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=292
+[REND] bullet slot=1 DRAWING z=292
+[REND] bullet slot=1 DRAWING z=292
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=296
+[REND] bullet slot=1 DRAWING z=296
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=299
+[REND] bullet slot=1 DRAWING z=299
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=302
+[REND] bullet slot=1 DRAWING z=302
+[REND] bullet slot=1 DRAWING z=302
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=304
+[REND] bullet slot=1 DRAWING z=304
+[BULLET-UPDATE] cid=79 zone=5 vel=(3,3)
+[BULLET-Y] zone=5 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=305
+[REND] bullet slot=1 DRAWING z=305
+[REND] bullet slot=1 DRAWING z=305
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=304
+[REND] bullet slot=1 DRAWING z=304
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=300
+[REND] bullet slot=1 DRAWING z=300
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=296
+[REND] bullet slot=1 DRAWING z=296
+[REND] bullet slot=1 DRAWING z=296
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=292
+[REND] bullet slot=1 DRAWING z=292
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=291
+[REND] bullet slot=1 DRAWING z=291
+[REND] bullet slot=1 DRAWING z=291
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=290
+[REND] bullet slot=1 DRAWING z=290
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=289
+[REND] bullet slot=1 DRAWING z=289
+[BULLET-UPDATE] cid=79 zone=6 vel=(3,3)
+[BULLET-Y] zone=6 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=8 vel=(3,3)
+[BULLET-Y] zone=8 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=289
+[REND] bullet slot=1 DRAWING z=289
+[REND] bullet slot=1 DRAWING z=289
+[BULLET-UPDATE] cid=79 zone=8 vel=(3,3)
+[BULLET-Y] zone=8 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=8 vel=(3,3)
+[BULLET-Y] zone=8 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=292
+[REND] bullet slot=1 DRAWING z=292
+[BULLET-UPDATE] cid=79 zone=8 vel=(3,3)
+[BULLET-Y] zone=8 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-UPDATE] cid=79 zone=8 vel=(3,3)
+[BULLET-Y] zone=8 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[REND] bullet slot=1 DRAWING z=294
+[REND] bullet slot=1 DRAWING z=294
+[REND] bullet slot=1 DRAWING z=294
+[BULLET-UPDATE] cid=79 zone=8 vel=(3,3)
+[BULLET-Y] zone=8 accypos=-7680 floor_raw=0 roof=-65536 (roof-acc=-57856 floor-acc=7680)
+[BULLET-Y] KILLED by wall
+[Game] Player zone: 6
+[Game]   exit fline 30: x=-800 z=704 xlen=-64 zlen=0 connect=-1 ->zone_idx=-1 length=64 normal=5140 away=0
+[Game]   exit fline 31: x=-864 z=704 xlen=128 zlen=352 connect=7 ->zone_idx=7 length=374 normal=3047 away=0
+[Game]   exit fline 32: x=-736 z=1056 xlen=288 zlen=0 connect=9 ->zone_idx=9 length=288 normal=-4884 away=0
+[Game]   exit fline 33: x=-448 z=1056 xlen=128 zlen=-352 connect=8 ->zone_idx=8 length=374 normal=-6389 away=0
+[Game]   exit fline 34: x=-320 z=704 xlen=-64 zlen=0 connect=-1 ->zone_idx=-1 length=64 normal=5140 away=0
+[Game]   exit fline 35: x=-384 z=704 xlen=-416 zlen=0 connect=5 ->zone_idx=5 length=416 normal=5140 away=0
+[Game] Player zone: 11
+[Game]   exit fline 56: x=-768 z=1280 xlen=0 zlen=192 connect=17 ->zone_idx=17 length=192 normal=5356 away=0
+[Game]   exit fline 57: x=-768 z=1472 xlen=352 zlen=0 connect=18 ->zone_idx=18 length=352 normal=-4884 away=0
+[Game]   exit fline 58: x=-416 z=1472 xlen=0 zlen=-192 connect=12 ->zone_idx=12 length=192 normal=-5100 away=0
+[Game]   exit fline 59: x=-416 z=1280 xlen=-352 zlen=0 connect=10 ->zone_idx=10 length=352 normal=5140 away=0
+[Game] Player zone: 24
+[Game]   exit fline 108: x=-768 z=1792 xlen=0 zlen=352 connect=25 ->zone_idx=25 length=352 normal=5356 away=0
+[Game]   exit fline 109: x=-768 z=2144 xlen=96 zlen=64 connect=-1 ->zone_idx=-1 length=115 normal=-1051 away=0
+[Game]   exit fline 110: x=-672 z=2208 xlen=160 zlen=0 connect=-1 ->zone_idx=-1 length=160 normal=-4884 away=0
+[Game]   exit fline 111: x=-512 z=2208 xlen=96 zlen=-64 connect=-1 ->zone_idx=-1 length=115 normal=-6661 away=0
+[Game]   exit fline 112: x=-416 z=2144 xlen=0 zlen=-352 connect=26 ->zone_idx=26 length=352 normal=-5100 away=0
+[Game]   exit fline 113: x=-416 z=1792 xlen=-352 zlen=0 connect=23 ->zone_idx=23 length=352 normal=5140 away=0
+[ENEMY] damage obj=23 type=0 applied=24 lives 12 -> -12 (killed)
+[Game] Player zone: 25
+[Game]   exit fline 114: x=-768 z=1792 xlen=-512 zlen=0 connect=-1 ->zone_idx=-1 length=512 normal=5140 away=0
+[Game]   exit fline 115: x=-1280 z=1792 xlen=0 zlen=352 connect=27 ->zone_idx=27 length=352 normal=5356 away=0
+[Game]   exit fline 116: x=-1280 z=2144 xlen=512 zlen=0 connect=-1 ->zone_idx=-1 length=512 normal=-4884 away=0
+[Game]   exit fline 117: x=-768 z=2144 xlen=0 zlen=-352 connect=24 ->zone_idx=24 length=352 normal=-5100 away=0
+[ENEMY] damage obj=24 type=0 applied=28 lives 12 -> -16 (killed)
+[ENEMY] damage obj=22 type=0 applied=28 lives 12 -> -16 (killed)
+[Game] Player zone: 24
+[Game]   exit fline 108: x=-768 z=1792 xlen=0 zlen=352 connect=25 ->zone_idx=25 length=352 normal=5356 away=0
+[Game]   exit fline 109: x=-768 z=2144 xlen=96 zlen=64 connect=-1 ->zone_idx=-1 length=115 normal=-1051 away=0
+[Game]   exit fline 110: x=-672 z=2208 xlen=160 zlen=0 connect=-1 ->zone_idx=-1 length=160 normal=-4884 away=0
+[Game]   exit fline 111: x=-512 z=2208 xlen=96 zlen=-64 connect=-1 ->zone_idx=-1 length=115 normal=-6661 away=0
+[Game]   exit fline 112: x=-416 z=2144 xlen=0 zlen=-352 connect=26 ->zone_idx=26 length=352 normal=-5100 away=0
+[Game]   exit fline 113: x=-416 z=1792 xlen=-352 zlen=0 connect=23 ->zone_idx=23 length=352 normal=5140 away=0
+[BULLET-Y] spawn accypos=-19968 (p_yoff=-22528)
+[BULLET] spawned gun1 cid=78 zone=24 pos=(-665,1965) vel=(4,0)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19808 floor_raw=-10240 roof=-77824 (roof-acc=-58016 floor-acc=9568)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19648 floor_raw=-10240 roof=-77824 (roof-acc=-58176 floor-acc=9408)
+[REND] bullet slot=0 DRAWING z=39
+[REND] bullet slot=0 DRAWING z=39
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19488 floor_raw=-10240 roof=-77824 (roof-acc=-58336 floor-acc=9248)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19328 floor_raw=-10240 roof=-77824 (roof-acc=-58496 floor-acc=9088)
+[REND] bullet slot=0 DRAWING z=47
+[REND] bullet slot=0 DRAWING z=47
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19168 floor_raw=-10240 roof=-77824 (roof-acc=-58656 floor-acc=8928)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19008 floor_raw=-10240 roof=-77824 (roof-acc=-58816 floor-acc=8768)
+[REND] bullet slot=0 DRAWING z=54
+[REND] bullet slot=0 DRAWING z=54
+[REND] bullet slot=0 DRAWING z=54
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18848 floor_raw=-10240 roof=-77824 (roof-acc=-58976 floor-acc=8608)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18688 floor_raw=-10240 roof=-77824 (roof-acc=-59136 floor-acc=8448)
+[REND] bullet slot=0 DRAWING z=62
+[REND] bullet slot=0 DRAWING z=62
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18528 floor_raw=-10240 roof=-77824 (roof-acc=-59296 floor-acc=8288)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18368 floor_raw=-10240 roof=-77824 (roof-acc=-59456 floor-acc=8128)
+[REND] bullet slot=0 DRAWING z=70
+[REND] bullet slot=0 DRAWING z=70
+[REND] bullet slot=0 DRAWING z=70
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18208 floor_raw=-10240 roof=-77824 (roof-acc=-59616 floor-acc=7968)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18048 floor_raw=-10240 roof=-77824 (roof-acc=-59776 floor-acc=7808)
+[REND] bullet slot=0 DRAWING z=78
+[REND] bullet slot=0 DRAWING z=78
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17888 floor_raw=-10240 roof=-77824 (roof-acc=-59936 floor-acc=7648)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17728 floor_raw=-10240 roof=-77824 (roof-acc=-60096 floor-acc=7488)
+[REND] bullet slot=0 DRAWING z=86
+[REND] bullet slot=0 DRAWING z=86
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17568 floor_raw=-10240 roof=-77824 (roof-acc=-60256 floor-acc=7328)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17408 floor_raw=-10240 roof=-77824 (roof-acc=-60416 floor-acc=7168)
+[REND] bullet slot=0 DRAWING z=94
+[REND] bullet slot=0 DRAWING z=94
+[REND] bullet slot=0 DRAWING z=94
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17248 floor_raw=-10240 roof=-77824 (roof-acc=-60576 floor-acc=7008)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17088 floor_raw=-10240 roof=-77824 (roof-acc=-60736 floor-acc=6848)
+[REND] bullet slot=0 DRAWING z=102
+[REND] bullet slot=0 DRAWING z=102
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16928 floor_raw=-10240 roof=-77824 (roof-acc=-60896 floor-acc=6688)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16768 floor_raw=-10240 roof=-77824 (roof-acc=-61056 floor-acc=6528)
+[REND] bullet slot=0 DRAWING z=110
+[REND] bullet slot=0 DRAWING z=110
+[REND] bullet slot=0 DRAWING z=110
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16608 floor_raw=-10240 roof=-77824 (roof-acc=-61216 floor-acc=6368)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16448 floor_raw=-10240 roof=-77824 (roof-acc=-61376 floor-acc=6208)
+[REND] bullet slot=0 DRAWING z=118
+[REND] bullet slot=0 DRAWING z=118
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16288 floor_raw=-10240 roof=-77824 (roof-acc=-61536 floor-acc=6048)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16128 floor_raw=-10240 roof=-77824 (roof-acc=-61696 floor-acc=5888)
+[REND] bullet slot=0 DRAWING z=126
+[REND] bullet slot=0 DRAWING z=126
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15968 floor_raw=-10240 roof=-77824 (roof-acc=-61856 floor-acc=5728)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15808 floor_raw=-10240 roof=-77824 (roof-acc=-62016 floor-acc=5568)
+[REND] bullet slot=0 DRAWING z=134
+[REND] bullet slot=0 DRAWING z=134
+[REND] bullet slot=0 DRAWING z=134
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15648 floor_raw=-10240 roof=-77824 (roof-acc=-62176 floor-acc=5408)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15488 floor_raw=-10240 roof=-77824 (roof-acc=-62336 floor-acc=5248)
+[REND] bullet slot=0 DRAWING z=142
+[REND] bullet slot=0 DRAWING z=142
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15328 floor_raw=-10240 roof=-77824 (roof-acc=-62496 floor-acc=5088)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15168 floor_raw=-10240 roof=-77824 (roof-acc=-62656 floor-acc=4928)
+[REND] bullet slot=0 DRAWING z=150
+[REND] bullet slot=0 DRAWING z=150
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15008 floor_raw=-10240 roof=-77824 (roof-acc=-62816 floor-acc=4768)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14848 floor_raw=-10240 roof=-77824 (roof-acc=-62976 floor-acc=4608)
+[REND] bullet slot=0 DRAWING z=157
+[REND] bullet slot=0 DRAWING z=157
+[REND] bullet slot=0 DRAWING z=157
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14688 floor_raw=-10240 roof=-77824 (roof-acc=-63136 floor-acc=4448)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14528 floor_raw=-10240 roof=-77824 (roof-acc=-63296 floor-acc=4288)
+[REND] bullet slot=0 DRAWING z=165
+[REND] bullet slot=0 DRAWING z=165
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14368 floor_raw=-10240 roof=-77824 (roof-acc=-63456 floor-acc=4128)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14208 floor_raw=-10240 roof=-77824 (roof-acc=-63616 floor-acc=3968)
+[REND] bullet slot=0 DRAWING z=173
+[REND] bullet slot=0 DRAWING z=173
+[REND] bullet slot=0 DRAWING z=173
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14048 floor_raw=-10240 roof=-77824 (roof-acc=-63776 floor-acc=3808)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13888 floor_raw=-10240 roof=-77824 (roof-acc=-63936 floor-acc=3648)
+[REND] bullet slot=0 DRAWING z=181
+[REND] bullet slot=0 DRAWING z=181
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13728 floor_raw=-10240 roof=-77824 (roof-acc=-64096 floor-acc=3488)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13568 floor_raw=-10240 roof=-77824 (roof-acc=-64256 floor-acc=3328)
+[REND] bullet slot=0 DRAWING z=189
+[REND] bullet slot=0 DRAWING z=189
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13408 floor_raw=-10240 roof=-77824 (roof-acc=-64416 floor-acc=3168)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13248 floor_raw=-10240 roof=-77824 (roof-acc=-64576 floor-acc=3008)
+[REND] bullet slot=0 DRAWING z=197
+[REND] bullet slot=0 DRAWING z=197
+[REND] bullet slot=0 DRAWING z=197
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13088 floor_raw=-10240 roof=-77824 (roof-acc=-64736 floor-acc=2848)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12928 floor_raw=-10240 roof=-77824 (roof-acc=-64896 floor-acc=2688)
+[REND] bullet slot=0 DRAWING z=205
+[REND] bullet slot=0 DRAWING z=205
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12768 floor_raw=-10240 roof=-77824 (roof-acc=-65056 floor-acc=2528)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12608 floor_raw=-10240 roof=-77824 (roof-acc=-65216 floor-acc=2368)
+[REND] bullet slot=0 DRAWING z=213
+[REND] bullet slot=0 DRAWING z=213
+[REND] bullet slot=0 DRAWING z=213
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12448 floor_raw=-10240 roof=-77824 (roof-acc=-65376 floor-acc=2208)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12288 floor_raw=-10240 roof=-77824 (roof-acc=-65536 floor-acc=2048)
+[REND] bullet slot=0 DRAWING z=221
+[REND] bullet slot=0 DRAWING z=221
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12128 floor_raw=-10240 roof=-77824 (roof-acc=-65696 floor-acc=1888)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-11968 floor_raw=-10240 roof=-77824 (roof-acc=-65856 floor-acc=1728)
+[REND] bullet slot=0 DRAWING z=229
+[REND] bullet slot=0 DRAWING z=229
+[REND] bullet slot=0 DRAWING z=229
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-11808 floor_raw=-10240 roof=-77824 (roof-acc=-66016 floor-acc=1568)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-11648 floor_raw=-10240 roof=-77824 (roof-acc=-66176 floor-acc=1408)
+[REND] bullet slot=0 DRAWING z=237
+[REND] bullet slot=0 DRAWING z=237
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-11488 floor_raw=-10240 roof=-77824 (roof-acc=-66336 floor-acc=1248)
+[BULLET-Y] KILLED by floor
+[BULLET-Y] spawn accypos=-19968 (p_yoff=-22528)
+[BULLET] spawned gun1 cid=78 zone=24 pos=(-665,1963) vel=(4,0)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19803 floor_raw=-10240 roof=-77824 (roof-acc=-58021 floor-acc=9563)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19638 floor_raw=-10240 roof=-77824 (roof-acc=-58186 floor-acc=9398)
+[REND] bullet slot=0 DRAWING z=39
+[REND] bullet slot=0 DRAWING z=39
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19473 floor_raw=-10240 roof=-77824 (roof-acc=-58351 floor-acc=9233)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19308 floor_raw=-10240 roof=-77824 (roof-acc=-58516 floor-acc=9068)
+[REND] bullet slot=0 DRAWING z=47
+[REND] bullet slot=0 DRAWING z=47
+[REND] bullet slot=0 DRAWING z=47
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-19143 floor_raw=-10240 roof=-77824 (roof-acc=-58681 floor-acc=8903)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18978 floor_raw=-10240 roof=-77824 (roof-acc=-58846 floor-acc=8738)
+[REND] bullet slot=0 DRAWING z=55
+[REND] bullet slot=0 DRAWING z=55
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18813 floor_raw=-10240 roof=-77824 (roof-acc=-59011 floor-acc=8573)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18648 floor_raw=-10240 roof=-77824 (roof-acc=-59176 floor-acc=8408)
+[REND] bullet slot=0 DRAWING z=63
+[REND] bullet slot=0 DRAWING z=63
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18483 floor_raw=-10240 roof=-77824 (roof-acc=-59341 floor-acc=8243)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18318 floor_raw=-10240 roof=-77824 (roof-acc=-59506 floor-acc=8078)
+[REND] bullet slot=0 DRAWING z=70
+[REND] bullet slot=0 DRAWING z=70
+[REND] bullet slot=0 DRAWING z=70
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-18153 floor_raw=-10240 roof=-77824 (roof-acc=-59671 floor-acc=7913)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17988 floor_raw=-10240 roof=-77824 (roof-acc=-59836 floor-acc=7748)
+[REND] bullet slot=0 DRAWING z=78
+[REND] bullet slot=0 DRAWING z=78
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17823 floor_raw=-10240 roof=-77824 (roof-acc=-60001 floor-acc=7583)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17658 floor_raw=-10240 roof=-77824 (roof-acc=-60166 floor-acc=7418)
+[REND] bullet slot=0 DRAWING z=86
+[REND] bullet slot=0 DRAWING z=86
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17493 floor_raw=-10240 roof=-77824 (roof-acc=-60331 floor-acc=7253)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17328 floor_raw=-10240 roof=-77824 (roof-acc=-60496 floor-acc=7088)
+[REND] bullet slot=0 DRAWING z=94
+[REND] bullet slot=0 DRAWING z=94
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-17163 floor_raw=-10240 roof=-77824 (roof-acc=-60661 floor-acc=6923)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16998 floor_raw=-10240 roof=-77824 (roof-acc=-60826 floor-acc=6758)
+[REND] bullet slot=0 DRAWING z=102
+[REND] bullet slot=0 DRAWING z=102
+[REND] bullet slot=0 DRAWING z=102
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16833 floor_raw=-10240 roof=-77824 (roof-acc=-60991 floor-acc=6593)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16668 floor_raw=-10240 roof=-77824 (roof-acc=-61156 floor-acc=6428)
+[REND] bullet slot=0 DRAWING z=110
+[REND] bullet slot=0 DRAWING z=110
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16503 floor_raw=-10240 roof=-77824 (roof-acc=-61321 floor-acc=6263)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16338 floor_raw=-10240 roof=-77824 (roof-acc=-61486 floor-acc=6098)
+[REND] bullet slot=0 DRAWING z=118
+[REND] bullet slot=0 DRAWING z=118
+[REND] bullet slot=0 DRAWING z=118
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16173 floor_raw=-10240 roof=-77824 (roof-acc=-61651 floor-acc=5933)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-16008 floor_raw=-10240 roof=-77824 (roof-acc=-61816 floor-acc=5768)
+[REND] bullet slot=0 DRAWING z=126
+[REND] bullet slot=0 DRAWING z=126
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15843 floor_raw=-10240 roof=-77824 (roof-acc=-61981 floor-acc=5603)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15678 floor_raw=-10240 roof=-77824 (roof-acc=-62146 floor-acc=5438)
+[REND] bullet slot=0 DRAWING z=134
+[REND] bullet slot=0 DRAWING z=134
+[REND] bullet slot=0 DRAWING z=134
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15513 floor_raw=-10240 roof=-77824 (roof-acc=-62311 floor-acc=5273)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15348 floor_raw=-10240 roof=-77824 (roof-acc=-62476 floor-acc=5108)
+[REND] bullet slot=0 DRAWING z=142
+[REND] bullet slot=0 DRAWING z=142
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15183 floor_raw=-10240 roof=-77824 (roof-acc=-62641 floor-acc=4943)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-15018 floor_raw=-10240 roof=-77824 (roof-acc=-62806 floor-acc=4778)
+[REND] bullet slot=0 DRAWING z=150
+[REND] bullet slot=0 DRAWING z=150
+[REND] bullet slot=0 DRAWING z=150
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14853 floor_raw=-10240 roof=-77824 (roof-acc=-62971 floor-acc=4613)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14688 floor_raw=-10240 roof=-77824 (roof-acc=-63136 floor-acc=4448)
+[REND] bullet slot=0 DRAWING z=158
+[REND] bullet slot=0 DRAWING z=158
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14523 floor_raw=-10240 roof=-77824 (roof-acc=-63301 floor-acc=4283)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14358 floor_raw=-10240 roof=-77824 (roof-acc=-63466 floor-acc=4118)
+[REND] bullet slot=0 DRAWING z=166
+[REND] bullet slot=0 DRAWING z=166
+[REND] bullet slot=0 DRAWING z=166
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14193 floor_raw=-10240 roof=-77824 (roof-acc=-63631 floor-acc=3953)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-14028 floor_raw=-10240 roof=-77824 (roof-acc=-63796 floor-acc=3788)
+[REND] bullet slot=0 DRAWING z=174
+[REND] bullet slot=0 DRAWING z=174
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13863 floor_raw=-10240 roof=-77824 (roof-acc=-63961 floor-acc=3623)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13698 floor_raw=-10240 roof=-77824 (roof-acc=-64126 floor-acc=3458)
+[REND] bullet slot=0 DRAWING z=182
+[REND] bullet slot=0 DRAWING z=182
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13533 floor_raw=-10240 roof=-77824 (roof-acc=-64291 floor-acc=3293)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13368 floor_raw=-10240 roof=-77824 (roof-acc=-64456 floor-acc=3128)
+[REND] bullet slot=0 DRAWING z=190
+[REND] bullet slot=0 DRAWING z=190
+[REND] bullet slot=0 DRAWING z=190
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13203 floor_raw=-10240 roof=-77824 (roof-acc=-64621 floor-acc=2963)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-13038 floor_raw=-10240 roof=-77824 (roof-acc=-64786 floor-acc=2798)
+[REND] bullet slot=0 DRAWING z=198
+[REND] bullet slot=0 DRAWING z=198
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12873 floor_raw=-10240 roof=-77824 (roof-acc=-64951 floor-acc=2633)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12708 floor_raw=-10240 roof=-77824 (roof-acc=-65116 floor-acc=2468)
+[REND] bullet slot=0 DRAWING z=206
+[REND] bullet slot=0 DRAWING z=206
+[REND] bullet slot=0 DRAWING z=206
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12543 floor_raw=-10240 roof=-77824 (roof-acc=-65281 floor-acc=2303)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12378 floor_raw=-10240 roof=-77824 (roof-acc=-65446 floor-acc=2138)
+[REND] bullet slot=0 DRAWING z=214
+[REND] bullet slot=0 DRAWING z=214
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12213 floor_raw=-10240 roof=-77824 (roof-acc=-65611 floor-acc=1973)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-12048 floor_raw=-10240 roof=-77824 (roof-acc=-65776 floor-acc=1808)
+[REND] bullet slot=0 DRAWING z=222
+[REND] bullet slot=0 DRAWING z=222
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-11883 floor_raw=-10240 roof=-77824 (roof-acc=-65941 floor-acc=1643)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-11718 floor_raw=-10240 roof=-77824 (roof-acc=-66106 floor-acc=1478)
+[REND] bullet slot=0 DRAWING z=230
+[REND] bullet slot=0 DRAWING z=230
+[REND] bullet slot=0 DRAWING z=230
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-11553 floor_raw=-10240 roof=-77824 (roof-acc=-66271 floor-acc=1313)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,0)
+[BULLET-Y] zone=24 accypos=-11388 floor_raw=-10240 roof=-77824 (roof-acc=-66436 floor-acc=1148)
+[BULLET-Y] KILLED by floor
+[Game] Player zone: 24
+[Game]   exit fline 108: x=-768 z=1792 xlen=0 zlen=352 connect=25 ->zone_idx=25 length=352 normal=5356 away=0
+[Game]   exit fline 109: x=-768 z=2144 xlen=96 zlen=64 connect=-1 ->zone_idx=-1 length=115 normal=-1051 away=0
+[Game]   exit fline 110: x=-672 z=2208 xlen=160 zlen=0 connect=-1 ->zone_idx=-1 length=160 normal=-4884 away=0
+[Game]   exit fline 111: x=-512 z=2208 xlen=96 zlen=-64 connect=-1 ->zone_idx=-1 length=115 normal=-6661 away=0
+[Game]   exit fline 112: x=-416 z=2144 xlen=0 zlen=-352 connect=26 ->zone_idx=26 length=352 normal=-5100 away=0
+[Game]   exit fline 113: x=-416 z=1792 xlen=-352 zlen=0 connect=23 ->zone_idx=23 length=352 normal=5140 away=0
+[BULLET-Y] spawn accypos=-19968 (p_yoff=-22528)
+[BULLET] spawned gun1 cid=78 zone=24 pos=(-665,1959) vel=(4,-1)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-19823 floor_raw=-10240 roof=-77824 (roof-acc=-58001 floor-acc=9583)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-19678 floor_raw=-10240 roof=-77824 (roof-acc=-58146 floor-acc=9438)
+[REND] bullet slot=0 DRAWING z=39
+[REND] bullet slot=0 DRAWING z=39
+[REND] bullet slot=0 DRAWING z=39
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-19533 floor_raw=-10240 roof=-77824 (roof-acc=-58291 floor-acc=9293)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-19388 floor_raw=-10240 roof=-77824 (roof-acc=-58436 floor-acc=9148)
+[REND] bullet slot=0 DRAWING z=47
+[REND] bullet slot=0 DRAWING z=47
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-19243 floor_raw=-10240 roof=-77824 (roof-acc=-58581 floor-acc=9003)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-19098 floor_raw=-10240 roof=-77824 (roof-acc=-58726 floor-acc=8858)
+[REND] bullet slot=0 DRAWING z=55
+[REND] bullet slot=0 DRAWING z=55
+[REND] bullet slot=0 DRAWING z=55
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-18953 floor_raw=-10240 roof=-77824 (roof-acc=-58871 floor-acc=8713)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-18808 floor_raw=-10240 roof=-77824 (roof-acc=-59016 floor-acc=8568)
+[REND] bullet slot=0 DRAWING z=63
+[REND] bullet slot=0 DRAWING z=63
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-18663 floor_raw=-10240 roof=-77824 (roof-acc=-59161 floor-acc=8423)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-18518 floor_raw=-10240 roof=-77824 (roof-acc=-59306 floor-acc=8278)
+[REND] bullet slot=0 DRAWING z=71
+[REND] bullet slot=0 DRAWING z=71
+[REND] bullet slot=0 DRAWING z=71
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-18373 floor_raw=-10240 roof=-77824 (roof-acc=-59451 floor-acc=8133)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-18228 floor_raw=-10240 roof=-77824 (roof-acc=-59596 floor-acc=7988)
+[REND] bullet slot=0 DRAWING z=79
+[REND] bullet slot=0 DRAWING z=79
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-18083 floor_raw=-10240 roof=-77824 (roof-acc=-59741 floor-acc=7843)
+[BULLET-UPDATE] cid=78 zone=24 vel=(4,-1)
+[BULLET-Y] zone=24 accypos=-17938 floor_raw=-10240 roof=-77824 (roof-acc=-59886 floor-acc=7698)
+[REND] bullet slot=0 DRAWING z=87
+[LOOP] ESC pressed - exiting to menu
+[LOOP] Exited: 3008 display frames, 1260 logic ticks (avg temp_frames=1)
+[GAME] === Level ended ===
+[GAME] Level completed successfully!
+[CONTROL] Level completed! Level 0 -> 2
+[CONTROL] PlayGame finished
+
+TearDownGame
+[AUDIO] shutdown
+[INPUT] SDL2 input shutdown
+[RENDERER] Shutdown
+[DISPLAY] SDL2 shutdown
+[IO] shutdown
+TearDownGame complete
+
+=== Exit (code 0) ===
