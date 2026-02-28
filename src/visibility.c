@@ -270,25 +270,34 @@ uint8_t can_it_be_seen(const LevelState *level,
     int16_t clip_off = -1;
 
     /* InList: is to_room in from_room's list-of-graph?
-     * Support two formats: (1) Direct: first word = zone id (stub_io). (2) Amiga: first word = graph index -> zone id from graphics. */
+     *
+     * The level uses Amiga format: each list entry's first word is a graph index
+     * (into zone_graph_adds), NOT a zone ID.  When Amiga graph data is available
+     * we MUST use that lookup exclusively.  The old "direct format" shortcut
+     * (word0 == to_zone_id) would fire as a spurious match because graph indices
+     * (0, 1, 2 …) coincide numerically with small zone IDs, causing enemies to
+     * see through walls into unrelated zones.
+     *
+     * Fallback to direct-format only when the graph tables are absent. */
+    bool amiga_graph = (level->zone_graph_adds != NULL && level->graphics != NULL);
     {
         const uint8_t *entry = list;
         for (int i = 0; i < 256; i++) {
             int16_t word0 = read_be16(entry);
             if (word0 < 0) break;
 
-            /* Direct format: first word is zone id */
-            if (word0 == to_zone_id) {
-                in_list = true;
-                clip_off = read_be16(entry + 2);
-                break;
-            }
-
-            /* Amiga format: first word is graph index -> zone id from graphics */
-            if (level->zone_graph_adds && level->graphics) {
+            if (amiga_graph) {
+                /* Amiga format: word0 = graph index → offset in graphics → zone id */
                 uint32_t gfx_off = (uint32_t)read_be32(level->zone_graph_adds + (unsigned)word0 * 8u);
                 int16_t entry_zone_id = read_be16(level->graphics + gfx_off);
                 if (entry_zone_id == to_zone_id) {
+                    in_list = true;
+                    clip_off = read_be16(entry + 2);
+                    break;
+                }
+            } else {
+                /* Direct format fallback: first word is zone id (no graph data present) */
+                if (word0 == to_zone_id) {
                     in_list = true;
                     clip_off = read_be16(entry + 2);
                     break;
@@ -298,9 +307,9 @@ uint8_t can_it_be_seen(const LevelState *level,
             entry += 8;
         }
         if (!in_list) {
-            if (level->zone_graph_adds && level->graphics)
-                return 0;
-            in_list = true; /* fallback when no graph data */
+            if (amiga_graph)
+                return 0;   /* target not reachable from this zone */
+            in_list = true; /* no graph data at all: let GoThroughZones decide */
         }
     }
 
