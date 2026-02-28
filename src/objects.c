@@ -219,6 +219,13 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
         if (params->death_sound >= 0) {
             audio_play_sample(params->death_sound, 64);
         }
+        /* Marines (Flame/Tough/Mutant): also play scream on death */
+        if (params->scream_sound >= 0 &&
+            (obj->obj.number == OBJ_NBR_FLAME_MARINE ||
+             obj->obj.number == OBJ_NBR_TOUGH_MARINE ||
+             obj->obj.number == OBJ_NBR_MARINE)) {
+            audio_play_sample(params->scream_sound, 50);
+        }
 
         /* Amiga: ExplodeIntoBits is always called on death when damage > 1.
          * explode_threshold > 0 means "instant kill threshold" (skip death animation),
