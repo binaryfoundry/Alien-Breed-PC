@@ -2623,6 +2623,15 @@ void calc_plr1_in_line(GameState *state)
     int16_t cos_val = state->plr1.cosval;
     int16_t plr_x = (int16_t)(state->plr1.xoff >> 16);
     int16_t plr_z = (int16_t)(state->plr1.zoff >> 16);
+    int16_t plr_y = (int16_t)(state->plr1.yoff >> 7);
+
+    /* Player's room pointer (for can_it_be_seen) */
+    const uint8_t *plr_room = NULL;
+    if (state->level.data && state->level.zone_adds && state->plr1.zone >= 0 &&
+        state->plr1.zone < state->level.num_zones) {
+        int32_t zoff = be32(state->level.zone_adds + state->plr1.zone * 4);
+        if (zoff >= 0) plr_room = state->level.data + zoff;
+    }
 
     int num_pts = state->level.num_object_points;
     if (num_pts > MAX_OBJECTS) num_pts = MAX_OBJECTS;
@@ -2663,7 +2672,26 @@ void calc_plr1_in_line(GameState *state)
 
         /* In line if: forward > 0 && perpendicular/2 < box_width */
         if (fwd > 0 && (perp >> 1) <= box_width) {
-            plr1_obs_in_line[i] = -1; /* 0xFF = in line */
+            /* LOS check: only mark in-line when no wall/door is between player and object */
+            int los_ok = 1;
+            if (plr_room) {
+                int16_t obj_zone = OBJ_ZONE(obj);
+                const uint8_t *obj_room = NULL;
+                if (state->level.data && state->level.zone_adds && obj_zone >= 0 &&
+                    obj_zone < state->level.num_zones) {
+                    int32_t zoff = be32(state->level.zone_adds + obj_zone * 4);
+                    if (zoff >= 0) obj_room = state->level.data + zoff;
+                }
+                int16_t obj_y = (int16_t)((obj->raw[4] << 8) | obj->raw[5]);
+                uint8_t vis = can_it_be_seen(&state->level,
+                                             plr_room, obj_room, obj_zone,
+                                             plr_x, plr_z, plr_y,
+                                             ox, oz, obj_y,
+                                             state->plr1.stood_in_top, obj->obj.in_top);
+                los_ok = (vis != 0);
+            }
+            if (los_ok)
+                plr1_obs_in_line[i] = -1; /* 0xFF = in line */
         }
 
         plr1_obj_dists[i] = fwd;
@@ -2678,6 +2706,14 @@ void calc_plr2_in_line(GameState *state)
     int16_t cos_val = state->plr2.cosval;
     int16_t plr_x = (int16_t)(state->plr2.xoff >> 16);
     int16_t plr_z = (int16_t)(state->plr2.zoff >> 16);
+    int16_t plr_y = (int16_t)(state->plr2.yoff >> 7);
+
+    const uint8_t *plr_room = NULL;
+    if (state->level.data && state->level.zone_adds && state->plr2.zone >= 0 &&
+        state->plr2.zone < state->level.num_zones) {
+        int32_t zoff = be32(state->level.zone_adds + state->plr2.zone * 4);
+        if (zoff >= 0) plr_room = state->level.data + zoff;
+    }
 
     int num_pts = state->level.num_object_points;
     if (num_pts > MAX_OBJECTS) num_pts = MAX_OBJECTS;
@@ -2691,7 +2727,6 @@ void calc_plr2_in_line(GameState *state)
 
         if (OBJ_ZONE(obj) < 0) continue;
 
-        /* Get object position via its CID (point index), NOT slot index i */
         int16_t ox, oz;
         get_object_pos(&state->level, OBJ_CID(obj), &ox, &oz);
 
@@ -2714,7 +2749,25 @@ void calc_plr2_in_line(GameState *state)
         int16_t fwd = (int16_t)(dot >> 16);
 
         if (fwd > 0 && (perp >> 1) <= box_width) {
-            plr2_obs_in_line[i] = -1;
+            int los_ok = 1;
+            if (plr_room) {
+                int16_t obj_zone = OBJ_ZONE(obj);
+                const uint8_t *obj_room = NULL;
+                if (state->level.data && state->level.zone_adds && obj_zone >= 0 &&
+                    obj_zone < state->level.num_zones) {
+                    int32_t zoff = be32(state->level.zone_adds + obj_zone * 4);
+                    if (zoff >= 0) obj_room = state->level.data + zoff;
+                }
+                int16_t obj_y = (int16_t)((obj->raw[4] << 8) | obj->raw[5]);
+                uint8_t vis = can_it_be_seen(&state->level,
+                                             plr_room, obj_room, obj_zone,
+                                             plr_x, plr_z, plr_y,
+                                             ox, oz, obj_y,
+                                             state->plr2.stood_in_top, obj->obj.in_top);
+                los_ok = (vis != 0);
+            }
+            if (los_ok)
+                plr2_obs_in_line[i] = -1;
         }
 
         plr2_obj_dists[i] = fwd;
