@@ -3,7 +3,8 @@
  * stub_audio.c - SDL2 sound effects (load from data/sounds, play via SDL)
  *
  * Sample names and order from Amiga LoadFromDisk.s SFX_NAMES.
- * Loads sounds/<name>.wav (e.g. scream.wav, shotgun.wav). IDs 28+ fall back to <id>.wav.
+ * Prefers Amiga originals: sounds/<name> (no extension) or sounds/<name>.raw.
+ * Falls back to sounds/<name>.wav if no raw file found.
  */
 
 #include "stub_audio.h"
@@ -20,15 +21,16 @@
 #define DEFAULT_FREQ     44100
 #define DEFAULT_FORMAT  AUDIO_S16SYS
 #define DEFAULT_CHANNELS 1
-#define PLAYBACK_SPEED_DIV 1  /* 1 = normal speed; 2 = half speed (each source byte output twice) */
+#define PLAYBACK_SPEED_DIV 1
 
-/* Amiga LoadFromDisk.s SFX_NAMES: raw sample byte sizes (no header, 8-bit unsigned, 8363 Hz) */
+/* Amiga LoadFromDisk.s SFX_NAMES: size in bytes (one byte per sample, 8-bit signed). */
 static const unsigned int amiga_sfx_sizes[NUM_NAMED_SFX] = {
     4400, 7200, 5400, 4600, 3400, 8400, 8000, 4000, 8600, 6200,
     1200, 4000, 2200, 3000, 5600, 11600, 7200, 7400, 9200, 5000,
     4000, 8800, 9000, 1800, 3400, 1600, 11000, 8400
 };
-#define AMIGA_SFX_RATE 8363  /* PAL Amiga typical SFX rate (3579545/428) */
+/* AB3D uses AUDxPER = 443; PAL clock 7093789 Hz -> 16013 Hz (see raw_to_wav.py / AB3DI.s). */
+#define AMIGA_SFX_RATE 16013
 
 /* Amiga LoadFromDisk.s SFX_NAMES order: sample_id -> disk/sounds/<name> (we use sounds/<name>.wav or raw) */
 static const char *const sfx_names[NUM_NAMED_SFX] = {
@@ -127,7 +129,8 @@ static void path_filename_to_lower(char *path)
     for (; *p; p++) *p = (char)tolower((unsigned char)*p);
 }
 
-/* Try to load Amiga raw SFX (no header, 8-bit unsigned, 8363 Hz). Returns 1 with buf/len/spec set, 0 on failure. */
+/* Load Amiga raw SFX: no header, 8-bit signed PCM, one byte per sample, 16013 Hz.
+ * Tries sounds/<name> (no extension) then sounds/<name>.raw. Returns 1 with buf/len/spec set, 0 on failure. */
 static int load_amiga_raw(int id, char *path_out, size_t path_size,
                           SDL_AudioSpec *spec_out, Uint8 **buf_out, Uint32 *len_out)
 {
@@ -139,7 +142,7 @@ static int load_amiga_raw(int id, char *path_out, size_t path_size,
     char path_lower[512];
     FILE *f = NULL;
 
-    /* Try sounds/<name> then sounds/<name>.raw (case-insensitive) */
+    /* Prefer Amiga originals: sounds/<name> (no extension), then sounds/<name>.raw */
     io_make_data_path(path, sizeof(path), "sounds/");
     size_t base_len = strlen(path);
     snprintf(path + base_len, sizeof(path) - base_len, "%s", name);
@@ -171,8 +174,9 @@ static int load_amiga_raw(int id, char *path_out, size_t path_size,
         fclose(f);
         return 0;
     }
-    /* Read up to expected Amiga size (file may be exact, shorter, or slightly longer) */
-    unsigned int to_read = (unsigned int)(file_len > (long)expect_len ? expect_len : file_len);
+    /* One byte per sample; cap at 2x expected size to avoid bad dumps. */
+    unsigned int to_read = (unsigned int)file_len;
+    if (to_read > expect_len * 2u) to_read = expect_len * 2;
     Uint8 *raw = (Uint8 *)SDL_malloc(to_read);
     if (!raw) { fclose(f); return 0; }
     if (fread(raw, 1, to_read, f) != to_read) {
@@ -182,21 +186,17 @@ static int load_amiga_raw(int id, char *path_out, size_t path_size,
     }
     fclose(f);
 
-    /* Paula AUDxLEN is in 16-bit words (SoundPlayer.s: sub.l d1,d0; lsr.l #1,d0 -> words).
-     * So the buffer is to_read bytes = (to_read/2) words; only the high byte of each word
-     * is the sample (big-endian). Thus we have (to_read/2) samples. */
-    Uint32 samples = to_read / 2;
-    if (samples == 0) { SDL_free(raw); return 0; }
+    /* Amiga raw: 8-bit signed PCM, one byte per sample (LoadFromDisk.s / raw_to_wav.py). */
+    Uint32 samples = to_read;
     Uint32 s16_len = samples * 2;
     Sint16 *s16 = (Sint16 *)SDL_malloc(s16_len);
     if (!s16) { SDL_free(raw); return 0; }
-    /* Paula: 8-bit unsigned (0-255), 128 = silence. High byte of each word = sample. */
     for (Uint32 i = 0; i < samples; i++) {
-        int u8 = (int)(raw[i * 2]);  /* high byte of word (even byte index) */
-        int sample = (u8 - 128) * 256;
-        if (sample > 32767) sample = 32767;
-        if (sample < -32768) sample = -32768;
-        s16[i] = (Sint16)sample;
+        /* Sign-extend byte to 16-bit and scale to full range for better level. */
+        int v = (int)((int8_t)raw[i]) * 256;
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        s16[i] = (Sint16)v;
     }
     SDL_free(raw);
 
@@ -220,27 +220,27 @@ static int load_one_sample(int id)
     Uint32 len = 0;
     int from_amiga = 0;
 
-    /* Try converted WAV first (sounds/<name>.wav), then Amiga raw originals if missing */
-    char subpath[80];
-    if (id < NUM_NAMED_SFX) {
-        snprintf(subpath, sizeof(subpath), "sounds/%s.wav", sfx_names[id]);
+    /* Prefer Amiga originals (no .wav): sounds/<name> or sounds/<name>.raw; then fall back to .wav */
+    if (id < NUM_NAMED_SFX && load_amiga_raw(id, path, sizeof(path), &want, &buf, &len)) {
+        from_amiga = 1;
     } else {
-        snprintf(subpath, sizeof(subpath), "sounds/%d.wav", id);
-    }
-    io_make_data_path(path, sizeof(path), subpath);
+        char subpath[80];
+        if (id < NUM_NAMED_SFX) {
+            snprintf(subpath, sizeof(subpath), "sounds/%s.wav", sfx_names[id]);
+        } else {
+            snprintf(subpath, sizeof(subpath), "sounds/%d.wav", id);
+        }
+        io_make_data_path(path, sizeof(path), subpath);
 
-    if (!SDL_LoadWAV(path, &want, &buf, &len)) {
-        char path_lower[512];
-        snprintf(path_lower, sizeof(path_lower), "%s", path);
-        path_filename_to_lower(path_lower);
-        if (!SDL_LoadWAV(path_lower, &want, &buf, &len)) {
-            /* No WAV: for named SFX try Amiga raw (sounds/<name> or sounds/<name>.raw) */
-            if (id < NUM_NAMED_SFX && load_amiga_raw(id, path, sizeof(path), &want, &buf, &len)) {
-                from_amiga = 1;
-            } else {
+        if (!SDL_LoadWAV(path, &want, &buf, &len)) {
+            char path_lower[512];
+            snprintf(path_lower, sizeof(path_lower), "%s", path);
+            path_filename_to_lower(path_lower);
+            if (!SDL_LoadWAV(path_lower, &want, &buf, &len)) {
+                strncpy(path, path_lower, sizeof(path) - 1);
+                path[sizeof(path) - 1] = '\0';
                 return 0;  /* not found - skip silently for high IDs */
             }
-        } else {
             strncpy(path, path_lower, sizeof(path) - 1);
             path[sizeof(path) - 1] = '\0';
         }
@@ -319,11 +319,11 @@ void audio_init(void)
         return;
     }
 
-    /* Load samples by Amiga name (sounds/scream.wav, sounds/shotgun.wav, ...) */
+    /* Load samples: prefer Amiga originals (sounds/<name> no extension), else sounds/<name>.wav */
     {
         char first_path[512];
-        io_make_data_path(first_path, sizeof(first_path), "sounds/scream.wav");
-        printf("[AUDIO] Loading sound effects from data/sounds (e.g. %s)\n", first_path);
+        io_make_data_path(first_path, sizeof(first_path), "sounds/scream");
+        printf("[AUDIO] Loading sound effects from data/sounds (e.g. %s or %s.wav)\n", first_path, first_path);
     }
     int loaded_count = 0;
     for (int i = 0; i < MAX_SAMPLES; i++) {
@@ -342,7 +342,7 @@ void audio_init(void)
         }
         printf("\n");
     } else {
-        printf("[AUDIO] No WAV files found in data/sounds (scream.wav, shotgun.wav, ...)\n");
+        printf("[AUDIO] No sounds found in data/sounds (add Amiga originals: scream, shotgun, ... or .wav)\n");
     }
 }
 
@@ -384,8 +384,8 @@ void audio_play_sample(int sample_id, int volume)
         if (sample_id < MAX_SAMPLES && !logged[sample_id]) {
             logged[sample_id] = 1;
             if (sample_id < NUM_NAMED_SFX) {
-                printf("[AUDIO] play_sample(%d (%s), %d) - not loaded (add %s.wav to data/sounds)\n",
-                       sample_id, sfx_names[sample_id], volume, sfx_names[sample_id]);
+                printf("[AUDIO] play_sample(%d (%s), %d) - not loaded (add %s or %s.wav to data/sounds)\n",
+                       sample_id, sfx_names[sample_id], volume, sfx_names[sample_id], sfx_names[sample_id]);
             } else {
                 printf("[AUDIO] play_sample(%d, %d) - not loaded (add %d.wav to data/sounds)\n",
                        sample_id, volume, sample_id);
