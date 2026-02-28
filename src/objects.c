@@ -1176,14 +1176,16 @@ void object_handle_barrel(GameObject *obj, GameState *state)
         if ((int8_t)obj->raw[7] == 0) y_floor = ((int32_t)obj_w(obj->raw + 4) + 32) << 7;
         y_floor += (88 << 7);   /* lower explosions so they sit on the ground */
 
-        /* Spawn explosion particles: wide spread and more count for a bigger blast. */
+        /* Spawn explosion particles: larger, more spread out, animate 25% slower. */
         {
-            const int num_particles = 6;
-            const int spread = 112;   /* wide spread */
+            const int num_particles = 10;
+            const int spread = 200;   /* wide spread for barrel */
+            const int8_t barrel_size = 150;   /* 50% larger sprite */
+            const int8_t barrel_anim_rate = 75;  /* 25% slower */
             for (int p = 0; p < num_particles && state->num_explosions < MAX_EXPLOSIONS; p++) {
                 int16_t px = (int16_t)(bx + (int16_t)((rand() & (2*spread - 1)) - spread));
                 int16_t pz = (int16_t)(bz + (int16_t)((rand() & (2*spread - 1)) - spread));
-                explosion_spawn(state, px, pz, zone, y_floor);
+                explosion_spawn(state, px, pz, zone, y_floor, barrel_size, barrel_anim_rate);
             }
         }
 
@@ -1540,7 +1542,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         if (shot_size >= 0 && shot_size < 8 &&
             bullet_types[shot_size].explosive_force > 0) {
             explosion_spawn(state, (int16_t)ctx.newx, (int16_t)ctx.newz,
-                            OBJ_ZONE(obj), accypos);
+                            OBJ_ZONE(obj), accypos, 100, 100);
             compute_blast(state, ctx.newx, ctx.newz, accypos,
                           bullet_types[shot_size].explosive_force,
                           SHOT_POWER(*obj));
@@ -1679,7 +1681,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         if (shot_size >= 0 && shot_size < 8 &&
             bullet_types[shot_size].explosive_force > 0) {
             explosion_spawn(state, (int16_t)ctx.newx, (int16_t)ctx.newz,
-                            OBJ_ZONE(obj), accypos);
+                            OBJ_ZONE(obj), accypos, 100, 100);
             compute_blast(state, ctx.newx, ctx.newz, accypos,
                           bullet_types[shot_size].explosive_force,
                           SHOT_POWER(*obj));
@@ -2412,22 +2414,28 @@ void compute_blast(GameState *state, int32_t x, int32_t z, int32_t y,
  * Amiga: explosion/bullet pop advances one step per ObjMoveAnim (per vblank).
  * Advance by 1 per call so duration is consistent regardless of temp_frames.
  * ----------------------------------------------------------------------- */
-void explosion_spawn(GameState *state, int16_t x, int16_t z, int16_t zone, int32_t y_floor)
+void explosion_spawn(GameState *state, int16_t x, int16_t z, int16_t zone, int32_t y_floor,
+                    int8_t size_scale, int8_t anim_rate)
 {
     if (state->num_explosions >= MAX_EXPLOSIONS) return;
+    if (size_scale <= 0) size_scale = 100;
+    if (anim_rate <= 0) anim_rate = 100;
     int i = state->num_explosions++;
     state->explosions[i].x = x;
     state->explosions[i].z = z;
     state->explosions[i].zone = zone;
     state->explosions[i].y_floor = y_floor;
     state->explosions[i].frame = 0;
+    state->explosions[i].frame_frac = 0;
+    state->explosions[i].size_scale = size_scale;
+    state->explosions[i].anim_rate = anim_rate;
     /* 0..3 tick delay so particles don't all animate in lockstep */
     state->explosions[i].start_delay = (int8_t)(rand() & 3);
 }
 
 /* Amiga: explosion advances one step per ObjMoveAnim (per vblank). We advance by temp_frames
  * so when we simulate multiple vblanks in one tick, explosion timing matches.
- * start_delay gives per-particle variation so they don't all animate in lockstep. */
+ * anim_rate 100 = normal; 75 = 25% slower (barrel). start_delay gives per-particle variation. */
 void explosion_advance(GameState *state)
 {
     int n = state->num_explosions;
@@ -2438,7 +2446,14 @@ void explosion_advance(GameState *state)
             state->explosions[i].start_delay = (int8_t)(state->explosions[i].start_delay - tf);
             if (state->explosions[i].start_delay < 0) state->explosions[i].start_delay = 0;
         } else {
-            state->explosions[i].frame = (int8_t)(state->explosions[i].frame + tf);
+            int rate = (int)state->explosions[i].anim_rate;
+            if (rate <= 0) rate = 100;
+            int frac = (int)state->explosions[i].frame_frac + tf * rate;
+            while (frac >= 100) {
+                state->explosions[i].frame = (int8_t)(state->explosions[i].frame + 1);
+                frac -= 100;
+            }
+            state->explosions[i].frame_frac = (int8_t)frac;
         }
         if ((int)state->explosions[i].frame >= 9) {
             /* Remove: shift down */

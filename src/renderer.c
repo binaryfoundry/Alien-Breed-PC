@@ -1799,8 +1799,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         int16_t cam_z = r->zoff;
         const SpriteFrame *ft = sprite_frames_table[expl_vect].frames;
         int ft_count = sprite_frames_table[expl_vect].count;
-        /* World size for explosion sprite (256 = large so explosions read clearly). */
-        int expl_w = 256, expl_h = 256;
+        /* Base world size for explosion sprite (256 = normal; barrel uses size_scale 150 = 50% larger). */
         /* PTR has 64 columns per frame (frames_explosion ptr_off steps by 64*4); use src_cols/rows=32 so eff_cols/eff_rows=64. */
         int src_cols = 32, src_rows = 32;
 
@@ -1808,6 +1807,10 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
             if (state->explosions[ei].zone != (int16_t)zone_id) continue;
             if (state->explosions[ei].start_delay > 0) continue; /* not started yet */
             if ((int)state->explosions[ei].frame >= 9) continue;
+            int scale = (int)state->explosions[ei].size_scale;
+            if (scale <= 0) scale = 100;
+            int expl_w = 256 * scale / 100;
+            int expl_h = 256 * scale / 100;
             int frame_num = state->explosions[ei].frame;
             if (frame_num >= ft_count) frame_num = ft_count - 1;
 
