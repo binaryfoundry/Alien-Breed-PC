@@ -18,7 +18,8 @@
 #define MAX_SAMPLES      64
 #define MAX_CHANNELS     8
 #define NUM_NAMED_SFX    28
-#define DEFAULT_FREQ     44100
+/* Amiga SFX are 16013 Hz; open at same rate for 1:1 playback (no resampling). */
+#define DEFAULT_FREQ     AMIGA_SFX_RATE
 #define DEFAULT_FORMAT  AUDIO_S16SYS
 #define DEFAULT_CHANNELS 1
 #define PLAYBACK_SPEED_DIV 1
