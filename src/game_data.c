@@ -584,7 +584,7 @@ const EnemyParams enemy_params[] = {
         .death_frames   = {18,18,18,18,18,18,18,18,18,18, 19,19,19,19,19,19,19,19,19,19,
                            20,20,20,20,20,20, -1},
     },
-    /* [4] Flame Marine (FlameMarine.s) */
+    /* [4] Flame Marine (FlameMarine.s) - Amiga: move.w #14,Samplenum on death */
     {
         .thing_height   = 128 * 128,
         .step_up        = 20 * 256,
@@ -605,14 +605,14 @@ const EnemyParams enemy_params[] = {
         .wander_timer   = 50,
         .hiss_timer_min = 300,
         .hiss_timer_range = 255,
-        .death_sound    = 27,
+        .death_sound    = 14,       /* splatpop (Amiga Samplenum #14) */
         .scream_sound   = 27,
         .hiss_sound     = 8,
         .attack_sound   = 21,
         .death_frames   = {16,16,16,16,16,16,16,16,16,16, 17,17,17,17,17,17,17,17,17,17,
                            18,18,18,18,18,18, -1},
     },
-    /* [5] Tough Marine (ToughMarine.s) */
+    /* [5] Tough Marine (ToughMarine.s) - Amiga: move.w #14,Samplenum on death */
     {
         .thing_height   = 128 * 128,
         .step_up        = 20 * 256,
@@ -633,7 +633,7 @@ const EnemyParams enemy_params[] = {
         .wander_timer   = 50,
         .hiss_timer_min = 300,
         .hiss_timer_range = 255,
-        .death_sound    = 27,
+        .death_sound    = 14,       /* splatpop (Amiga Samplenum #14) */
         .scream_sound   = 27,
         .hiss_sound     = 8,
         .attack_sound   = -1,
@@ -641,7 +641,8 @@ const EnemyParams enemy_params[] = {
                            18,18,18,18,18,18, -1},
     },
     /* [6] Mutant Marine (MutantMarine.s) - fires gun (Amiga: hitscan via ShootPlayer1,
-     * approximated here with a fast plasma projectile for visible gameplay) */
+     * approximated here with a fast plasma projectile for visible gameplay).
+     * Amiga: move.w #14,Samplenum on death (splatpop). */
     {
         .thing_height   = 128 * 128,
         .step_up        = 20 * 256,
@@ -662,7 +663,7 @@ const EnemyParams enemy_params[] = {
         .wander_timer   = 50,
         .hiss_timer_min = 300,
         .hiss_timer_range = 255,
-        .death_sound    = 27,
+        .death_sound    = 14,       /* splatpop (Amiga Samplenum #14) */
         .scream_sound   = 27,
         .hiss_sound     = 8,
         .attack_sound   = 3,
