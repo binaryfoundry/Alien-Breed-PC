@@ -184,7 +184,7 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
 
         case SDL_WINDOWEVENT:
             if (ev.window.event == SDL_WINDOWEVENT_RESIZED) {
-                display_on_resize(ev.window.data1, ev.window.data2);
+                display_handle_resize();  /* use renderer output size, not window logical size */
             }
             break;
         }

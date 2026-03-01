@@ -93,12 +93,24 @@ void display_init(void)
 void display_on_resize(int w, int h)
 {
     if (w < 1 || h < 1) return;
+    printf("[DISPLAY] resize: %dx%d\n", w, h);
     renderer_resize(w, h);
     if (g_texture) SDL_DestroyTexture(g_texture);
     g_texture = SDL_CreateTexture(g_sdl_ren,
         SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
         renderer_get_width(), renderer_get_height());
     if (g_texture) SDL_SetTextureScaleMode(g_texture, SDL_ScaleModeNearest);
+}
+
+void display_handle_resize(void)
+{
+    if (!g_sdl_ren) return;
+    int out_w = 0, out_h = 0;
+    if (SDL_GetRendererOutputSize(g_sdl_ren, &out_w, &out_h) != 0) return;
+    if (out_w < 96) out_w = 96;
+    if (out_h < 80) out_h = 80;
+    printf("[DISPLAY] handle_resize: renderer output %dx%d\n", out_w, out_h);
+    display_on_resize(out_w, out_h);
 }
 
 int display_is_fullscreen(void)

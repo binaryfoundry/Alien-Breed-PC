@@ -26,6 +26,7 @@ void display_init(void);
 void display_shutdown(void);
 int display_is_fullscreen(void);  /* non-zero if window is fullscreen */
 void display_on_resize(int w, int h);  /* call on window resize to resize framebuffer */
+void display_handle_resize(void);      /* query renderer output size and resize (use on SDL_WINDOWEVENT_RESIZED) */
 
 /* Screen management */
 void display_alloc_text_screen(void);
