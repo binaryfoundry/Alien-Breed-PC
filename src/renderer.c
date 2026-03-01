@@ -2638,8 +2638,8 @@ void renderer_draw_display(GameState *state)
     r->proj_y_scale = (int32_t)((int64_t)PROJ_Y_NUMERATOR / (int64_t)PROJ_Y_DENOM);
     //if (r->proj_y_scale < 1) r->proj_y_scale = 1;
 
-    float aspect = ((float)h/ (float)w);
-    r->proj_y_scale = (int32_t)((float)r->proj_y_scale / aspect);
+    float screen_rescsale = ((float)640 / (float)h);
+    r->proj_y_scale = (int32_t)((float)r->proj_y_scale / screen_rescsale);
 
     /* 2. Setup view transform (from AB3DI.s DrawDisplay lines 3399-3438) */
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
