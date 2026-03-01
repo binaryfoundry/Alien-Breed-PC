@@ -90,13 +90,25 @@ static uint32_t g_water_phase = 0;
 
 /* -----------------------------------------------------------------------
  * Convert a 12-bit Amiga color word (0x0RGB) to ARGB8888.
+ *
+ * Only 4096 distinct input values exist, so we pre-build a lookup table
+ * in renderer_init() and reduce every call site to a single array read.
  * ----------------------------------------------------------------------- */
+static uint32_t amiga12_lut[4096];
+
+static void build_amiga12_lut(void)
+{
+    for (int i = 0; i < 4096; i++) {
+        uint32_t r4 = ((unsigned)i >> 8) & 0xFu;
+        uint32_t g4 = ((unsigned)i >> 4) & 0xFu;
+        uint32_t b4 =  (unsigned)i       & 0xFu;
+        amiga12_lut[i] = 0xFF000000u | (r4 * 0x11u << 16) | (g4 * 0x11u << 8) | (b4 * 0x11u);
+    }
+}
+
 static inline uint32_t amiga12_to_argb(uint16_t w)
 {
-    uint32_t r4 = (w >> 8) & 0xF;
-    uint32_t g4 = (w >> 4) & 0xF;
-    uint32_t b4 = w & 0xF;
-    return 0xFF000000u | (r4 * 0x11u << 16) | (g4 * 0x11u << 8) | (b4 * 0x11u);
+    return amiga12_lut[w & 0xFFFu];
 }
 
 /* Sprite brightness → palette level mapping (from ObjDraw3.ChipRam.s objscalecols).
@@ -194,6 +206,7 @@ static void allocate_buffers(int w, int h)
 
 void renderer_init(void)
 {
+    build_amiga12_lut();
     memset(&g_renderer, 0, sizeof(g_renderer));
     allocate_buffers(RENDER_WIDTH, RENDER_HEIGHT);
     printf("[RENDERER] Initialized: %dx%d\n", g_renderer.width, g_renderer.height);
@@ -664,55 +677,51 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     if (shade > 256) shade = 256;
     if (shade < 16) shade = 16;
 
+    /* Pre-bake per-column ARGB for all 32 texel values with brightness+shade combined.
+     * Eliminates per-pixel: LUT read, BE16 construction, amiga12_to_argb, and 3 multiplies. */
+    uint32_t col_argb[32];
+    {
+        int gray = inv_d6 * 255 / 64;
+        if (gray < 0)   gray = 0;
+        if (gray > 255) gray = 255;
+        gray = gray * shade >> 8;
+        uint32_t fallback = 0xFF000000u | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray;
+        if (texture && pal) {
+            for (int ti = 0; ti < 32; ti++) {
+                int lut_off = lut_block_off + ti * 2;
+                uint16_t cw = ((uint16_t)pal[lut_off] << 8) | pal[lut_off + 1];
+                uint32_t a  = amiga12_to_argb(cw);
+                uint32_t r  = ((a >> 16) & 0xFFu) * (uint32_t)shade >> 8;
+                uint32_t g  = ((a >>  8) & 0xFFu) * (uint32_t)shade >> 8;
+                uint32_t b  = ( a        & 0xFFu) * (uint32_t)shade >> 8;
+                col_argb[ti] = 0xFF000000u | (r << 16) | (g << 8) | b;
+            }
+        } else {
+            for (int ti = 0; ti < 32; ti++) col_argb[ti] = fallback;
+        }
+    }
+
     for (int y = ct; y <= cb; y++) {
-        /* Mask texture Y to wrap within texture height */
         int ty = (int)(tex_y >> 16) & valand;
         uint32_t argb;
 
         if (texture && pal) {
-            /* Read the packed 16-bit word (big-endian). Guard against bad tex_col yielding negative offset. */
             int byte_off = strip_offset + ty * 2;
             if (byte_off >= 0) {
-            uint16_t word = ((uint16_t)texture[byte_off] << 8)
-                          | (uint16_t)texture[byte_off + 1];
-
-            /* Unpack the 5-bit texel based on pack mode */
-            uint8_t texel5;
-            switch (pack_mode) {
-            case 0:  texel5 = (uint8_t)(word & 31);         break;  /* bits [4:0]   */
-            case 1:  texel5 = (uint8_t)((word >> 5) & 31);  break;  /* bits [9:5]   */
-            default: texel5 = (uint8_t)((word >> 10) & 31); break;  /* bits [14:10] */
-            }
-
-            /* Look up 16-bit Amiga color word from the LUT.
-             * LUT layout: 32 brightness blocks × 32 word entries (2048 bytes). */
-            int lut_off = lut_block_off + texel5 * 2;
-            uint16_t color_word = ((uint16_t)pal[lut_off] << 8) | pal[lut_off + 1];
-
-            argb = amiga12_to_argb(color_word);
+                uint16_t word = ((uint16_t)texture[byte_off] << 8)
+                              | (uint16_t)texture[byte_off + 1];
+                uint8_t texel5;
+                switch (pack_mode) {
+                case 0:  texel5 = (uint8_t)( word        & 31u); break;
+                case 1:  texel5 = (uint8_t)((word >>  5) & 31u); break;
+                default: texel5 = (uint8_t)((word >> 10) & 31u); break;
+                }
+                argb = col_argb[texel5];
             } else {
-            int gray = inv_d6 * 255 / 64;
-            if (gray < 0) gray = 0;
-            if (gray > 255) gray = 255;
-            argb = 0xFF000000u | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray;
+                argb = col_argb[0];
             }
         } else {
-            /* No texture or no LUT - fallback: d6=0 brightest, d6=64 darkest (Amiga range) */
-            int gray = inv_d6 * 255 / 64;
-            if (gray < 0) gray = 0;
-            if (gray > 255) gray = 255;
-            argb = 0xFF000000u | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray;
-        }
-
-        /* Apply precomputed distance shade */
-        {
-            uint32_t r = (argb >> 16) & 0xFF;
-            uint32_t g = (argb >> 8) & 0xFF;
-            uint32_t b = argb & 0xFF;
-            r = (r * shade) >> 8;
-            g = (g * shade) >> 8;
-            b = (b * shade) >> 8;
-            argb = (argb & 0xFF000000u) | (r << 16) | (g << 8) | b;
+            argb = col_argb[0];
         }
 
         buf[y * width + x] = 2; /* tag: wall */
@@ -961,49 +970,68 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
         start_v64 += (int64_t)xl * v_step;
     }
 
-    /* UV accumulators: 64-bit so the low 32 bits wrap naturally for texture tiling.
-     * Extract tile coordinate with (low32 >> 16) & 63. */
-    uint64_t u_fp64    = (uint64_t)(uint32_t)(int32_t)start_u64;
-    uint64_t v_fp64    = (uint64_t)(uint32_t)(int32_t)start_v64;
-    int64_t  u_step_64 = (int64_t)u_step;
-    int64_t  v_step_64 = (int64_t)v_step;
+    /* Precompute shade (constant per span). */
+    int span_shade = (256 * (64 - amiga_d6)) / 64;
+    if (span_shade > 256) span_shade = 256;
+    if (span_shade < 16)  span_shade = 16;
+
+    /* Pre-bake per-span ARGB for all 256 texel values with brightness+shade combined.
+     * Eliminates per-pixel: LUT read, BE16 construction, amiga12_to_argb, and 3 multiplies.
+     * Only built for the common non-water textured path. */
+    uint32_t span_argb[256];
+    const int use_span_lut = (texture != NULL && rs->floor_pal != NULL && !is_water);
+    if (use_span_lut) {
+        int pal_level = (amiga_d6 * 14) / 64;
+        if (pal_level > 14) pal_level = 14;
+        const uint8_t *lut = rs->floor_pal + pal_level * 512;
+        for (int ti = 0; ti < 256; ti++) {
+            uint16_t cw = (uint16_t)((lut[ti * 2] << 8) | lut[ti * 2 + 1]);
+            uint32_t a  = amiga12_to_argb(cw);
+            uint32_t r  = ((a >> 16) & 0xFFu) * (uint32_t)span_shade >> 8;
+            uint32_t g  = ((a >>  8) & 0xFFu) * (uint32_t)span_shade >> 8;
+            uint32_t b  = ( a        & 0xFFu) * (uint32_t)span_shade >> 8;
+            span_argb[ti] = 0xFF000000u | (r << 16) | (g << 8) | b;
+        }
+    }
+
+    /* UV accumulators: 32-bit wrapping is sufficient — we only need (fp>>16)&63 for tile coords.
+     * The 64-bit start computation above already handles the large intermediate values;
+     * truncating to 32 bits here halves the per-pixel addition cost. */
+    uint32_t u_fp = (uint32_t)(int32_t)start_u64;
+    uint32_t v_fp = (uint32_t)(int32_t)start_v64;
 
     uint8_t *row8 = buf + (size_t)y * w;
     uint32_t *row32 = rgb + (size_t)y * w;
 
     for (int x = xl; x <= xr; x++) {
-        /* Use low 32 bits of 64-bit accumulator for texture; (>>16)&63 gives 0..63 */
-        int32_t u32 = (int32_t)(u_fp64 & 0xFFFFFFFFu);
-        int32_t v32 = (int32_t)(v_fp64 & 0xFFFFFFFFu);
-        int tu = (u32 >> 16) & 63;
-        int tv = (v32 >> 16) & 63;
+        int tu = (int)((u_fp >> 16) & 63u);
+        int tv = (int)((v_fp >> 16) & 63u);
 
-        u_fp64 += u_step_64;
-        v_fp64 += v_step_64;
+        u_fp += (uint32_t)u_step;
+        v_fp += (uint32_t)v_step;
+
+        /* Fast path: non-water textured span with palette — all per-pixel work is a
+         * single texture read + span_argb table lookup (shade + amiga12 pre-baked). */
+        if (use_span_lut) {
+            row8[x]  = 1;
+            row32[x] = span_argb[texture[((tv << 8) | tu) * 4]];
+            continue;
+        }
 
         /* Water: slow, smooth scroll only (no noisy ripple). */
         if (is_water) {
-            /* Phase 0-255 -> scroll offset 0-63; advance slowly so animation is gentle */
             int scroll = (int)(g_water_phase >> 2) & 63;
             tu = (tu + scroll) & 63;
             tv = (tv + (scroll * 2) & 63) & 63;
         }
 
-        /* ASM texture sampling: move.b (a0,d5.w*4),d0
-         * d5.w = (V << 8) | U, so index = V*1024 + U*4
-         * This samples every 4th texel in both directions. */
         uint32_t argb;
 
         if (texture) {
-            /* ASM texture sampling: move.b (a0,d5.w*4),d0
-             * d5.w = (V << 8) | U, so index = ((V << 8) | U) * 4
-             * This samples from a 256-wide texture with 4-way interleaving. */
             int tex_idx = ((tv << 8) | tu) * 4;
             uint8_t texel = texture[tex_idx];
 
             if (rs->floor_pal) {
-                /* Use FloorPalScaled brightness LUT. Map d6 0..64 to level 0..14 (same scale as walls).
-                 * Water: use a uniform mid brightness so the whole surface is even (no dark/light bands). */
                 int pal_level = (amiga_d6 * 14) / 64;
                 if (is_water) {
                     pal_level = 4;  /* bright water (LUT: low level = brighter) */
@@ -1013,7 +1041,6 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 uint16_t cw = (uint16_t)((lut[texel * 2] << 8) | lut[texel * 2 + 1]);
                 argb = amiga12_to_argb(cw);
             } else {
-                /* Fallback: use texel as grayscale with brightness */
                 int lit = ((int)texel * gray) >> 8;
                 if (is_water) {
                     lit = 200 + (int)(texel * 3 / 4);  /* bright water when no floor pal */
@@ -1022,21 +1049,16 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 argb = 0xFF000000u | ((uint32_t)lit << 16) | ((uint32_t)lit << 8) | (uint32_t)lit;
             }
         } else {
-            /* No texture - solid gray based on brightness */
             argb = 0xFF000000u | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray;
         }
 
-        /* Zone-based shade so brightness matches walls (same amiga_d6 curve, min 16). */
         if (!is_water) {
-            int shade = (256 * (64 - amiga_d6)) / 64;
-            if (shade > 256) shade = 256;
-            if (shade < 16) shade = 16;
             uint32_t r = (argb >> 16) & 0xFF;
             uint32_t g = (argb >> 8) & 0xFF;
             uint32_t b = argb & 0xFF;
-            r = (r * shade) >> 8;
-            g = (g * shade) >> 8;
-            b = (b * shade) >> 8;
+            r = (r * (uint32_t)span_shade) >> 8;
+            g = (g * (uint32_t)span_shade) >> 8;
+            b = (b * (uint32_t)span_shade) >> 8;
             argb = (argb & 0xFF000000u) | (r << 16) | (g << 8) | b;
         }
 
@@ -1054,7 +1076,6 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             if (r > 255) r = 255;
             if (g > 255) g = 255;
             if (b > 255) b = 255;
-            /* Min luminance so no dark bands from pattern */
             uint32_t lum = (r * 77 + g * 150 + b * 29) >> 8;
             if (lum > 0 && lum < 200) {
                 uint32_t scale = (200 << 8) / lum;
@@ -1071,13 +1092,12 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
 
         /* Water: blend with background. Refract (bump-map style) from pattern gradient. */
         if (is_water) {
-            /* Pattern-based refraction: sample background at offset from texture gradient. */
             int refr_x = x, refr_y = y;
             if (texture) {
                 int scroll = (int)(g_water_phase >> 2) & 63;
                 int tu_refr = (tu + scroll) & 63;
                 int tv_refr = (tv + (scroll * 2)) & 63;
-                uint8_t t0 = texture[((tv_refr << 8) | tu_refr) * 4];
+                uint8_t t0  = texture[((tv_refr << 8) | tu_refr) * 4];
                 uint8_t tu1 = texture[((tv_refr << 8) | ((tu_refr + 1) & 63)) * 4];
                 uint8_t tv1 = texture[(((tv_refr + 1) & 63) << 8 | tu_refr) * 4];
                 int dx = (int)(t0 - tu1) / 24;
@@ -1087,17 +1107,15 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             }
             refr_x = (refr_x < 0) ? 0 : (refr_x >= g_renderer.width ? g_renderer.width - 1 : refr_x);
             refr_y = (refr_y < 0) ? 0 : (refr_y >= g_renderer.height ? g_renderer.height - 1 : refr_y);
-            uint32_t bg = rgb[refr_y * g_renderer.width + refr_x];
-            uint32_t br = (bg >> 16) & 0xFF, bg_g = (bg >> 8) & 0xFF, bb = bg & 0xFF;
-            uint32_t wr = (argb >> 16) & 0xFF, wg = (argb >> 8) & 0xFF, wb = argb & 0xFF;
-            /* ~55% water, 45% background = more transparent */
-            uint32_t r = (wr * 141 + br * 115) >> 8;
+            uint32_t bg   = rgb[refr_y * g_renderer.width + refr_x];
+            uint32_t br   = (bg >> 16) & 0xFF, bg_g = (bg >> 8) & 0xFF, bb = bg & 0xFF;
+            uint32_t wr   = (argb >> 16) & 0xFF, wg = (argb >> 8) & 0xFF, wb = argb & 0xFF;
+            uint32_t r = (wr * 141 + br  * 115) >> 8;
             uint32_t g = (wg * 141 + bg_g * 115) >> 8;
-            uint32_t b = (wb * 141 + bb * 115) >> 8;
+            uint32_t b = (wb * 141 + bb  * 115) >> 8;
             if (r > 255) r = 255;
             if (g > 255) g = 255;
             if (b > 255) b = 255;
-            /* No dark bands: floor blended result so water stays bright */
             uint32_t lum = (r * 77 + g * 150 + b * 29) >> 8;
             if (lum > 0 && lum < 180) {
                 uint32_t scale = (180 << 8) / lum;
@@ -1112,7 +1130,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             argb = 0xFF000000u | (r << 16) | (g << 8) | b;
         }
 
-        row8[x] = 1;
+        row8[x]  = 1;
         row32[x] = argb;
     }
 }
