@@ -463,6 +463,7 @@ static int obj_type_to_enemy_index(int8_t obj_type)
     case OBJ_NBR_BIG_NASTY:      return 7;
     case OBJ_NBR_SMALL_RED_THING:return 8;  /* BigClaws uses same slot */
     case OBJ_NBR_FLYING_NASTY:   return 9;
+    case OBJ_NBR_EYEBALL:        return 9;  /* same params as FlyingNasty */
     case OBJ_NBR_TREE:           return 10;
     default:                     return -1;
     }
@@ -2385,10 +2386,12 @@ void compute_blast(GameState *state, int32_t x, int32_t z, int32_t y,
         int32_t dist = calc_dist_approx(dx, dz);
 
         if (dist < radius) {
-            /* Apply damage, scaled by distance */
-            int damage = (power * (radius - (int)dist)) / radius;
-            if (damage > 0) {
-                NASTY_SET_DAMAGE(obj, (int8_t)(NASTY_DAMAGE(*obj) + damage));
+            /* Only apply splash damage to enemies (not barrels, pickups, etc.) */
+            if (obj_type_to_enemy_index(obj->obj.number) >= 0) {
+                int damage = (power * (radius - (int)dist)) / radius;
+                if (damage > 0) {
+                    NASTY_SET_DAMAGE(obj, (int8_t)(NASTY_DAMAGE(*obj) + damage));
+                }
             }
         }
 
