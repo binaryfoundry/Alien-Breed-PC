@@ -376,12 +376,15 @@ void ai_control(GameObject *obj, GameState *state, const AIParams *params)
             ctx.objroom = (uint8_t*)from_room;
             ctx.thing_height = 128 * 128;
             ctx.step_up_val = 20 * 256;
+            ctx.coll_id = OBJ_CID(obj);
+            ctx.pos_shift = 0;
+            ctx.stood_in_top = obj->obj.in_top;
 
             int16_t facing = NASTY_FACING(*obj);
             head_towards_angle(&ctx, &facing, ex, ez, speed, 120);
             NASTY_SET_FACING(*obj, facing);
 
-            move_object(&ctx, level);
+            move_object_substepped(&ctx, level);
 
             /* Update position */
             if (level->object_points) {
@@ -394,6 +397,7 @@ void ai_control(GameObject *obj, GameState *state, const AIParams *params)
                 int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
                 OBJ_SET_ZONE(obj, new_zone);
             }
+            obj->obj.in_top = ctx.stood_in_top;
 
             /* Fire if armed */
             if (params->armed) {
@@ -431,12 +435,15 @@ void ai_control(GameObject *obj, GameState *state, const AIParams *params)
             ctx.objroom = (uint8_t*)from_room;
             ctx.thing_height = 128 * 128;
             ctx.step_up_val = 20 * 256;
+            ctx.coll_id = OBJ_CID(obj);
+            ctx.pos_shift = 0;
+            ctx.stood_in_top = obj->obj.in_top;
 
             int16_t facing = NASTY_FACING(*obj);
             head_towards_angle(&ctx, &facing, ex, ez, speed, 120);
             NASTY_SET_FACING(*obj, facing);
 
-            move_object(&ctx, level);
+            move_object_substepped(&ctx, level);
 
             if (level->object_points) {
                 uint8_t *pts = level->object_points + self_idx * 8;
@@ -447,6 +454,7 @@ void ai_control(GameObject *obj, GameState *state, const AIParams *params)
                 int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
                 OBJ_SET_ZONE(obj, new_zone);
             }
+            obj->obj.in_top = ctx.stood_in_top;
 
         } else if (should_follow && closest_friend_idx >= 0) {
             /* CAC/CNAC: Follow closest friend */
@@ -464,12 +472,15 @@ void ai_control(GameObject *obj, GameState *state, const AIParams *params)
             ctx.objroom = (uint8_t*)from_room;
             ctx.thing_height = 128 * 128;
             ctx.step_up_val = 20 * 256;
+            ctx.coll_id = OBJ_CID(obj);
+            ctx.pos_shift = 0;
+            ctx.stood_in_top = obj->obj.in_top;
 
             int16_t facing = NASTY_FACING(*obj);
             head_towards_angle(&ctx, &facing, fx, fz, speed, 120);
             NASTY_SET_FACING(*obj, facing);
 
-            move_object(&ctx, level);
+            move_object_substepped(&ctx, level);
 
             if (level->object_points) {
                 uint8_t *pts = level->object_points + self_idx * 8;
@@ -480,6 +491,7 @@ void ai_control(GameObject *obj, GameState *state, const AIParams *params)
                 int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
                 OBJ_SET_ZONE(obj, new_zone);
             }
+            obj->obj.in_top = ctx.stood_in_top;
 
             /* Fire if armed (CAC path) */
             if (params->armed && should_attack && closest_enemy_idx >= 0) {
@@ -505,12 +517,15 @@ void ai_control(GameObject *obj, GameState *state, const AIParams *params)
             ctx.objroom = (uint8_t*)from_room;
             ctx.thing_height = 128 * 128;
             ctx.step_up_val = 20 * 256;
+            ctx.coll_id = OBJ_CID(obj);
+            ctx.pos_shift = 0;
+            ctx.stood_in_top = obj->obj.in_top;
 
             int16_t facing = NASTY_FACING(*obj);
             head_towards_angle(&ctx, &facing, fx, fz, speed, 120);
             NASTY_SET_FACING(*obj, facing);
 
-            move_object(&ctx, level);
+            move_object_substepped(&ctx, level);
 
             if (level->object_points) {
                 uint8_t *pts = level->object_points + self_idx * 8;
@@ -521,6 +536,7 @@ void ai_control(GameObject *obj, GameState *state, const AIParams *params)
                 int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
                 OBJ_SET_ZONE(obj, new_zone);
             }
+            obj->obj.in_top = ctx.stood_in_top;
         }
         /* else: idle/wander handled by the caller's generic enemy_wander() */
     }

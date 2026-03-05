@@ -60,6 +60,12 @@ void move_context_init(MoveContext *ctx);
 void move_object(MoveContext *ctx, LevelState *level);
 
 /*
+ * move_object_substepped - Run move_object in small steps to avoid tunneling.
+ * Uses 4 world units per step, max 32 steps (same as player). For enemies/AI.
+ */
+void move_object_substepped(MoveContext *ctx, LevelState *level);
+
+/*
  * Collision - Check object-to-object collision at position (newx, newz).
  *
  * Translated from ObjectMove.s Collision.

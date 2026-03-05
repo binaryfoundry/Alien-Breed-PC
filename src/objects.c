@@ -309,6 +309,8 @@ static void enemy_wander(GameObject *obj, const EnemyParams *params,
     ctx.extlen = params->extlen;
     ctx.awayfromwall = params->awayfromwall;
     ctx.collide_flags = 0x3F7C1; /* standard enemy collision mask */
+    ctx.coll_id = OBJ_CID(obj);
+    ctx.pos_shift = 0;
     ctx.stood_in_top = obj->obj.in_top;
     /* Set objroom from current zone so move_object uses zone-based collision and updates zone on transition */
     if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data &&
@@ -317,7 +319,7 @@ static void enemy_wander(GameObject *obj, const EnemyParams *params,
         ctx.objroom = (uint8_t *)(state->level.data + zo);
     }
 
-    move_object(&ctx, &state->level);
+    move_object_substepped(&ctx, &state->level);
 
     /* Update position and zone after move */
     if (state->level.object_points) {
@@ -383,6 +385,8 @@ static void enemy_attack(GameObject *obj, const EnemyParams *params,
     ctx.step_down_val = params->step_down;
     ctx.extlen = params->extlen;
     ctx.awayfromwall = params->awayfromwall;
+    ctx.coll_id = OBJ_CID(obj);
+    ctx.pos_shift = 0;
     ctx.stood_in_top = obj->obj.in_top;
     /* Set objroom from current zone so move_object uses zone-based collision and updates zone on transition */
     if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data &&
@@ -395,7 +399,7 @@ static void enemy_attack(GameObject *obj, const EnemyParams *params,
                        speed * state->temp_frames, 120);
     NASTY_SET_FACING(*obj, facing);
 
-    move_object(&ctx, &state->level);
+    move_object_substepped(&ctx, &state->level);
 
     /* Update position and zone after move */
     if (state->level.object_points) {

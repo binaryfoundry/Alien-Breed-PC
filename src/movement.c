@@ -592,6 +592,56 @@ static void find_room(MoveContext* ctx, LevelState* level,
 }
 
 /* -----------------------------------------------------------------------
+ * move_object_substepped - Sub-step movement to avoid tunneling through walls
+ * ----------------------------------------------------------------------- */
+void move_object_substepped(MoveContext* ctx, LevelState* level)
+{
+    int32_t start_x = ctx->oldx;
+    int32_t start_z = ctx->oldz;
+    int32_t target_x = ctx->newx;
+    int32_t target_z = ctx->newz;
+    int32_t dx = target_x - start_x;
+    int32_t dz = target_z - start_z;
+    int32_t adx = (dx < 0) ? -dx : dx;
+    int32_t adz = (dz < 0) ? -dz : dz;
+    int32_t maxd = (adx > adz) ? adx : adz;
+    int steps = (int)(maxd / 4) + 1;
+    if (steps > 32) steps = 32;
+
+    int32_t cur_x = start_x;
+    int32_t cur_z = start_z;
+    uint8_t* cur_room = ctx->objroom;
+    int8_t cur_top = ctx->stood_in_top;
+    int8_t any_hit = 0;
+
+    for (int i = 1; i <= steps; i++) {
+        MoveContext step = *ctx;
+        step.objroom = cur_room;
+        step.stood_in_top = cur_top;
+        step.oldx = cur_x;
+        step.oldz = cur_z;
+        step.newx = start_x + (dx * i) / steps;
+        step.newz = start_z + (dz * i) / steps;
+        step.xdiff = step.newx - step.oldx;
+        step.zdiff = step.newz - step.oldz;
+
+        move_object(&step, level);
+
+        if (step.hitwall) any_hit = 1;
+        cur_x = step.newx;
+        cur_z = step.newz;
+        cur_room = step.objroom;
+        cur_top = step.stood_in_top;
+    }
+
+    ctx->newx = cur_x;
+    ctx->newz = cur_z;
+    ctx->objroom = cur_room;
+    ctx->stood_in_top = cur_top;
+    ctx->hitwall = any_hit;
+}
+
+/* -----------------------------------------------------------------------
  * move_object - Zone-based collision against current room's walls and exits
  * ----------------------------------------------------------------------- */
 void move_object(MoveContext* ctx, LevelState* level)
