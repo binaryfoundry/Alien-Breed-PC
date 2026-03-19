@@ -392,6 +392,7 @@ void play_game(GameState *state)
     io_load_gun_graphics();
     io_dump_textures();  /* Debug: write textures/*.bmp for viewing */
     io_load_objects();
+    io_load_vec_objects();
     io_load_sfx();
 
     /* ---- Setup default game ---- */

@@ -10,6 +10,7 @@
 #include "stub_io.h"
 #include "sb_decompress.h"
 #include "renderer.h"
+#include "renderer_3dobj.h"
 #include "game_types.h"
 #include "sprite_palettes.h"
 #include <stdio.h>
@@ -581,6 +582,8 @@ static void build_test_level_clips(LevelState *level)
 
 /* Storage for loaded wall texture data (forward declaration for io_shutdown) */
 static uint8_t *g_wall_data[MAX_WALL_TILES];
+/* Storage for loaded .vec file data (forward declaration for io_shutdown) */
+static uint8_t *g_vec_data[POLY_OBJECTS_COUNT];
 /* Actual loaded size per wall (total file size) so dump can use correct pixel dimensions */
 static size_t g_wall_loaded_size[MAX_WALL_TILES];
 
@@ -591,6 +594,7 @@ void io_init(void)
     printf("[IO] init\n");
     memset(g_wall_data, 0, sizeof(g_wall_data));
     memset(g_wall_loaded_size, 0, sizeof(g_wall_loaded_size));
+    memset(g_vec_data, 0, sizeof(g_vec_data));
 }
 
 void io_shutdown(void)
@@ -600,6 +604,11 @@ void io_shutdown(void)
         free(g_wall_data[i]);
         g_wall_data[i] = NULL;
         g_wall_loaded_size[i] = 0;
+    }
+    /* Free vec object data */
+    for (int i = 0; i < POLY_OBJECTS_COUNT; i++) {
+        free(g_vec_data[i]);
+        g_vec_data[i] = NULL;
     }
     printf("[IO] shutdown\n");
 }
@@ -1405,6 +1414,73 @@ void io_load_objects(void)
         }
     }
 }
+/* -----------------------------------------------------------------------
+ * io_load_vec_objects: load .vec files from data/vectorobjects/ into the
+ * POLYOBJECTS table used by draw_3d_vector_object.
+ *
+ * POLYOBJECTS order (from ObjDraw3.ChipRam.s):
+ *   0 = robot      (robot.vec)
+ *   1 = medipac    (medipac.vec)
+ *   2 = exitsign   (exitsign.vec)
+ *   3 = crate      (crate.vec)
+ *   4 = terminal   (terminal.vec)
+ *   5 = blueind    (blueind.vec)
+ *   6 = greenind   (Greenind.vec)
+ *   7 = redind     (Redind.vec)
+ *   8 = yellowind  (YellowInd.vec  – assembled from YellowInd.vec.s)
+ *   9 = gaspipe    (gaspipe.vec)
+ * ----------------------------------------------------------------------- */
+static const char *g_vec_names[POLY_OBJECTS_COUNT] = {
+    "vectorobjects/Robot.vec",
+    "vectorobjects/MediPac.vec",
+    "vectorobjects/ExitSign.vec",
+    "vectorobjects/Crate.vec",
+    "vectorobjects/Terminal.vec",
+    "vectorobjects/BlueInd.vec",
+    "vectorobjects/GreenInd.vec",
+    "vectorobjects/RedInd.vec",
+    "vectorobjects/YellowInd.vec",
+    "vectorobjects/GasPipe.vec",
+};
+
+void io_load_vec_objects(void)
+{
+    printf("[IO] Loading 3D vector objects...\n");
+
+    for (int i = 0; i < POLY_OBJECTS_COUNT; i++) {
+        free(g_vec_data[i]);
+        g_vec_data[i] = NULL;
+
+        char path[512];
+        make_data_path(path, sizeof(path), g_vec_names[i]);
+
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            printf("[IO] VecObj %d: %s (not found)\n", i, g_vec_names[i]);
+            continue;
+        }
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz <= 0 || sz > 65536) { fclose(f); continue; }
+
+        g_vec_data[i] = (uint8_t *)malloc((size_t)sz);
+        if (!g_vec_data[i]) { fclose(f); continue; }
+
+        if (fread(g_vec_data[i], 1, (size_t)sz, f) != (size_t)sz) {
+            free(g_vec_data[i]); g_vec_data[i] = NULL; fclose(f); continue;
+        }
+        fclose(f);
+
+        if (poly_obj_load(i, g_vec_data[i], (size_t)sz)) {
+            printf("[IO] VecObj %d: %s (%ld bytes)\n", i, g_vec_names[i], sz);
+        } else {
+            printf("[IO] VecObj %d: %s (parse failed)\n", i, g_vec_names[i]);
+            free(g_vec_data[i]); g_vec_data[i] = NULL;
+        }
+    }
+}
+
 void io_load_sfx(void)     { printf("[IO] load_sfx (stub)\n"); }
 void io_load_panel(void)   { printf("[IO] load_panel (stub)\n"); }
 

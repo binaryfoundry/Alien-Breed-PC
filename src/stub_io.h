@@ -32,6 +32,7 @@ void io_release_level_memory(LevelState *level);
 void io_load_walls(void);
 void io_load_floor(void);
 void io_load_gun_graphics(void);
+void io_load_vec_objects(void);  /* Load 3D vector (.vec) objects into POLYOBJECTS table */
 
 /* Debug: dump all loaded textures as BMP images into textures/ */
 void io_dump_textures(void);

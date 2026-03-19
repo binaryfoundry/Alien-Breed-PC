@@ -26,6 +26,7 @@
  */
 
 #include "renderer.h"
+#include "renderer_3dobj.h"
 #include "level.h"
 #include "math_tables.h"
 #include "game_data.h"
@@ -1658,8 +1659,14 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         const uint8_t *obj = (obj_idx < 80)
             ? (level->object_data + obj_idx * OBJECT_SIZE)
             : (level->nasty_shot_data + (obj_idx - 80) * OBJECT_SIZE);
-        /* ObjDraw3: cmp.b #$ff,6(a0); bne BitMapObj → 3D/polygon objects have obj[6]==OBJ_3D_SPRITE. Skip for now. */
-        if ((uint8_t)obj[6] == (uint8_t)OBJ_3D_SPRITE) continue;
+        /* ObjDraw3: cmp.b #$ff,6(a0); bne BitMapObj; bsr PolygonObj.
+         * When obj[6]==OBJ_3D_SPRITE the object is a 3D polygon mesh drawn via
+         * the PolygonObj pipeline (renderer_3dobj.c). */
+        if ((uint8_t)obj[6] == (uint8_t)OBJ_3D_SPRITE) {
+            ObjRotatedPoint *orp3d = &r->obj_rotated[rd16(obj)];
+            draw_3d_vector_object(obj, orp3d, bot_of_room, state);
+            continue;
+        }
 
         int16_t pt_num = rd16(obj);
         if ((unsigned)pt_num >= (unsigned)num_pts) continue;

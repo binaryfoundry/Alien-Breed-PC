@@ -60,6 +60,7 @@ set(SOURCES
     src/game_loop.c
     src/player.c
     src/renderer.c
+    src/renderer_3dobj.c
     src/stub_display.c
     src/stub_input.c
     src/stub_audio.c
