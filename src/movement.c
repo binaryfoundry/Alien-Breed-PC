@@ -398,7 +398,13 @@ void player_fall(int32_t* yoff, int32_t* yvel, int32_t tyoff,
     else {
         /* At or below ground */
         d2 -= GRAVITY_DECEL;
-        if (d2 << 0) d2 = 0;
+        /* Amiga Fall.s:
+         *   sub.l #512,d2
+         *   blt.s .notfast
+         *   move.l #0,d2
+         * Clamp only non-negative upward velocity to 0; keep negative lift velocity
+         * so stand-up / upward correction can continue toward tyoff. */
+        if (d2 >= 0) d2 = 0;
 
         d1 += d2;
         d0 = tyoff - d1;
