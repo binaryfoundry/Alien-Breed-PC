@@ -62,9 +62,25 @@ static inline int reg_btst32(uint32_t value, unsigned int bit_index)
 #define DOOR_TYPE           2
 #define DOOR_POS            4
 #define DOOR_BOT            14
+#define DOOR_WALL_ENTRY_SIZE 10
 /* door_type: 4 = always open, 5 = never open */
 #define DOOR_TYPE_ALWAYS_OPEN  4
 #define DOOR_TYPE_NEVER_OPEN  5
+
+/* Resolve ListOfGraphRooms word0 to zone id.
+ * Amiga format stores a zone-graph index; fallback format stores zone id directly. */
+static int16_t lgr_word_to_zone_id(const LevelState *level, int16_t word0)
+{
+    if (word0 < 0) return -1;
+
+    if (level->zone_graph_adds && level->graphics) {
+        if (word0 >= level->num_zones) return -1;
+        uint32_t gfx_off = (uint32_t)read_be32(level->zone_graph_adds + (unsigned)word0 * 8u);
+        return read_be16(level->graphics + gfx_off);
+    }
+
+    return word0;
+}
 
 /* Return zone index whose zone data pointer equals room, or -1. */
 static int16_t zone_index_from_room(const LevelState *level, const uint8_t *room)
@@ -97,7 +113,7 @@ static bool is_exit_blocked_by_door(const LevelState *level, int16_t current_zon
         uint32_t start = level->door_wall_list_offsets[door_idx];
         uint32_t end   = level->door_wall_list_offsets[door_idx + 1];
         for (uint32_t j = start; j < end; j++) {
-            const uint8_t *ent = level->door_wall_list + j * 6u;
+            const uint8_t *ent = level->door_wall_list + j * DOOR_WALL_ENTRY_SIZE;
             int16_t fline = (int16_t)read_be16(ent);
             if (fline != line_idx) continue;
 
@@ -177,11 +193,12 @@ void order_zones(ZoneOrder *out, const LevelState *level,
     if (list_of_graph_rooms) {
         const uint8_t *lgr = list_of_graph_rooms;
         while (num_zones < MAX_ORDER_ENTRIES) {
-            int16_t zid = read_be16(lgr);
-            if (zid < 0) break;
-            if (zid < 256) {
-                to_draw_tab[zid] = 1;
-                workspace[zid] = read_be32(lgr + 4);
+            int16_t word0 = read_be16(lgr);
+            int16_t zid = lgr_word_to_zone_id(level, word0);
+            if (word0 < 0) break;
+            if (zid >= 0 && zid < 256) {
+                to_draw_tab[(uint8_t)zid] = 1;
+                workspace[(uint8_t)zid] = read_be32(lgr + 4);
                 zone_list[num_zones++] = zid;
             }
             lgr += 8;

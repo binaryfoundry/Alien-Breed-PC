@@ -1994,6 +1994,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
 #define MAX_DOOR_ENTRIES 256
 #define MAX_LIFT_ENTRIES 256
 #define LIFT_ENTRY_SIZE  20
+#define LIFT_WALL_ENTRY_SIZE 10
 
 static int zone_has_door(const uint8_t *door_data, int16_t zone_id)
 {
@@ -2018,6 +2019,41 @@ static int zone_has_lift(const uint8_t *lift_data, int16_t zone_id)
         lift_data += LIFT_ENTRY_SIZE;
     }
     return 0;
+}
+
+/* Lift clipping should only apply to wall records listed for the lift (Anims.s liftwalls). */
+static int wall_is_lift_controlled(const LevelState *level, int16_t zone_id, int32_t gfx_off)
+{
+    if (!level || !level->lift_data || !level->lift_wall_list || !level->lift_wall_list_offsets) return 0;
+    if (level->num_lifts <= 0) return 0;
+
+    for (int lift_idx = 0; lift_idx < level->num_lifts; lift_idx++) {
+        const uint8_t *lift = level->lift_data + (size_t)lift_idx * LIFT_ENTRY_SIZE;
+        if (rd16(lift) != zone_id) continue;
+
+        uint32_t start = level->lift_wall_list_offsets[lift_idx];
+        uint32_t end   = level->lift_wall_list_offsets[lift_idx + 1];
+        for (uint32_t j = start; j < end; j++) {
+            const uint8_t *ent = level->lift_wall_list + j * LIFT_WALL_ENTRY_SIZE;
+            if (rd32(ent + 2) == gfx_off)
+                return 1;
+        }
+    }
+
+    return 0;
+}
+
+/* Resolve ListOfGraphRooms word0 to zone id.
+ * Amiga format stores zone-graph index; fallback format stores zone id directly. */
+static int16_t lgr_word_to_zone_id(const LevelState *level, int16_t word0)
+{
+    if (!level || word0 < 0) return -1;
+    if (level->zone_graph_adds && level->graphics) {
+        if (word0 >= level->num_zones) return -1;
+        uint32_t gfx_off = (uint32_t)rd32(level->zone_graph_adds + (unsigned)word0 * 8u);
+        return rd16(level->graphics + gfx_off);
+    }
+    return word0;
 }
 
 void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
@@ -2065,7 +2101,6 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
     int half_h = g_renderer.height / 2;
 
     int zone_has_door_flag = zone_has_door(level->door_data, zone_id);
-    int zone_has_lift_flag = zone_has_lift(level->lift_data, zone_id);
 
     /* Read zone number from graphics data (consumed before polyloop) */
     const uint8_t *ptr = gfx_data;
@@ -2140,11 +2175,14 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 if (wall_height_for_tex < 1) wall_height_for_tex = 1;
                 int32_t door_yoff_add = 0;
                 int skip_this_wall = 0;
+                int32_t wall_gfx_off = (int32_t)((ptr - 2) - level->graphics);
+                int wall_is_lift_wall = wall_is_lift_controlled(level, zone_id, wall_gfx_off);
 
-                /* Lift zone: clip all walls to current zone floor/roof so we don't draw wall below the platform. */
-                if (zone_has_lift_flag && tex_id != SWITCHES_WALL_TEX_ID) {
-                    int32_t live_zone_roof = rd32(zone_data + 6);
-                    int32_t live_zone_floor = rd32(zone_data + 2);
+                /* Lift zone: clip only lift-controlled walls to active room floor/roof.
+                 * Applying this to every wall in a lift zone can draw false "sheets" over entrances. */
+                if (wall_is_lift_wall && !use_upper && tex_id != SWITCHES_WALL_TEX_ID) {
+                    int32_t live_zone_roof = zone_roof;
+                    int32_t live_zone_floor = zone_floor;
                     int32_t zone_roof_rel = live_zone_roof - y_off;
                     int32_t zone_floor_rel = live_zone_floor - y_off;
                     int32_t draw_top = topwall > zone_roof_rel ? topwall : zone_roof_rel;
@@ -2734,7 +2772,8 @@ void renderer_draw_display(GameState *state)
             /* Find this zone's entry in ListOfGraphRooms */
             int found = 0;
             while (rd16(lgr) >= 0) {
-                if (rd16(lgr) == zone_id) {
+                int16_t entry_zone = lgr_word_to_zone_id(&state->level, rd16(lgr));
+                if (entry_zone == zone_id) {
                     found = 1;
                     break;
                 }
