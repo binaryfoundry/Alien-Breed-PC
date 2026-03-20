@@ -16,7 +16,7 @@
 #include <string.h>
 
 #define MAX_SAMPLES      64
-#define MAX_CHANNELS     8
+#define MAX_CHANNELS     24
 #define NUM_NAMED_SFX    28
 /* Amiga SFX are 16013 Hz; open at same rate for 1:1 playback (no resampling). */
 #define DEFAULT_FREQ     AMIGA_SFX_RATE
@@ -78,14 +78,52 @@ typedef struct {
     Uint32       sample_len;
     Uint32       position;   /* bytes played */
     int          volume;     /* 0-255 -> SDL_MixAudio uses 0-128 */
+    int          sample_id;
 } Channel;
 
 static SDL_AudioDeviceID g_device = 0;
 static SDL_AudioSpec     g_spec;
 static LoadedSample      g_samples[MAX_SAMPLES];
 static Channel           g_channels[MAX_CHANNELS];
-static int               g_next_channel = 0;
 static int               g_audio_ready = 0;
+
+static int channel_is_free(const Channel *ch)
+{
+    return (ch->sample_data == NULL || ch->position >= ch->sample_len);
+}
+
+/* Pick the best channel for a new one-shot SFX:
+ * 1) Prefer truly free channels.
+ * 2) If all busy, steal the least intrusive one (lowest volume, nearest end). */
+static int choose_channel_for_play(void)
+{
+    int best_free = -1;
+    int best_busy = -1;
+    int best_busy_score = 0x7FFFFFFF;
+
+    for (int c = 0; c < MAX_CHANNELS; c++) {
+        Channel *ch = &g_channels[c];
+        if (channel_is_free(ch)) {
+            best_free = c;
+            break;
+        }
+
+        Uint32 remain = ch->sample_len - ch->position;
+        int vol = ch->volume;
+        if (vol < 0) vol = 0;
+        if (vol > 255) vol = 255;
+        /* Lower score = better steal candidate. Bias toward quieter + near-finished. */
+        int score = (int)remain + (vol << 8);
+        if (score < best_busy_score) {
+            best_busy_score = score;
+            best_busy = c;
+        }
+    }
+
+    if (best_free >= 0) return best_free;
+    if (best_busy >= 0) return best_busy;
+    return 0;
+}
 
 static void audio_callback(void *userdata, Uint8 *stream, int len)
 {
@@ -104,6 +142,7 @@ static void audio_callback(void *userdata, Uint8 *stream, int len)
             to_mix = remain;
 
         int mix_vol = ch->volume;
+        if (mix_vol < 0) mix_vol = 0;
         if (mix_vol > 255) mix_vol = 255;
         mix_vol = (mix_vol * 128) / 255;
 
@@ -116,6 +155,7 @@ static void audio_callback(void *userdata, Uint8 *stream, int len)
 
         if (ch->position >= ch->sample_len) {
             ch->sample_data = NULL;
+            ch->sample_id = -1;
         }
     }
 }
@@ -297,7 +337,9 @@ void audio_init(void)
     printf("[AUDIO] init\n");
     memset(g_samples, 0, sizeof(g_samples));
     memset(g_channels, 0, sizeof(g_channels));
-    g_next_channel = 0;
+    for (int i = 0; i < MAX_CHANNELS; i++) {
+        g_channels[i].sample_id = -1;
+    }
     g_audio_ready = 0;
     g_device = 0;
 
@@ -394,17 +436,20 @@ void audio_play_sample(int sample_id, int volume)
         }
         return;
     }
+    if (volume < 0) volume = 0;
+    if (volume > 255) volume = 255;
 
     SDL_LockAudioDevice(g_device);
 
-    /* Pick a channel (round-robin so new sounds override oldest) */
-    Channel *ch = &g_channels[g_next_channel];
-    g_next_channel = (g_next_channel + 1) % MAX_CHANNELS;
+    /* Pick a channel that minimizes audible stomping. */
+    int chan = choose_channel_for_play();
+    Channel *ch = &g_channels[chan];
 
     ch->sample_data = g_samples[sample_id].data;
     ch->sample_len  = g_samples[sample_id].length;
     ch->position    = 0;
     ch->volume      = volume;
+    ch->sample_id   = sample_id;
 
     SDL_UnlockAudioDevice(g_device);
 }
@@ -416,6 +461,7 @@ void audio_stop_all(void)
     for (int c = 0; c < MAX_CHANNELS; c++) {
         g_channels[c].sample_data = NULL;
         g_channels[c].position = 0;
+        g_channels[c].sample_id = -1;
     }
     SDL_UnlockAudioDevice(g_device);
 }
