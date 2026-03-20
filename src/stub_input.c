@@ -124,6 +124,9 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
 
         case SDL_KEYDOWN:
         {
+            if (ev.key.repeat) {
+                break;
+            }
             if (ev.key.keysym.scancode == SDL_SCANCODE_F5) {
                 g_f5_save_requested = true;
             }

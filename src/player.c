@@ -72,8 +72,9 @@ static int32_t apply_friction(int32_t val, int shift)
  *
  * Translated from Plr1Control.s PLR1_alwayskeys (~line 187-315)
  * ----------------------------------------------------------------------- */
-static void player_always_keys(PlayerState *plr, const uint8_t *key_map,
-                                const KeyBindings *keys, uint8_t *old_space)
+static void player_always_keys(PlayerState *plr, uint8_t *key_map,
+                                const KeyBindings *keys, uint8_t *old_space,
+                                const GameState *state)
 {
     /* Operate/Space - tap detection */
     uint8_t space_state = key_map[keys->operate];
@@ -84,7 +85,8 @@ static void player_always_keys(PlayerState *plr, const uint8_t *key_map,
 
     /* Duck toggle */
     if (key_map[keys->duck]) {
-        /* The original clears the key after reading to make it a toggle */
+        /* Amiga PLR*_alwayskeys clears duck key after reading to make it a toggle. */
+        key_map[keys->duck] = 0;
         plr->s_targheight = PLAYER_HEIGHT;
         plr->ducked = !plr->ducked;
         if (plr->ducked) {
@@ -92,7 +94,30 @@ static void player_always_keys(PlayerState *plr, const uint8_t *key_map,
         }
     }
 
-    /* NOTE: Auto-duck is handled in player_full_control where GameState is available */
+    /* Amiga parity: force crouch when room is too low to stand.
+     * Source: Plr1Control.s / Plr2Control.s PLR*_alwayskeys:
+     *   room_h = floor - roof (or upper floor/roof if stood_in_top)
+     *   if room_h <= playerheight + 3*1024: ducked=1, targheight=playercrouched
+     */
+    if (state && state->level.data && plr->roompt >= 0) {
+        const uint8_t *room = state->level.data + plr->roompt;
+        int off = plr->stood_in_top ? 8 : 0;
+        int32_t floor_h = (int32_t)(
+            (room[2 + off] << 24) |
+            (room[3 + off] << 16) |
+            (room[4 + off] <<  8) |
+             room[5 + off]);
+        int32_t roof_h = (int32_t)(
+            (room[6 + off] << 24) |
+            (room[7 + off] << 16) |
+            (room[8 + off] <<  8) |
+             room[9 + off]);
+        int32_t room_h = floor_h - roof_h;
+        if (room_h <= PLAYER_HEIGHT + 3 * 1024) {
+            plr->ducked = 1;
+            plr->s_targheight = PLAYER_CROUCHED;
+        }
+    }
 
     /* Height interpolation toward target */
     int32_t h = plr->s_height;
@@ -464,13 +489,14 @@ static void player_mouse_kbd_control(PlayerState *plr, const uint8_t *key_map,
  * and applies collision/room-transition. That second stage is below.
  * ----------------------------------------------------------------------- */
 static void player_sim_control(PlayerState *plr, const ControlMode *ctrl,
-                                const uint8_t *key_map, const KeyBindings *keys,
+                                uint8_t *key_map, const KeyBindings *keys,
+                                const GameState *state,
                                 int16_t temp_frames)
 {
     static uint8_t old_space = 0;
 
     /* Always-active keys */
-    player_always_keys(plr, key_map, keys, &old_space);
+    player_always_keys(plr, key_map, keys, &old_space, state);
 
     /* Dispatch based on control mode */
     if (ctrl->mouse_kbd) {
@@ -795,24 +821,6 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
     plr->s_xoff = plr->xoff;
     plr->s_zoff = plr->zoff;
 
-    /* 6b. Auto-duck if room is too low (AB3DI.s line ~1355-1374) */
-    if (state->level.zone_adds && state->level.data && plr->zone >= 0) {
-        const uint8_t *za2 = state->level.zone_adds;
-        int z2 = plr->zone;
-        int32_t zoff2 = (int32_t)((za2[z2*4]<<24)|(za2[z2*4+1]<<16)|
-                        (za2[z2*4+2]<<8)|za2[z2*4+3]);
-        const uint8_t *zd2 = state->level.data + zoff2;
-        int zd_off2 = plr->stood_in_top ? 8 : 0;
-        int32_t fh = (int32_t)((zd2[2+zd_off2]<<24)|(zd2[3+zd_off2]<<16)|
-                     (zd2[4+zd_off2]<<8)|zd2[5+zd_off2]);
-        int32_t rh = (int32_t)((zd2[6+zd_off2]<<24)|(zd2[7+zd_off2]<<16)|
-                     (zd2[8+zd_off2]<<8)|zd2[9+zd_off2]);
-        int32_t room_ht = fh - rh;
-        if (room_ht < plr->s_targheight + 3 * 1024) {
-            plr->s_targheight = PLAYER_CROUCHED;
-        }
-    }
-
     /* 7. Update target Y from room floor height
      * AND set up PointsToRotatePtr / ListOfGraphRooms for this zone.
      *
@@ -921,7 +929,7 @@ void player1_control(GameState *state)
 {
     /* Phase 1: Simulation (input -> velocity -> position) */
     player_sim_control(&state->plr1, &state->plr1_control,
-                       state->key_map, &default_keys, state->temp_frames);
+                       state->key_map, &default_keys, state, state->temp_frames);
 
     /* Phase 2: Falling (with water level from zone data) */
     {
@@ -952,7 +960,7 @@ void player1_control(GameState *state)
 void player2_control(GameState *state)
 {
     player_sim_control(&state->plr2, &state->plr2_control,
-                       state->key_map, &default_keys, state->temp_frames);
+                       state->key_map, &default_keys, state, state->temp_frames);
 
     {
         int32_t water_level = 0;
