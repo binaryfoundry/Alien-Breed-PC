@@ -195,10 +195,15 @@ static PolyVertex intersect_near_plane(const PolyVertex *a, const PolyVertex *b,
 static int clip_polygon_to_near(const PolyVertex *in, int in_count,
                                 PolyVertex *out, int max_out, int32_t near_z);
 static int poly_textures_ready(void);
+static uint8_t sample_poly_texel_index(uint16_t tex_map_word,
+                                       int32_t u_fixed, int32_t v_fixed);
+static uint32_t sample_poly_palette(uint8_t pal_idx, int shade_level);
 static void draw_textured_polygon(const int *sx, const int *sy,
                                   const int32_t *sz,
                                   const int32_t *u, const int32_t *v,
                                   int n, uint16_t tex_map_word, int shade_level,
+                                  const int16_t *shade_values,
+                                  int use_gouraud, int use_holes,
                                   int clip_left, int clip_right,
                                   int clip_top, int clip_bot);
 static int ensure_poly_depth_buffer(size_t pixels);
@@ -500,17 +505,22 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
 
             /* texture_map_index, brightness divisor, pregour live at:
              *   poly + 12 + d0*4, +14 + d0*4, +16 + d0*4 */
+            uint16_t preholes_word = (uint16_t)vec_rd16(poly_start + 2);
             const uint8_t *extra = poly_start + 12 + lines_to_draw * 4;
             uint16_t tex_map = 0;
             int shade_div = 1;
-            int pregour = 0;
+            uint16_t pregour_word = 0;
             if (extra + 6 <= vo->data + vo->size) {
                 tex_map = (uint16_t)vec_rd16(extra);
                 shade_div = (int)vec_rd16(extra + 2);
-                pregour = (int)vec_rd16(extra + 4);
+                pregour_word = (uint16_t)vec_rd16(extra + 4);
             }
             if (shade_div < 0) shade_div = -shade_div;
             if (shade_div == 0) shade_div = 1;
+            /* On Amiga the word write lands on adjacent bytes:
+             * low byte of preholes -> Holes, low byte of pregour -> Gouraud. */
+            int use_holes = ((int)preholes_word & 0x00FF) != 0;
+            int use_gouraud = ((int)pregour_word & 0x00FF) != 0;
 
             PolyVertex in_poly[MAX_CLIP_VERTS];
             for (int v = 0; v < num_verts; v++) {
@@ -532,6 +542,7 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
             int sx[MAX_CLIP_VERTS], sy[MAX_CLIP_VERTS];
             int32_t sz[MAX_CLIP_VERTS];
             int32_t su[MAX_CLIP_VERTS], svt[MAX_CLIP_VERTS];
+            int16_t shade_values[MAX_CLIP_VERTS];
             for (int v = 0; v < clipped_n; v++) {
                 int32_t wz = clipped_poly[v].z;
                 if (wz <= 0) wz = 1;
@@ -541,6 +552,10 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
                 sz[v] = wz;
                 su[v] = clipped_poly[v].u;
                 svt[v] = clipped_poly[v].v;
+                int vb = (int)clipped_poly[v].vb;
+                if (vb < 0) vb = 0;
+                if (vb > 14) vb = 14;
+                shade_values[v] = (int16_t)vb;
             }
 
             /* Back-face culling – matches Amiga doapoly cross product:
@@ -560,16 +575,11 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
             if (face_term > 64) face_term = 64;
             int shade_raw = obj_bright_base + 14 - face_term;
 
-            if (pregour) {
-                int sum_vb = 0;
-                for (int v = 0; v < clipped_n; v++) sum_vb += (int)clipped_poly[v].vb;
-                int avg_vb = sum_vb / clipped_n; /* 0..13, lower=brighter */
-                shade_raw = (shade_raw + avg_vb) / 2;
-            }
-
             int shade_level = obj_bright_to_level(shade_raw);
             if (poly_textures_ready()) {
-                draw_textured_polygon(sx, sy, sz, su, svt, clipped_n, tex_map, shade_level,
+                draw_textured_polygon(sx, sy, sz, su, svt, clipped_n,
+                                      tex_map, shade_level,
+                                      shade_values, use_gouraud, use_holes,
                                       clip_l, clip_r, clip_t, clip_b);
             } else {
                 uint32_t color = make_poly_color(vect_num, tex_map, shade_level);
@@ -595,13 +605,10 @@ static int poly_textures_ready(void)
            g_poly_tex_pal_size >= (15u * 512u);
 }
 
-static uint32_t sample_poly_texel(uint16_t tex_map_word, int shade_level,
-                                  int32_t u_fixed, int32_t v_fixed)
+static uint8_t sample_poly_texel_index(uint16_t tex_map_word,
+                                       int32_t u_fixed, int32_t v_fixed)
 {
     if (!poly_textures_ready()) return 0;
-
-    if (shade_level < 0) shade_level = 0;
-    if (shade_level > 14) shade_level = 14;
 
     int u = (int)(u_fixed >> 16) & 63;
     int v = (int)(v_fixed >> 16) & 63;
@@ -609,7 +616,15 @@ static uint32_t sample_poly_texel(uint16_t tex_map_word, int shade_level,
     size_t tex_off = (uv << 2) + (size_t)tex_map_word;
     if (tex_off >= g_poly_tex_maps_size) tex_off %= g_poly_tex_maps_size;
 
-    uint8_t pal_idx = g_poly_tex_maps[tex_off];
+    return g_poly_tex_maps[tex_off];
+}
+
+static uint32_t sample_poly_palette(uint8_t pal_idx, int shade_level)
+{
+    if (!poly_textures_ready()) return 0;
+    if (shade_level < 0) shade_level = 0;
+    if (shade_level > 14) shade_level = 14;
+
     size_t pal_off = (size_t)shade_level * 512u + (size_t)pal_idx * 2u;
     if (pal_off + 1u >= g_poly_tex_pal_size) return 0;
     uint16_t cw = (uint16_t)(((uint16_t)g_poly_tex_pal[pal_off] << 8) |
@@ -619,6 +634,8 @@ static uint32_t sample_poly_texel(uint16_t tex_map_word, int shade_level,
 
 static void draw_textured_triangle(const int *sx, const int *sy,
                                    const int32_t *sz, const int32_t *u, const int32_t *v,
+                                   const int16_t *shade_values,
+                                   int use_gouraud, int use_holes,
                                    uint16_t tex_map_word, int shade_level,
                                    int clip_left, int clip_right,
                                    int clip_top, int clip_bot)
@@ -664,8 +681,19 @@ static void draw_textured_triangle(const int *sx, const int *sy,
             if (g_poly_obj_depth && zf >= g_poly_obj_depth[didx]) continue;
             int32_t uf = (int32_t)(w0 * (double)u[0] + w1 * (double)u[1] + w2 * (double)u[2]);
             int32_t vf = (int32_t)(w0 * (double)v[0] + w1 * (double)v[1] + w2 * (double)v[2]);
+            uint8_t pal_idx = sample_poly_texel_index(tex_map_word, uf, vf);
+            if (use_holes && pal_idx == 0) continue;
+            int pixel_shade = shade_level;
+            if (use_gouraud && shade_values) {
+                double shade_f = w0 * (double)shade_values[0] +
+                                 w1 * (double)shade_values[1] +
+                                 w2 * (double)shade_values[2];
+                pixel_shade = (int)(shade_f + 0.5);
+                if (pixel_shade < 0) pixel_shade = 0;
+                if (pixel_shade > 14) pixel_shade = 14;
+            }
             if (g_poly_obj_depth) g_poly_obj_depth[didx] = zf;
-            row[x] = sample_poly_texel(tex_map_word, shade_level, uf, vf);
+            row[x] = sample_poly_palette(pal_idx, pixel_shade);
         }
     }
 }
@@ -674,6 +702,8 @@ static void draw_textured_polygon(const int *sx, const int *sy,
                                   const int32_t *sz,
                                   const int32_t *u, const int32_t *v,
                                   int n, uint16_t tex_map_word, int shade_level,
+                                  const int16_t *shade_values,
+                                  int use_gouraud, int use_holes,
                                   int clip_left, int clip_right,
                                   int clip_top, int clip_bot)
 {
@@ -682,6 +712,7 @@ static void draw_textured_polygon(const int *sx, const int *sy,
     int tsx[3], tsy[3];
     int32_t tz[3];
     int32_t tu[3], tv[3];
+    int16_t tshade[3];
     for (int i = 1; i < n - 1; i++) {
         tsx[0] = sx[0];  tsy[0] = sy[0];
         tsx[1] = sx[i];  tsy[1] = sy[i];
@@ -693,8 +724,17 @@ static void draw_textured_polygon(const int *sx, const int *sy,
         tu[0] = u[0];  tv[0] = v[0];
         tu[1] = u[i];  tv[1] = v[i];
         tu[2] = u[i + 1]; tv[2] = v[i + 1];
+        if (shade_values) {
+            tshade[0] = shade_values[0];
+            tshade[1] = shade_values[i];
+            tshade[2] = shade_values[i + 1];
+        } else {
+            tshade[0] = tshade[1] = tshade[2] = (int16_t)shade_level;
+        }
 
-        draw_textured_triangle(tsx, tsy, tz, tu, tv, tex_map_word, shade_level,
+        draw_textured_triangle(tsx, tsy, tz, tu, tv,
+                               tshade, use_gouraud, use_holes,
+                               tex_map_word, shade_level,
                                clip_left, clip_right, clip_top, clip_bot);
     }
 }
