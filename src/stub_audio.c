@@ -18,7 +18,10 @@
 #define MAX_SAMPLES      64
 #define MAX_CHANNELS     24
 #define NUM_NAMED_SFX    28
-/* Amiga SFX are 16013 Hz; open at same rate for 1:1 playback (no resampling). */
+/* AB3DI.s sets AUDxPER=443 for SFX playback. Paula PAL audio clock is 3,546,895 Hz. */
+#define AMIGA_SFX_PERIOD 443
+#define AMIGA_PAULA_PAL_CLOCK 3546895
+#define AMIGA_SFX_RATE ((AMIGA_PAULA_PAL_CLOCK + (AMIGA_SFX_PERIOD / 2)) / AMIGA_SFX_PERIOD) /* ~= 8007 Hz */
 #define DEFAULT_FREQ     AMIGA_SFX_RATE
 #define DEFAULT_FORMAT  AUDIO_S16SYS
 #define DEFAULT_CHANNELS 1
@@ -30,9 +33,6 @@ static const unsigned int amiga_sfx_sizes[NUM_NAMED_SFX] = {
     1200, 4000, 2200, 3000, 5600, 11600, 7200, 7400, 9200, 5000,
     4000, 8800, 9000, 1800, 3400, 1600, 11000, 8400
 };
-/* AB3D uses AUDxPER = 443; PAL clock 7093789 Hz -> 16013 Hz (see raw_to_wav.py / AB3DI.s). */
-#define AMIGA_SFX_RATE 16013
-
 /* Amiga LoadFromDisk.s SFX_NAMES order: sample_id -> disk/sounds/<name> (we use sounds/<name>.wav or raw) */
 static const char *const sfx_names[NUM_NAMED_SFX] = {
     "scream",      /* 0 */
@@ -170,7 +170,7 @@ static void path_filename_to_lower(char *path)
     for (; *p; p++) *p = (char)tolower((unsigned char)*p);
 }
 
-/* Load Amiga raw SFX: no header, 8-bit signed PCM, one byte per sample, 16013 Hz.
+/* Load Amiga raw SFX: no header, 8-bit signed PCM, one byte per sample, ~8007 Hz.
  * Tries sounds/<name> (no extension) then sounds/<name>.raw. Returns 1 with buf/len/spec set, 0 on failure. */
 static int load_amiga_raw(int id, char *path_out, size_t path_size,
                           SDL_AudioSpec *spec_out, Uint8 **buf_out, Uint32 *len_out)

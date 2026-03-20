@@ -4,14 +4,15 @@ Convert raw 8-bit signed PCM files in data/sounds to .wav (8-bit unsigned, mono)
 Amiga LoadFromDisk.s loads these as raw; Paula plays 8-bit signed.
 Output: data/sounds/<name>.wav so load_one_sample can load them.
 Run from repo root:  python tools/raw_to_wav.py
-Sample rate matches Amiga: PAL CPU 7093789 Hz / period 443 = 16013 Hz (AB3DI.s).
+Sample rate matches Amiga SFX playback: Paula PAL 3546895 Hz / period 443 ~= 8007 Hz (AB3DI.s).
 """
 from pathlib import Path
 import struct
 import sys
 
-# Amiga AB3DI.s sets AUDxPER = 443 for all SFX channels; PAL clock 7093789 Hz
-SAMPLE_RATE = 7093789 // 443  # 16013 Hz
+# Amiga AB3DI.s sets AUDxPER = 443 for all SFX channels.
+# Paula PAL audio clock is 3546895 Hz (half the 7.09 MHz master clock).
+SAMPLE_RATE = (3546895 + (443 // 2)) // 443  # 8007 Hz
 SOUNDS_DIR = Path(__file__).resolve().parent.parent / "data" / "sounds"
 
 
