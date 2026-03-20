@@ -61,6 +61,13 @@ static int16_t anim_timer = 2;
  * Amiga: alan[] has 8 copies of each value 0-3 → 32 entries, cycles at game tick rate. */
 static uint8_t walk_cycle = 0;
 
+enum {
+    ENEMY_OBJ_TIMER_OFF    = 16, /* ObjTimer   (raw+34) */
+    ENEMY_SEC_TIMER_OFF    = 18, /* SecTimer   (raw+36) */
+    ENEMY_THIRD_TIMER_OFF  = 34, /* ThirdTimer (raw+52) */
+    ENEMY_FOURTH_TIMER_OFF = 36  /* FourthTimer(raw+54) */
+};
+
 /* -----------------------------------------------------------------------
  * enemy_viewpoint - Amiga AlienControl.s ViewpointToDraw
  * Returns 0=towards, 1=right, 2=away, 3=left based on angle between
@@ -282,27 +289,26 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
 }
 
 /* -----------------------------------------------------------------------
- * Enemy common: wander behavior
- *
- * When no player is visible, change direction randomly.
- * Translated from the common pattern in all enemy .s files.
+ * Enemy common: wander behavior using Amiga-style ObjTimer ranges.
  * ----------------------------------------------------------------------- */
-static void enemy_wander(GameObject *obj, const EnemyParams *params,
-                         GameState *state)
+static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
+                                    GameState *state, int16_t timer_base,
+                                    int16_t timer_mask)
 {
     int16_t timer = NASTY_TIMER(*obj);
     timer -= state->temp_frames;
 
     if (timer <= 0) {
-        /* Change direction randomly */
         int16_t new_facing = (int16_t)(rand() & 8190);
         NASTY_SET_FACING(*obj, new_facing);
-        timer = params->wander_timer + (int16_t)(rand() & 0x3F);
+        timer = timer_base;
+        if (timer_mask > 0) {
+            timer = (int16_t)(timer + (rand() & timer_mask));
+        }
     }
 
     NASTY_SET_TIMER(*obj, timer);
 
-    /* Move in facing direction */
     int16_t facing = NASTY_FACING(*obj);
     int16_t speed = NASTY_MAXSPD(*obj);
     if (speed == 0) speed = 4;
@@ -325,11 +331,10 @@ static void enemy_wander(GameObject *obj, const EnemyParams *params,
     ctx.step_down_val = params->step_down;
     ctx.extlen = params->extlen;
     ctx.awayfromwall = params->awayfromwall;
-    ctx.collide_flags = 0x3F7C1; /* standard enemy collision mask */
+    ctx.collide_flags = 0x3F7C1;
     ctx.coll_id = OBJ_CID(obj);
     ctx.pos_shift = 0;
     ctx.stood_in_top = obj->obj.in_top;
-    /* Set objroom from current zone so move_object uses zone-based collision and updates zone on transition */
     if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data &&
         OBJ_ZONE(obj) < state->level.num_zones) {
         int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)OBJ_ZONE(obj) * 4u);
@@ -338,7 +343,6 @@ static void enemy_wander(GameObject *obj, const EnemyParams *params,
 
     move_object_substepped(&ctx, &state->level);
 
-    /* Update position and zone after move */
     if (state->level.object_points) {
         uint8_t *pts = state->level.object_points + idx * 8;
         obj_sw(pts, (int16_t)ctx.newx);
@@ -360,111 +364,8 @@ static void enemy_wander(GameObject *obj, const EnemyParams *params,
         obj->obj.in_top = ctx.stood_in_top;
     }
 
-    /* If hit wall, reverse direction */
     if (ctx.hitwall) {
-        NASTY_SET_FACING(*obj, (facing + ANGLE_180) & ANGLE_MASK);
-    }
-}
-
-/* -----------------------------------------------------------------------
- * Enemy common: attack behavior
- *
- * When player is visible, move toward them and attack.
- * ----------------------------------------------------------------------- */
-static void enemy_attack(GameObject *obj, const EnemyParams *params,
-                         GameState *state, int player_num)
-{
-    PlayerState *plr = (player_num == 1) ? &state->plr1 : &state->plr2;
-
-    int16_t obj_x, obj_z;
-    int idx = (int)(((uint8_t*)obj - state->level.object_data) / OBJECT_SIZE);
-    get_object_pos(&state->level, idx, &obj_x, &obj_z);
-
-    int32_t target_x = (int32_t)plr->p_xoff;
-    int32_t target_z = (int32_t)plr->p_zoff;
-
-    /* Calculate distance to player */
-    int32_t dx = target_x - obj_x;
-    int32_t dz = target_z - obj_z;
-    int32_t dist = calc_dist_approx(dx, dz);
-
-    /* Move toward player */
-    int16_t facing = NASTY_FACING(*obj);
-    int16_t speed = NASTY_MAXSPD(*obj);
-    if (speed == 0) speed = 6;
-
-    MoveContext ctx;
-    move_context_init(&ctx);
-    ctx.oldx = obj_x;
-    ctx.oldz = obj_z;
-    ctx.thing_height = params->thing_height;
-    ctx.step_up_val = params->step_up;
-    ctx.step_down_val = params->step_down;
-    ctx.extlen = params->extlen;
-    ctx.awayfromwall = params->awayfromwall;
-    ctx.coll_id = OBJ_CID(obj);
-    ctx.pos_shift = 0;
-    ctx.stood_in_top = obj->obj.in_top;
-    /* Set objroom from current zone so move_object uses zone-based collision and updates zone on transition */
-    if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data &&
-        OBJ_ZONE(obj) < state->level.num_zones) {
-        int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)OBJ_ZONE(obj) * 4u);
-        ctx.objroom = (uint8_t *)(state->level.data + zo);
-    }
-
-    head_towards_angle(&ctx, &facing, target_x, target_z,
-                       speed * state->temp_frames, 120);
-    NASTY_SET_FACING(*obj, facing);
-
-    move_object_substepped(&ctx, &state->level);
-
-    /* Update position and zone after move */
-    if (state->level.object_points) {
-        uint8_t *pts = state->level.object_points + idx * 8;
-        obj_sw(pts, (int16_t)ctx.newx);
-        obj_sw(pts + 4, (int16_t)ctx.newz);
-    }
-    if (ctx.objroom && state->level.data) {
-        int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
-        if (new_zone >= 0 && new_zone < state->level.num_zones) {
-            OBJ_SET_ZONE(obj, new_zone);
-        } else {
-            int32_t roompt = (int32_t)(ctx.objroom - state->level.data);
-            for (int16_t z = 0; z < state->level.num_zones; z++) {
-                if ((int32_t)be32(state->level.zone_adds + (uint32_t)z * 4u) == roompt) {
-                    OBJ_SET_ZONE(obj, z);
-                    break;
-                }
-            }
-        }
-        obj->obj.in_top = ctx.stood_in_top;
-    }
-
-    /* Ranged attack */
-    if (params->shot_type >= 0 && dist > params->melee_range) {
-        /* Check cooldown (reuse SecTimer area) */
-        int8_t *cooldown = (int8_t*)&obj->obj.type_data[8]; /* FourthTimer */
-        *cooldown -= (int8_t)state->temp_frames;
-        if (*cooldown <= 0) {
-            enemy_fire_at_player(obj, state, player_num,
-                                 params->shot_type, params->shot_power,
-                                 params->shot_speed, params->shot_shift);
-            *cooldown = (int8_t)(params->shot_cooldown +
-                                 (rand() & 0x1F));
-        }
-    }
-
-    /* Melee attack */
-    if (params->melee_damage > 0 && dist <= params->melee_range) {
-        int8_t *melee_cd = (int8_t*)&obj->obj.type_data[10]; /* FourthTimer area */
-        *melee_cd -= (int8_t)state->temp_frames;
-        if (*melee_cd <= 0) {
-            plr->energy -= params->melee_damage;
-            *melee_cd = (int8_t)params->melee_cooldown;
-            if (params->attack_sound >= 0) {
-                audio_play_sample(params->attack_sound, 50);
-            }
-        }
+        NASTY_SET_TIMER(*obj, -1);
     }
 }
 
@@ -547,156 +448,103 @@ static void enemy_update_can_see(GameObject *obj, GameState *state)
 }
 
 /* -----------------------------------------------------------------------
- * Generic enemy handler - used by all enemy types
+ * Enemy helper timers and class-specific support
  * ----------------------------------------------------------------------- */
-static void enemy_generic(GameObject *obj, GameState *state, int param_index)
+static int16_t enemy_tick_third_timer(GameObject *obj, GameState *state,
+                                      int can_see, int16_t no_los_base,
+                                      int16_t no_los_mask)
 {
-    if (!state->nasty) return;
-    if (param_index < 0 || param_index >= num_enemy_types) return;
-
-    typedef struct {
-        int16_t no_los_base;
-        int16_t no_los_mask;
-        int16_t fourth_reset;
-        int16_t third_fire_base;
-        int16_t third_fire_mask;
-        bool hold_position_attack;
-    } EnemyGenericProfile;
-
-    EnemyGenericProfile profile = {
-        20, 63, 25, 50, 31, false
-    };
-    switch (obj->obj.number) {
-    case OBJ_NBR_ALIEN:
-        profile.fourth_reset = 25;
-        break;
-    case OBJ_NBR_ROBOT:
-        profile.fourth_reset = 30;
-        profile.third_fire_base = 150;
-        profile.third_fire_mask = 127;
-        break;
-    case OBJ_NBR_HUGE_RED_THING:
-    case OBJ_NBR_SMALL_RED_THING:
-        profile.fourth_reset = 70;
-        profile.third_fire_base = 50;
-        profile.third_fire_mask = 127;
-        profile.hold_position_attack = true;
-        break;
-    case OBJ_NBR_WORM:
-        profile.fourth_reset = 30;
-        profile.third_fire_base = 50;
-        profile.third_fire_mask = 127;
-        profile.hold_position_attack = true;
-        break;
-    case OBJ_NBR_TREE:
-        profile.fourth_reset = 30;
-        profile.third_fire_base = 50;
-        profile.third_fire_mask = 31;
-        profile.hold_position_attack = true;
-        break;
-    case OBJ_NBR_BIG_NASTY:
-        profile.fourth_reset = 25;
-        profile.third_fire_base = 50;
-        profile.third_fire_mask = 7;
-        break;
-    default:
-        break;
-    }
-
-    const EnemyParams *params = &enemy_params[param_index];
-
-    /* Check damage */
-    if (enemy_check_damage(obj, params, state)) return;
-
-    int8_t lives = NASTY_LIVES(*obj);
-    if (lives <= 0) return;
-
-    enemy_update_can_see(obj, state);
-
-    int can_see = obj->obj.can_see & 0x03;
-    int16_t third_timer = OBJ_TD_W(obj, 34);
-
-    if (can_see && third_timer <= 0) {
-        int target_player = marine_pick_target_player(obj, state);
-        if (target_player != 0) {
-            int32_t dist = marine_track_target(obj, params, state, target_player,
-                                               !profile.hold_position_attack);
-
-            int16_t fourth_timer = OBJ_TD_W(obj, 36);
-            fourth_timer -= state->temp_frames;
-            OBJ_SET_TD_W(obj, 36, fourth_timer);
-            if (fourth_timer <= 0) {
-                OBJ_SET_TD_W(obj, 34, 50);
-            }
-
-            if (params->shot_type >= 0 &&
-                dist > params->melee_range &&
-                fourth_timer < 20) {
-                OBJ_SET_TD_W(obj, 34, profile.third_fire_base + (int16_t)(rand() & profile.third_fire_mask));
-                enemy_fire_at_player(obj, state, target_player,
-                                     params->shot_type, params->shot_power,
-                                     params->shot_speed, params->shot_shift);
-            }
-
-            if (params->melee_damage > 0 &&
-                dist <= params->melee_range &&
-                fourth_timer <= 0) {
-                PlayerState *plr = (target_player == 1) ? &state->plr1 : &state->plr2;
-                plr->energy -= params->melee_damage;
-                OBJ_SET_TD_W(obj, 36, 20);
-                if (params->attack_sound >= 0) {
-                    audio_play_sample(params->attack_sound, 50);
-                }
-            }
-        }
+    int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
+    if (can_see) {
+        third_timer -= state->temp_frames;
+        if (third_timer < 0) third_timer = 0;
     } else {
-        if (can_see) {
-            third_timer -= state->temp_frames;
-            if (third_timer < 0) third_timer = 0;
-        } else {
-            third_timer = profile.no_los_base + (int16_t)(rand() & profile.no_los_mask);
-        }
-        OBJ_SET_TD_W(obj, 34, third_timer);
-        OBJ_SET_TD_W(obj, 36, profile.fourth_reset);
-        enemy_wander(obj, params, state);
-    }
-
-    /* Update sprite animation frame (Amiga: ViewpointToDraw + alframe → 8(a0)).
-     * Vect_num per type from Amiga .s files: NormalAlien=0, Robot=$5, BigNasty=$3,
-     * FlyingNasty=0(EyeBall), Worm=$d, HugeRed/BigClaws=$e, SmallRed/BigRed=$e,
-     * Tree=$f, EyeBall=0. */
-    {
-        static const int16_t vect_by_type[] = {
-            /* OBJ_NBR_ALIEN(0)*/       0,
-            /* OBJ_NBR_MEDIKIT(1)*/    -1,
-            /* OBJ_NBR_BULLET(2)*/     -1,
-            /* OBJ_NBR_BIG_GUN(3)*/    -1,
-            /* OBJ_NBR_KEY(4)*/        -1,
-            /* OBJ_NBR_PLR1(5)*/       -1,
-            /* OBJ_NBR_ROBOT(6)*/       5,
-            /* OBJ_NBR_BIG_NASTY(7)*/   3,
-            /* OBJ_NBR_FLYING_NASTY(8)*/4,
-            /* OBJ_NBR_AMMO(9)*/       -1,
-            /* OBJ_NBR_BARREL(10)*/    -1,
-            /* OBJ_NBR_PLR2(11)*/      -1,
-            /* OBJ_NBR_MARINE(12)*/    10,
-            /* OBJ_NBR_WORM(13)*/      13,
-            /* OBJ_NBR_HUGE_RED(14)*/  14,
-            /* OBJ_NBR_SMALL_RED(15)*/ 14,
-            /* OBJ_NBR_TREE(16)*/      15,
-            /* OBJ_NBR_EYEBALL(17)*/    0,
-            /* OBJ_NBR_TOUGH(18)*/     16,
-            /* OBJ_NBR_FLAME(19)*/     17,
-        };
-        int8_t otype = obj->obj.number;
-        if (otype >= 0 && otype < (int8_t)(sizeof(vect_by_type)/sizeof(vect_by_type[0]))) {
-            int16_t vn = vect_by_type[(int)otype];
-            if (vn >= 0)
-                enemy_update_anim(obj, state, vn);
+        third_timer = no_los_base;
+        if (no_los_mask > 0) {
+            third_timer = (int16_t)(third_timer + (rand() & no_los_mask));
         }
     }
+    OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, third_timer);
+    return third_timer;
 }
 
+static bool enemy_spawn_tree_eyeball(GameObject *tree, GameState *state)
+{
+    if (!state->level.object_data || !state->level.object_points) return false;
+
+    int16_t tree_x = 0, tree_z = 0;
+    get_object_pos(&state->level, (int)OBJ_CID(tree), &tree_x, &tree_z);
+
+    int obj_index = 0;
+    while (1) {
+        GameObject *obj = get_object(&state->level, obj_index);
+        if (!obj) break;
+        if (OBJ_CID(obj) < 0) break;
+        if (obj == tree) {
+            obj_index++;
+            continue;
+        }
+        if (OBJ_ZONE(obj) >= 0) {
+            obj_index++;
+            continue;
+        }
+
+        obj->obj.number = OBJ_NBR_EYEBALL;
+        obj->obj.can_see = 0;
+        obj->obj.worry = 1;
+        obj->obj.in_top = tree->obj.in_top;
+        OBJ_SET_ZONE(obj, OBJ_ZONE(tree));
+        OBJ_SET_GROOM(obj, OBJ_GROOM(tree));
+        obj_sw(obj->raw + 4, obj_w(tree->raw + 4));
+        if (obj->raw[6] == 0 || obj->raw[7] == 0) {
+            obj->raw[6] = (uint8_t)default_object_world_size[OBJ_NBR_EYEBALL].w;
+            obj->raw[7] = (uint8_t)default_object_world_size[OBJ_NBR_EYEBALL].h;
+        }
+
+        NASTY_LIVES(*obj) = 10;
+        NASTY_DAMAGE(*obj) = 0;
+        NASTY_SET_MAXSPD(*obj, 5);
+        NASTY_SET_CURRSPD(*obj, 0);
+        NASTY_SET_FACING(*obj, NASTY_FACING(*tree));
+        NASTY_SET_TIMER(*obj, 100);
+        OBJ_SET_TD_W(obj, ENEMY_SEC_TIMER_OFF, 100);
+        OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 100);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 100);
+        OBJ_SET_DEADH(obj, 0);
+        OBJ_SET_DEADL(obj, 0);
+
+        {
+            int cid = (int)OBJ_CID(obj);
+            if (cid >= 0 && cid < state->level.num_object_points) {
+                uint8_t *pt = state->level.object_points + cid * 8;
+                obj_sw(pt, tree_x);
+                obj_sw(pt + 4, tree_z);
+            }
+        }
+        return true;
+    }
+
+    return false;
+}
+
+static int16_t enemy_anim_vect_for_type(int8_t obj_type)
+{
+    switch (obj_type) {
+    case OBJ_NBR_ALIEN:           return 0;
+    case OBJ_NBR_ROBOT:           return 5;
+    case OBJ_NBR_BIG_NASTY:       return 3;
+    case OBJ_NBR_FLYING_NASTY:    return 4;
+    case OBJ_NBR_EYEBALL:         return 0;
+    case OBJ_NBR_MARINE:          return 10;
+    case OBJ_NBR_WORM:            return 13;
+    case OBJ_NBR_HUGE_RED_THING:
+    case OBJ_NBR_SMALL_RED_THING: return 14;
+    case OBJ_NBR_TREE:            return 15;
+    case OBJ_NBR_TOUGH_MARINE:    return 16;
+    case OBJ_NBR_FLAME_MARINE:    return 17;
+    default:                      return -1;
+    }
+}
 /* -----------------------------------------------------------------------
  * objects_update - Main per-frame object processing
  *
@@ -1013,38 +861,200 @@ void objects_update_sprite_frames(GameState *state)
 }
 
 /* -----------------------------------------------------------------------
- * Enemy handlers - each delegates to generic handler with type params
+ * Enemy handlers (per-class state loops)
  * ----------------------------------------------------------------------- */
+
+static void enemy_handle_big_red_variant(GameObject *obj, GameState *state, bool big_claws)
+{
+    if (!state->nasty) return;
+
+    int param_idx = big_claws ? 8 : 2;
+    const EnemyParams *params = &enemy_params[param_idx];
+    if (enemy_check_damage(obj, params, state)) return;
+    if (NASTY_LIVES(*obj) <= 0) return;
+
+    enemy_update_can_see(obj, state);
+    int can_see = obj->obj.can_see & 0x03;
+    int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
+    bool attacking = false;
+    int target_player = 0;
+
+    if (can_see && third_timer <= 0) {
+        target_player = marine_pick_target_player(obj, state);
+        attacking = (target_player != 0);
+    }
+
+    if (attacking) {
+        (void)marine_track_target(obj, params, state, target_player, false);
+
+        int16_t fourth_timer = OBJ_TD_W(obj, ENEMY_FOURTH_TIMER_OFF);
+        fourth_timer -= state->temp_frames;
+        if (fourth_timer <= 0) {
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 50);
+        }
+
+        if (fourth_timer < 20) {
+            fourth_timer = 30;
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, (int16_t)(100 + (rand() & 0x7F)));
+            audio_play_sample(9, 100);
+            if (big_claws) {
+                enemy_fire_at_player(obj, state, target_player, 2, 10, 64, 6);
+            } else {
+                enemy_fire_at_player(obj, state, target_player, 2, 10, 32, 4);
+            }
+        }
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
+    } else {
+        (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 70);
+        enemy_wander_with_timer(obj, params, state, 150, 0);
+    }
+
+    {
+        int16_t vn = enemy_anim_vect_for_type(obj->obj.number);
+        if (vn >= 0) {
+            int walk_step = attacking ? 0 : ((walk_cycle >> 3) & 3);
+            enemy_update_anim_with_step(obj, state, vn, walk_step);
+        }
+    }
+}
 
 void object_handle_alien(GameObject *obj, GameState *state)
 {
-    enemy_generic(obj, state, 0);
+    if (!state->nasty) return;
+
+    const EnemyParams *params = &enemy_params[0];
+    if (enemy_check_damage(obj, params, state)) return;
+    if (NASTY_LIVES(*obj) <= 0) return;
+
+    enemy_update_can_see(obj, state);
+    int can_see = obj->obj.can_see & 0x03;
+    int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
+    bool attacking = false;
+    int target_player = 0;
+
+    if (can_see && third_timer <= 0) {
+        target_player = marine_pick_target_player(obj, state);
+        attacking = (target_player != 0);
+    }
+
+    if (attacking) {
+        int32_t dist = marine_track_target(obj, params, state, target_player, true);
+        int16_t fourth_timer = OBJ_TD_W(obj, ENEMY_FOURTH_TIMER_OFF);
+
+        if (dist <= params->melee_range) {
+            fourth_timer -= state->temp_frames;
+            if (fourth_timer <= 0) {
+                PlayerState *plr = (target_player == 1) ? &state->plr1 : &state->plr2;
+                plr->energy -= params->melee_damage;
+                fourth_timer = 20;
+            }
+        }
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
+    } else {
+        (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 25);
+        enemy_wander_with_timer(obj, params, state, 50, 0);
+    }
+
+    enemy_update_anim(obj, state, 0);
 }
 
 void object_handle_robot(GameObject *obj, GameState *state)
 {
-    enemy_generic(obj, state, 1);
+    if (!state->nasty) return;
+
+    const EnemyParams *params = &enemy_params[1];
+    if (enemy_check_damage(obj, params, state)) return;
+    if (NASTY_LIVES(*obj) <= 0) return;
+
+    enemy_update_can_see(obj, state);
+    int can_see = obj->obj.can_see & 0x03;
+    int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
+    bool attacking = false;
+    int target_player = 0;
+
+    if (can_see && third_timer <= 0) {
+        target_player = marine_pick_target_player(obj, state);
+        attacking = (target_player != 0);
+    }
+
+    if (attacking) {
+        (void)marine_track_target(obj, params, state, target_player, true);
+
+        int16_t fourth_timer = OBJ_TD_W(obj, ENEMY_FOURTH_TIMER_OFF);
+        fourth_timer -= state->temp_frames;
+        if (fourth_timer <= 0) {
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 50);
+        }
+
+        if (fourth_timer < 20) {
+            fourth_timer = 50;
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, (int16_t)(150 + (rand() & 0x7F)));
+            audio_play_sample(9, 100);
+            enemy_fire_at_player(obj, state, target_player, 4, 10, 16, 3);
+        }
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
+    } else {
+        (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
+        enemy_wander_with_timer(obj, params, state, 100, 63);
+    }
+
+    enemy_update_anim(obj, state, 5);
 }
 
 void object_handle_huge_red(GameObject *obj, GameState *state)
 {
-    /* BigRedThing or SmallRedThing based on objNumber */
-    if (obj->obj.number == OBJ_NBR_SMALL_RED_THING) {
-        enemy_generic(obj, state, 8); /* BigClaws params */
-    } else {
-        enemy_generic(obj, state, 2);
-    }
+    enemy_handle_big_red_variant(obj, state, obj->obj.number == OBJ_NBR_SMALL_RED_THING);
 }
 
 void object_handle_worm(GameObject *obj, GameState *state)
 {
-    enemy_generic(obj, state, 3);
-}
+    if (!state->nasty) return;
 
-enum {
-    MARINE_THIRD_TIMER_OFF  = 34, /* ThirdTimer  (raw+52) */
-    MARINE_FOURTH_TIMER_OFF = 36  /* FourthTimer (raw+54) */
-};
+    const EnemyParams *params = &enemy_params[3];
+    if (enemy_check_damage(obj, params, state)) return;
+    if (NASTY_LIVES(*obj) <= 0) return;
+
+    enemy_update_can_see(obj, state);
+    int can_see = obj->obj.can_see & 0x03;
+    int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
+    bool attacking = false;
+    int target_player = 0;
+
+    if (can_see && third_timer <= 0) {
+        target_player = marine_pick_target_player(obj, state);
+        attacking = (target_player != 0);
+    }
+
+    if (attacking) {
+        (void)marine_track_target(obj, params, state, target_player, false);
+
+        int16_t fourth_timer = OBJ_TD_W(obj, ENEMY_FOURTH_TIMER_OFF);
+        fourth_timer -= state->temp_frames;
+        if (fourth_timer <= 0) {
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 50);
+        }
+
+        if (fourth_timer < 20) {
+            fourth_timer = 30;
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, (int16_t)(100 + (rand() & 0xFF)));
+            audio_play_sample(9, 100);
+            enemy_fire_at_player(obj, state, target_player, 5, 10, 16, 3);
+        }
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
+    } else {
+        (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
+        enemy_wander_with_timer(obj, params, state, 50, 0);
+    }
+
+    {
+        int walk_step = attacking ? 0 : ((walk_cycle >> 3) & 3);
+        enemy_update_anim_with_step(obj, state, 13, walk_step);
+    }
+}
 
 static int marine_pick_target_player(GameObject *obj, GameState *state)
 {
@@ -1180,7 +1190,7 @@ void object_handle_marine(GameObject *obj, GameState *state)
     enemy_update_can_see(obj, state);
 
     int can_see = obj->obj.can_see & 0x03;
-    int16_t third_timer = OBJ_TD_W(obj, MARINE_THIRD_TIMER_OFF);
+    int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
     int16_t fourth_reset = (type == OBJ_NBR_FLAME_MARINE) ? 30 : 25;
     bool attacking = false;
     int target_player = 0;
@@ -1194,37 +1204,32 @@ void object_handle_marine(GameObject *obj, GameState *state)
         bool apply_translation = (type == OBJ_NBR_MARINE);
         (void)marine_track_target(obj, params, state, target_player, apply_translation);
 
-        int16_t fourth_timer = OBJ_TD_W(obj, MARINE_FOURTH_TIMER_OFF);
+        int16_t fourth_timer = OBJ_TD_W(obj, ENEMY_FOURTH_TIMER_OFF);
         fourth_timer -= state->temp_frames;
-        OBJ_SET_TD_W(obj, MARINE_FOURTH_TIMER_OFF, fourth_timer);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
         if (fourth_timer <= 0) {
-            OBJ_SET_TD_W(obj, MARINE_THIRD_TIMER_OFF, 50);
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 50);
         }
 
-        if (fourth_timer < 20) {
+        if ((type == OBJ_NBR_MARINE && fourth_timer <= 20) ||
+            (type != OBJ_NBR_MARINE && fourth_timer < 20)) {
             if (type == OBJ_NBR_MARINE) {
-                OBJ_SET_TD_W(obj, MARINE_THIRD_TIMER_OFF, 50 + (int16_t)(rand() & 0xFF));
+                OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 50 + (int16_t)(rand() & 0xFF));
                 audio_play_sample(3, 100);
                 marine_hitscan_burst(obj, state, target_player, 1, 4);
             } else if (type == OBJ_NBR_TOUGH_MARINE) {
-                OBJ_SET_TD_W(obj, MARINE_THIRD_TIMER_OFF, 50 + (int16_t)(rand() & 0x1F));
+                OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 50 + (int16_t)(rand() & 0x1F));
                 enemy_fire_at_player(obj, state, target_player, 6, 7, 32, 4);
             } else {
-                OBJ_SET_TD_W(obj, MARINE_THIRD_TIMER_OFF, 200 + (int16_t)(rand() & 0xFF));
+                OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 200 + (int16_t)(rand() & 0xFF));
                 audio_play_sample(21, 100);
                 marine_hitscan_burst(obj, state, target_player, 5, 2);
             }
         }
     } else {
-        if (can_see) {
-            third_timer -= state->temp_frames;
-            if (third_timer < 0) third_timer = 0;
-        } else {
-            third_timer = (int16_t)(20 + (rand() & 0x3F));
-        }
-        OBJ_SET_TD_W(obj, MARINE_THIRD_TIMER_OFF, third_timer);
-        OBJ_SET_TD_W(obj, MARINE_FOURTH_TIMER_OFF, fourth_reset);
-        enemy_wander(obj, params, state);
+        (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_reset);
+        enemy_wander_with_timer(obj, params, state, 50, 0);
     }
 
     {
@@ -1237,12 +1242,47 @@ void object_handle_marine(GameObject *obj, GameState *state)
 
 void object_handle_big_nasty(GameObject *obj, GameState *state)
 {
-    enemy_generic(obj, state, 7);
+    if (!state->nasty) return;
+
+    const EnemyParams *params = &enemy_params[7];
+    if (enemy_check_damage(obj, params, state)) return;
+    if (NASTY_LIVES(*obj) <= 0) return;
+
+    enemy_update_can_see(obj, state);
+    int can_see = obj->obj.can_see & 0x03;
+    bool attacking = false;
+    int target_player = 0;
+
+    if (can_see && NASTY_TIMER(*obj) <= 0 && (rand() & 0xFF) <= 250) {
+        target_player = marine_pick_target_player(obj, state);
+        attacking = (target_player != 0);
+    }
+
+    if (attacking) {
+        int32_t dist = marine_track_target(obj, params, state, target_player, true);
+        if (dist <= 80) {
+            PlayerState *plr = (target_player == 1) ? &state->plr1 : &state->plr2;
+            plr->energy -= (int16_t)state->temp_frames;
+        }
+
+        int16_t sec_timer = OBJ_TD_W(obj, ENEMY_SEC_TIMER_OFF);
+        sec_timer -= state->temp_frames;
+        if (sec_timer < 0) {
+            sec_timer = (int16_t)(50 + (rand() & 0x07));
+            audio_play_sample(9, 100);
+            enemy_fire_at_player(obj, state, target_player, 1, 10, 16, 0);
+        }
+        OBJ_SET_TD_W(obj, ENEMY_SEC_TIMER_OFF, sec_timer);
+    } else {
+        enemy_wander_with_timer(obj, params, state, 20, 15);
+    }
+
+    enemy_update_anim(obj, state, 3);
 }
 
 void object_handle_big_claws(GameObject *obj, GameState *state)
 {
-    enemy_generic(obj, state, 8);
+    enemy_handle_big_red_variant(obj, state, true);
 }
 
 /* -----------------------------------------------------------------------
@@ -1273,7 +1313,7 @@ void object_handle_flying_nasty(GameObject *obj, GameState *state)
 
     enemy_update_can_see(obj, state);
     int can_see = obj->obj.can_see & 0x03;
-    int16_t third_timer = OBJ_TD_W(obj, 34);
+    int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
     bool attacking = false;
     int target_player = 0;
 
@@ -1285,15 +1325,16 @@ void object_handle_flying_nasty(GameObject *obj, GameState *state)
     if (attacking) {
         (void)marine_track_target(obj, params, state, target_player, false);
 
-        int16_t fourth_timer = OBJ_TD_W(obj, 36);
+        int16_t fourth_timer = OBJ_TD_W(obj, ENEMY_FOURTH_TIMER_OFF);
         fourth_timer -= state->temp_frames;
-        OBJ_SET_TD_W(obj, 36, fourth_timer);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
         if (fourth_timer <= 0) {
-            OBJ_SET_TD_W(obj, 34, 50);
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 50);
         }
 
         if (fourth_timer < 20) {
-            OBJ_SET_TD_W(obj, 34, 50);
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 50);
+            audio_play_sample(20, 100);
             enemy_fire_at_player(obj, state, target_player, 0, 5, 16, 3);
         }
     } else {
@@ -1304,16 +1345,10 @@ void object_handle_flying_nasty(GameObject *obj, GameState *state)
         facing = (facing + turn_speed * state->temp_frames) & ANGLE_MASK;
         NASTY_SET_FACING(*obj, facing);
 
-        if (can_see) {
-            third_timer -= state->temp_frames;
-            if (third_timer < 0) third_timer = 0;
-        } else {
-            third_timer = (int16_t)(20 + (rand() & 0x3F));
-        }
-        OBJ_SET_TD_W(obj, 34, third_timer);
-        OBJ_SET_TD_W(obj, 36, 30);
+        (void)enemy_tick_third_timer(obj, state, can_see, 10, 31);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
 
-        enemy_wander(obj, params, state);
+        enemy_wander_with_timer(obj, params, state, 50, 0);
     }
 
     int16_t vn_fly = (obj->obj.number == OBJ_NBR_EYEBALL) ? 0 : 4;
@@ -1327,7 +1362,46 @@ void object_handle_flying_nasty(GameObject *obj, GameState *state)
  * ----------------------------------------------------------------------- */
 void object_handle_tree(GameObject *obj, GameState *state)
 {
-    enemy_generic(obj, state, 10);
+    if (!state->nasty) return;
+
+    const EnemyParams *params = &enemy_params[10];
+    if (enemy_check_damage(obj, params, state)) return;
+    if (NASTY_LIVES(*obj) <= 0) return;
+
+    enemy_update_can_see(obj, state);
+    int can_see = obj->obj.can_see & 0x03;
+    int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
+    bool attacking = false;
+    int target_player = 0;
+
+    if (can_see && third_timer <= 0) {
+        target_player = marine_pick_target_player(obj, state);
+        attacking = (target_player != 0);
+    }
+
+    if (attacking) {
+        (void)marine_track_target(obj, params, state, target_player, false);
+
+        int16_t fourth_timer = OBJ_TD_W(obj, ENEMY_FOURTH_TIMER_OFF);
+        fourth_timer -= state->temp_frames;
+        if (fourth_timer <= 0) {
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 50);
+        }
+
+        if (fourth_timer < 20) {
+            fourth_timer = 30;
+            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, (int16_t)(300 + (rand() & 0x7F)));
+            audio_play_sample(16, 100);
+            (void)enemy_spawn_tree_eyeball(obj, state);
+        }
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
+    } else {
+        (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
+        enemy_wander_with_timer(obj, params, state, 50, 0);
+    }
+
+    enemy_update_anim_with_step(obj, state, 15, attacking ? 0 : ((walk_cycle >> 3) & 3));
 }
 
 /* -----------------------------------------------------------------------
