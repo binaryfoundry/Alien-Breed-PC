@@ -78,6 +78,12 @@ extern VecObject g_poly_objects[POLY_OBJECTS_COUNT];
  */
 int poly_obj_load(int slot, const uint8_t *data, size_t size);
 
+/* Set shared texture assets used by 3D object polygons.
+ * texture_maps points to TextureMaps (expected 65536 bytes).
+ * texture_pal points to OldTexturePalScaled (expected 15*256*2 bytes). */
+void poly_obj_set_texture_assets(const uint8_t *texture_maps, size_t texture_maps_size,
+                                 const uint8_t *texture_pal, size_t texture_pal_size);
+
 /*
  * Draw a 3D vector/polygon object at its view-space position.
  *   obj         - raw 64-byte object data (Amiga big-endian)

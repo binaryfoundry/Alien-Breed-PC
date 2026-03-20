@@ -29,6 +29,21 @@
  * ----------------------------------------------------------------------- */
 VecObject g_poly_objects[POLY_OBJECTS_COUNT];
 
+/* Shared polygon texture assets (provided by stub_io). */
+static const uint8_t *g_poly_tex_maps = NULL;
+static size_t         g_poly_tex_maps_size = 0;
+static const uint8_t *g_poly_tex_pal = NULL;
+static size_t         g_poly_tex_pal_size = 0;
+
+void poly_obj_set_texture_assets(const uint8_t *texture_maps, size_t texture_maps_size,
+                                 const uint8_t *texture_pal, size_t texture_pal_size)
+{
+    g_poly_tex_maps = texture_maps;
+    g_poly_tex_maps_size = texture_maps_size;
+    g_poly_tex_pal = texture_pal;
+    g_poly_tex_pal_size = texture_pal_size;
+}
+
 /* -----------------------------------------------------------------------
  * Big-endian read helper
  * ----------------------------------------------------------------------- */
@@ -155,7 +170,7 @@ static int obj_bright_to_level(int raw_brightness)
  * ----------------------------------------------------------------------- */
 typedef struct { int32_t x, y; int16_t z; } BoxRot;
 typedef struct { int32_t x, y, z; int16_t vb; } ObjVertex;
-typedef struct { int32_t x, y, z; int16_t vb; } PolyVertex;
+typedef struct { int32_t x, y, z; int32_t u, v; int16_t vb; } PolyVertex;
 
 static BoxRot    s_boxrot[MAX_POLY_POINTS];
 static int16_t   s_boxbrights[MAX_POLY_POINTS];
@@ -176,6 +191,12 @@ static PolyVertex intersect_near_plane(const PolyVertex *a, const PolyVertex *b,
                                        int32_t near_z);
 static int clip_polygon_to_near(const PolyVertex *in, int in_count,
                                 PolyVertex *out, int max_out, int32_t near_z);
+static int poly_textures_ready(void);
+static void draw_textured_polygon(const int *sx, const int *sy,
+                                  const int32_t *u, const int32_t *v,
+                                  int n, uint16_t tex_map_word, int shade_level,
+                                  int clip_left, int clip_right,
+                                  int clip_top, int clip_bot);
 
 static int s_span_min[POLY_MAX_HEIGHT];
 static int s_span_max[POLY_MAX_HEIGHT];
@@ -456,7 +477,8 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
             int vi[MAX_POLY_VERTS];
             int bad_index = 0;
             for (int v = 0; v < num_verts; v++) {
-                vi[v] = (int)(uint16_t)vec_rd16(poly_start + 4 + v * 4);
+                const uint8_t *vrec = poly_start + 4 + v * 4;
+                vi[v] = (int)(uint16_t)vec_rd16(vrec);
                 if (vi[v] < 0 || vi[v] >= np) bad_index = 1;
             }
             if (bad_index) continue;
@@ -477,10 +499,13 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
 
             PolyVertex in_poly[MAX_CLIP_VERTS];
             for (int v = 0; v < num_verts; v++) {
+                const uint8_t *vrec = poly_start + 4 + v * 4;
                 const ObjVertex *sv = &s_world[vi[v]];
                 in_poly[v].x = sv->x;
                 in_poly[v].y = sv->y;
                 in_poly[v].z = sv->z;
+                in_poly[v].u = (int32_t)vrec[2] << 16;
+                in_poly[v].v = (int32_t)vrec[3] << 16;
                 in_poly[v].vb = sv->vb;
             }
 
@@ -490,12 +515,15 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
             if (clipped_n < 3) continue;
 
             int sx[MAX_CLIP_VERTS], sy[MAX_CLIP_VERTS];
+            int32_t su[MAX_CLIP_VERTS], svt[MAX_CLIP_VERTS];
             for (int v = 0; v < clipped_n; v++) {
                 int32_t wz = clipped_poly[v].z;
                 if (wz <= 0) wz = 1;
                 sx[v] = (int)((clipped_poly[v].x * RENDER_SCALE) / wz) + half_w;
                 sy[v] = (int)((int64_t)(clipped_poly[v].y >> WORLD_Y_FRAC_BITS) * proj_ys * RENDER_SCALE
                               / wz) + half_h;
+                su[v] = clipped_poly[v].u;
+                svt[v] = clipped_poly[v].v;
             }
 
             /* Back-face culling – matches Amiga doapoly cross product:
@@ -523,11 +551,125 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
             }
 
             int shade_level = obj_bright_to_level(shade_raw);
-            uint32_t color = make_poly_color(vect_num, tex_map, shade_level);
-
-            draw_filled_polygon(sx, sy, clipped_n, color,
-                                clip_l, clip_r, clip_t, clip_b);
+            if (poly_textures_ready()) {
+                draw_textured_polygon(sx, sy, su, svt, clipped_n, tex_map, shade_level,
+                                      clip_l, clip_r, clip_t, clip_b);
+            } else {
+                uint32_t color = make_poly_color(vect_num, tex_map, shade_level);
+                draw_filled_polygon(sx, sy, clipped_n, color,
+                                    clip_l, clip_r, clip_t, clip_b);
+            }
         }
+    }
+}
+
+static inline uint32_t amiga12_to_argb_local(uint16_t w)
+{
+    uint32_t r4 = (uint32_t)((w >> 8) & 0xF);
+    uint32_t g4 = (uint32_t)((w >> 4) & 0xF);
+    uint32_t b4 = (uint32_t)(w & 0xF);
+    return 0xFF000000u | (r4 * 0x11u << 16) | (g4 * 0x11u << 8) | (b4 * 0x11u);
+}
+
+static int poly_textures_ready(void)
+{
+    return g_poly_tex_maps && g_poly_tex_pal &&
+           g_poly_tex_maps_size >= 65536 &&
+           g_poly_tex_pal_size >= (15u * 512u);
+}
+
+static uint32_t sample_poly_texel(uint16_t tex_map_word, int shade_level,
+                                  int32_t u_fixed, int32_t v_fixed)
+{
+    if (!poly_textures_ready()) return 0;
+
+    if (shade_level < 0) shade_level = 0;
+    if (shade_level > 14) shade_level = 14;
+
+    int u = (int)(u_fixed >> 16) & 63;
+    int v = (int)(v_fixed >> 16) & 63;
+    size_t uv = ((size_t)v << 8) | (size_t)u;  /* v:high byte, u:low byte */
+    size_t tex_off = (uv << 2) + (size_t)tex_map_word;
+    if (tex_off >= g_poly_tex_maps_size) tex_off %= g_poly_tex_maps_size;
+
+    uint8_t pal_idx = g_poly_tex_maps[tex_off];
+    size_t pal_off = (size_t)shade_level * 512u + (size_t)pal_idx * 2u;
+    if (pal_off + 1u >= g_poly_tex_pal_size) return 0;
+    uint16_t cw = (uint16_t)(((uint16_t)g_poly_tex_pal[pal_off] << 8) |
+                              (uint16_t)g_poly_tex_pal[pal_off + 1u]);
+    return amiga12_to_argb_local(cw);
+}
+
+static void draw_textured_triangle(const int *sx, const int *sy,
+                                   const int32_t *u, const int32_t *v,
+                                   uint16_t tex_map_word, int shade_level,
+                                   int clip_left, int clip_right,
+                                   int clip_top, int clip_bot)
+{
+    if (!g_renderer.rgb_buffer) return;
+
+    int min_x = sx[0], max_x = sx[0];
+    int min_y = sy[0], max_y = sy[0];
+    for (int i = 1; i < 3; i++) {
+        if (sx[i] < min_x) min_x = sx[i];
+        if (sx[i] > max_x) max_x = sx[i];
+        if (sy[i] < min_y) min_y = sy[i];
+        if (sy[i] > max_y) max_y = sy[i];
+    }
+    if (min_x < clip_left) min_x = clip_left;
+    if (max_x > clip_right) max_x = clip_right;
+    if (min_y < clip_top) min_y = clip_top;
+    if (max_y > clip_bot) max_y = clip_bot;
+    if (min_x > max_x || min_y > max_y) return;
+
+    double x0 = (double)sx[0], y0 = (double)sy[0];
+    double x1 = (double)sx[1], y1 = (double)sy[1];
+    double x2 = (double)sx[2], y2 = (double)sy[2];
+    double area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (area == 0.0) return;
+
+    double inv_area = 1.0 / area;
+    int W = g_renderer.width;
+    uint32_t *rgb = g_renderer.rgb_buffer;
+
+    for (int y = min_y; y <= max_y; y++) {
+        uint32_t *row = rgb + (size_t)y * W;
+        double py = (double)y + 0.5;
+        for (int x = min_x; x <= max_x; x++) {
+            double px = (double)x + 0.5;
+            double w0 = ((x1 - px) * (y2 - py) - (x2 - px) * (y1 - py)) * inv_area;
+            double w1 = ((x2 - px) * (y0 - py) - (x0 - px) * (y2 - py)) * inv_area;
+            double w2 = 1.0 - w0 - w1;
+            if (w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6) continue;
+
+            int32_t uf = (int32_t)(w0 * (double)u[0] + w1 * (double)u[1] + w2 * (double)u[2]);
+            int32_t vf = (int32_t)(w0 * (double)v[0] + w1 * (double)v[1] + w2 * (double)v[2]);
+            row[x] = sample_poly_texel(tex_map_word, shade_level, uf, vf);
+        }
+    }
+}
+
+static void draw_textured_polygon(const int *sx, const int *sy,
+                                  const int32_t *u, const int32_t *v,
+                                  int n, uint16_t tex_map_word, int shade_level,
+                                  int clip_left, int clip_right,
+                                  int clip_top, int clip_bot)
+{
+    if (n < 3) return;
+
+    int tsx[3], tsy[3];
+    int32_t tu[3], tv[3];
+    for (int i = 1; i < n - 1; i++) {
+        tsx[0] = sx[0];  tsy[0] = sy[0];
+        tsx[1] = sx[i];  tsy[1] = sy[i];
+        tsx[2] = sx[i + 1]; tsy[2] = sy[i + 1];
+
+        tu[0] = u[0];  tv[0] = v[0];
+        tu[1] = u[i];  tv[1] = v[i];
+        tu[2] = u[i + 1]; tv[2] = v[i + 1];
+
+        draw_textured_triangle(tsx, tsy, tu, tv, tex_map_word, shade_level,
+                               clip_left, clip_right, clip_top, clip_bot);
     }
 }
 
@@ -545,6 +687,8 @@ static PolyVertex intersect_near_plane(const PolyVertex *a, const PolyVertex *b,
     out.x = a->x + (int32_t)(((int64_t)(b->x - a->x) * num) / dz);
     out.y = a->y + (int32_t)(((int64_t)(b->y - a->y) * num) / dz);
     out.z = near_z;
+    out.u = a->u + (int32_t)(((int64_t)(b->u - a->u) * num) / dz);
+    out.v = a->v + (int32_t)(((int64_t)(b->v - a->v) * num) / dz);
     out.vb = (int16_t)(a->vb + (int32_t)(((int64_t)(b->vb - a->vb) * num) / dz));
     return out;
 }

@@ -584,6 +584,11 @@ static void build_test_level_clips(LevelState *level)
 static uint8_t *g_wall_data[MAX_WALL_TILES];
 /* Storage for loaded .vec file data (forward declaration for io_shutdown) */
 static uint8_t *g_vec_data[POLY_OBJECTS_COUNT];
+/* Storage for 3D polygon texture assets (TextureMaps / OldTexturePalScaled). */
+static uint8_t *g_poly_tex_maps_data;
+static size_t   g_poly_tex_maps_size;
+static uint8_t *g_poly_tex_pal_data;
+static size_t   g_poly_tex_pal_size;
 /* Actual loaded size per wall (total file size) so dump can use correct pixel dimensions */
 static size_t g_wall_loaded_size[MAX_WALL_TILES];
 
@@ -595,6 +600,11 @@ void io_init(void)
     memset(g_wall_data, 0, sizeof(g_wall_data));
     memset(g_wall_loaded_size, 0, sizeof(g_wall_loaded_size));
     memset(g_vec_data, 0, sizeof(g_vec_data));
+    g_poly_tex_maps_data = NULL;
+    g_poly_tex_maps_size = 0;
+    g_poly_tex_pal_data = NULL;
+    g_poly_tex_pal_size = 0;
+    poly_obj_set_texture_assets(NULL, 0, NULL, 0);
 }
 
 void io_shutdown(void)
@@ -610,6 +620,13 @@ void io_shutdown(void)
         free(g_vec_data[i]);
         g_vec_data[i] = NULL;
     }
+    free(g_poly_tex_maps_data);
+    g_poly_tex_maps_data = NULL;
+    g_poly_tex_maps_size = 0;
+    free(g_poly_tex_pal_data);
+    g_poly_tex_pal_data = NULL;
+    g_poly_tex_pal_size = 0;
+    poly_obj_set_texture_assets(NULL, 0, NULL, 0);
     printf("[IO] shutdown\n");
 }
 
@@ -1414,6 +1431,87 @@ void io_load_objects(void)
         }
     }
 }
+
+static int load_first_existing_file(const char *const *candidates,
+                                    uint8_t **out_data, size_t *out_size,
+                                    char *picked_path, size_t picked_path_size)
+{
+    if (!candidates || !out_data || !out_size) return 0;
+    *out_data = NULL;
+    *out_size = 0;
+    if (picked_path && picked_path_size) picked_path[0] = '\0';
+
+    for (int i = 0; candidates[i]; i++) {
+        uint8_t *data = NULL;
+        size_t sz = 0;
+        if (sb_load_file(candidates[i], &data, &sz) == 0 && data && sz > 0) {
+            *out_data = data;
+            *out_size = sz;
+            if (picked_path && picked_path_size)
+                snprintf(picked_path, picked_path_size, "%s", candidates[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void io_load_poly_texture_assets(void)
+{
+    free(g_poly_tex_maps_data);
+    g_poly_tex_maps_data = NULL;
+    g_poly_tex_maps_size = 0;
+    free(g_poly_tex_pal_data);
+    g_poly_tex_pal_data = NULL;
+    g_poly_tex_pal_size = 0;
+    poly_obj_set_texture_assets(NULL, 0, NULL, 0);
+
+    char d_texmaps[512], d_texmaps_inc[512], d_texmaps_disk[512];
+    char d_texpal[512], d_texpal_inc[512], d_texpal_disk[512];
+    make_data_path(d_texmaps, sizeof(d_texmaps), "texturemaps/TextureMaps");
+    make_data_path(d_texmaps_inc, sizeof(d_texmaps_inc), "includes/TextureMaps");
+    make_data_path(d_texmaps_disk, sizeof(d_texmaps_disk), "disk/includes/TextureMaps");
+    make_data_path(d_texpal, sizeof(d_texpal), "texturemaps/OldTexturePalScaled");
+    make_data_path(d_texpal_inc, sizeof(d_texpal_inc), "includes/OldTexturePalScaled");
+    make_data_path(d_texpal_disk, sizeof(d_texpal_disk), "disk/includes/OldTexturePalScaled");
+
+    const char *maps_candidates[] = {
+        d_texmaps, d_texmaps_inc, d_texmaps_disk,
+        "amiga/texturemaps/TextureMaps",
+        "../amiga/texturemaps/TextureMaps",
+        "../../amiga/texturemaps/TextureMaps",
+        NULL
+    };
+    const char *pal_candidates[] = {
+        d_texpal, d_texpal_inc, d_texpal_disk,
+        "amiga/texturemaps/OldTexturePalScaled",
+        "../amiga/texturemaps/OldTexturePalScaled",
+        "../../amiga/texturemaps/OldTexturePalScaled",
+        NULL
+    };
+
+    char picked_maps[512], picked_pal[512];
+    int got_maps = load_first_existing_file(maps_candidates, &g_poly_tex_maps_data,
+                                            &g_poly_tex_maps_size,
+                                            picked_maps, sizeof(picked_maps));
+    int got_pal = load_first_existing_file(pal_candidates, &g_poly_tex_pal_data,
+                                           &g_poly_tex_pal_size,
+                                           picked_pal, sizeof(picked_pal));
+
+    if (!got_maps || !got_pal) {
+        if (g_poly_tex_maps_data) { free(g_poly_tex_maps_data); g_poly_tex_maps_data = NULL; }
+        if (g_poly_tex_pal_data)  { free(g_poly_tex_pal_data);  g_poly_tex_pal_data = NULL; }
+        g_poly_tex_maps_size = 0;
+        g_poly_tex_pal_size = 0;
+        printf("[IO] 3D poly textures: missing TextureMaps/OldTexturePalScaled (falling back to flat tint)\n");
+        return;
+    }
+
+    printf("[IO] 3D poly TextureMaps: %zu bytes from %s\n", g_poly_tex_maps_size, picked_maps);
+    printf("[IO] 3D poly TexturePal : %zu bytes from %s\n", g_poly_tex_pal_size, picked_pal);
+    poly_obj_set_texture_assets(g_poly_tex_maps_data, g_poly_tex_maps_size,
+                                g_poly_tex_pal_data, g_poly_tex_pal_size);
+}
+
 /* -----------------------------------------------------------------------
  * io_load_vec_objects: load .vec files from data/vectorobjects/ into the
  * POLYOBJECTS table used by draw_3d_vector_object.
@@ -1446,6 +1544,7 @@ static const char *g_vec_names[POLY_OBJECTS_COUNT] = {
 void io_load_vec_objects(void)
 {
     printf("[IO] Loading 3D vector objects...\n");
+    io_load_poly_texture_assets();
 
     for (int i = 0; i < POLY_OBJECTS_COUNT; i++) {
         free(g_vec_data[i]);
