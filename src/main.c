@@ -23,6 +23,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 
 /* Define SDL_MAIN_HANDLED before including SDL.h so SDL doesn't
  * hijack main() - we want CONSOLE subsystem for printf output */
@@ -36,6 +37,7 @@
 #include "stub_input.h"
 #include "stub_audio.h"
 #include "stub_io.h"
+#include "renderer_3dobj.h"
 
 /*
  * setup_game - Initialize all subsystems
@@ -109,8 +111,20 @@ static void tear_down_game(GameState *state)
  */
 int main(int argc, char *argv[])
 {
-    (void)argc;
-    (void)argv;
+    int enable_3dobj_anim = 1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--3dobj-anim") == 0) {
+            enable_3dobj_anim = 1;
+        } else if (strcmp(argv[i], "--amiga-3dobj-static") == 0) {
+            enable_3dobj_anim = 0;
+        }
+    }
+    poly_obj_set_use_object_frame(enable_3dobj_anim);
+    if (enable_3dobj_anim) {
+        printf("[3DOBJ] Animation mode: object frame enabled (default; --3dobj-anim)\n");
+    } else {
+        printf("[3DOBJ] Animation mode: Amiga static frame 0 (--amiga-3dobj-static)\n");
+    }
 
     /* OSFriendlyStartup is a no-op on PC
      * (no Amiga system state to save/restore) */

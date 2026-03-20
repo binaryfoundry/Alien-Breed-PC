@@ -37,6 +37,8 @@ static const uint8_t *g_poly_tex_pal = NULL;
 static size_t         g_poly_tex_pal_size = 0;
 static int32_t       *g_poly_obj_depth = NULL;
 static size_t         g_poly_obj_depth_cap = 0;
+/* Default in PC port: animated object frame enabled (can be forced static via CLI). */
+static int            g_poly_use_object_frame = 1;
 
 void poly_obj_set_texture_assets(const uint8_t *texture_maps, size_t texture_maps_size,
                                  const uint8_t *texture_pal, size_t texture_pal_size)
@@ -45,6 +47,11 @@ void poly_obj_set_texture_assets(const uint8_t *texture_maps, size_t texture_map
     g_poly_tex_maps_size = texture_maps_size;
     g_poly_tex_pal = texture_pal;
     g_poly_tex_pal_size = texture_pal_size;
+}
+
+void poly_obj_set_use_object_frame(int enabled)
+{
+    g_poly_use_object_frame = enabled ? 1 : 0;
 }
 
 /* -----------------------------------------------------------------------
@@ -364,8 +371,15 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
                        : bot_of_room - r->yoff;
 
     /* ---- 4. Select animation frame ----------------------------------- */
-    int frame_num = (int)vec_rd16(obj + 10);
-    if (frame_num < 0 || frame_num >= vo->num_frames) frame_num = 0;
+    /* ObjDraw3 PolygonObj currently forces frame 0:
+     *   moveq #0,d5
+     *   move.w (a4,d5.w*2),d5
+     * The objVectFrameNumber path exists only in commented-out code. */
+    int frame_num = 0;
+    if (g_poly_use_object_frame) {
+        frame_num = (int)vec_rd16(obj + 10);
+        if (frame_num < 0 || frame_num >= vo->num_frames) frame_num = 0;
+    }
     int frame_byte_off = (int)vo->frame_off[frame_num];
     if (frame_byte_off + vo->num_points * 6 > (int)vo->size) return;
     const uint8_t *pts = vo->data + frame_byte_off;

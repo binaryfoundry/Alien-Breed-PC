@@ -84,6 +84,11 @@ int poly_obj_load(int slot, const uint8_t *data, size_t size);
 void poly_obj_set_texture_assets(const uint8_t *texture_maps, size_t texture_maps_size,
                                  const uint8_t *texture_pal, size_t texture_pal_size);
 
+/* Enable/disable reading objVectFrameNumber for 3D polygon objects.
+ * enabled = 0: strict Amiga PolygonObj behaviour (frame 0 only, default).
+ * enabled != 0: use object frame number (allows animated 3D objects). */
+void poly_obj_set_use_object_frame(int enabled);
+
 /*
  * Draw a 3D vector/polygon object at its view-space position.
  *   obj         - raw 64-byte object data (Amiga big-endian)
