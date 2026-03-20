@@ -1553,7 +1553,7 @@ void object_handle_barrel(GameObject *obj, GameState *state)
             for (int p = 0; p < num_particles && state->num_explosions < MAX_EXPLOSIONS; p++) {
                 int16_t px = (int16_t)(bx + (int16_t)((rand() & (2*spread - 1)) - spread));
                 int16_t pz = (int16_t)(bz + (int16_t)((rand() & (2*spread - 1)) - spread));
-                explosion_spawn(state, px, pz, zone, y_floor, barrel_size, barrel_anim_rate);
+                explosion_spawn(state, px, pz, zone, obj->obj.in_top, y_floor, barrel_size, barrel_anim_rate);
             }
         }
 
@@ -1918,7 +1918,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         if (shot_size >= 0 && shot_size < 8 &&
             bullet_types[shot_size].explosive_force > 0) {
             explosion_spawn(state, (int16_t)ctx.newx, (int16_t)ctx.newz,
-                            OBJ_ZONE(obj), accypos, 100, 100);
+                            OBJ_ZONE(obj), obj->obj.in_top, accypos, 100, 100);
             compute_blast(state, ctx.newx, ctx.newz, accypos,
                           bullet_types[shot_size].explosive_force,
                           SHOT_POWER(*obj));
@@ -2057,7 +2057,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         if (shot_size >= 0 && shot_size < 8 &&
             bullet_types[shot_size].explosive_force > 0) {
             explosion_spawn(state, (int16_t)ctx.newx, (int16_t)ctx.newz,
-                            OBJ_ZONE(obj), accypos, 100, 100);
+                            OBJ_ZONE(obj), obj->obj.in_top, accypos, 100, 100);
             compute_blast(state, ctx.newx, ctx.newz, accypos,
                           bullet_types[shot_size].explosive_force,
                           SHOT_POWER(*obj));
@@ -2820,7 +2820,7 @@ void compute_blast(GameState *state, int32_t x, int32_t z, int32_t y,
  * Amiga: explosion/bullet pop advances one step per ObjMoveAnim (per vblank).
  * Advance by 1 per call so duration is consistent regardless of temp_frames.
  * ----------------------------------------------------------------------- */
-void explosion_spawn(GameState *state, int16_t x, int16_t z, int16_t zone, int32_t y_floor,
+void explosion_spawn(GameState *state, int16_t x, int16_t z, int16_t zone, int8_t in_top, int32_t y_floor,
                     int8_t size_scale, int8_t anim_rate)
 {
     if (state->num_explosions >= MAX_EXPLOSIONS) return;
@@ -2830,6 +2830,7 @@ void explosion_spawn(GameState *state, int16_t x, int16_t z, int16_t zone, int32
     state->explosions[i].x = x;
     state->explosions[i].z = z;
     state->explosions[i].zone = zone;
+    state->explosions[i].in_top = in_top;
     state->explosions[i].y_floor = y_floor;
     state->explosions[i].frame = 0;
     state->explosions[i].frame_frac = 0;

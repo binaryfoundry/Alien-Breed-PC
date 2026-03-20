@@ -1570,10 +1570,19 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
 
     int32_t y_off = r->yoff;
 
-    /* Build depth-sorted list of objects in this zone (and on this floor when level_filter >= 0).
-     * idx 0..79 = object_data; idx 80..99 = nasty_shot_data slot (bullets/gibs). */
-    typedef struct { int idx; int32_t z; } ObjEntry;
-    ObjEntry objs[100];
+    /* Build one depth-sorted list for sprites and particles so painter order is consistent. */
+    enum {
+        DRAW_SRC_OBJECT = 0,
+        DRAW_SRC_SHOT = 1,
+        DRAW_SRC_EXPLOSION = 2
+    };
+    typedef struct {
+        int src;
+        int idx;
+        int32_t z;
+    } ObjEntry;
+    ObjEntry objs[80 + 20 + MAX_EXPLOSIONS];
+    const int max_draw_entries = (int)(sizeof(objs) / sizeof(objs[0]));
     int obj_count = 0;
 
     int num_pts = level->num_object_points;
@@ -1584,7 +1593,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
 
     /* Iterate by object index; each object has point number at offset 0 (ObjDraw: move.w (a0)+,d0).
      * Use that to look up ObjRotated[pt_num] so keys and other pickups use correct position/z. */
-    for (int obj_idx = 0; obj_idx < 80 && obj_count < 100; obj_idx++) {
+    for (int obj_idx = 0; obj_idx < 80 && obj_count < max_draw_entries; obj_idx++) {
         const uint8_t *obj = level->object_data + obj_idx * OBJECT_SIZE;
         int16_t pt_num = rd16(obj);
         if (pt_num < 0) break; /* End of object list */
@@ -1607,25 +1616,64 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
         if (orp->z <= 0) continue; /* Behind camera */
 
+        objs[obj_count].src = DRAW_SRC_OBJECT;
         objs[obj_count].idx = obj_idx;
         objs[obj_count].z = orp->z;
         obj_count++;
     }
 
     /* Add nasty_shot_data bullets/gibs (same zone, depth-sorted with level objects). */
-    if (level->nasty_shot_data && obj_count < 100) {
+    if (level->nasty_shot_data && obj_count < max_draw_entries) {
         const uint8_t *shots = level->nasty_shot_data;
-        for (int slot = 0; slot < 20 && obj_count < 100; slot++) {
+        for (int slot = 0; slot < 20 && obj_count < max_draw_entries; slot++) {
             const uint8_t *obj = shots + slot * OBJECT_SIZE;
             if (rd16(obj + 12) < 0) continue; /* OBJ_ZONE */
             if ((int8_t)obj[16] != OBJ_NBR_BULLET) continue;
             int16_t pt_num = rd16(obj);
             if (pt_num < 0 || (unsigned)pt_num >= (unsigned)num_pts) continue;
             if (rd16(obj + 12) != (int16_t)zone_id) continue;
+            if (level_filter >= 0) {
+                int shot_on_upper = (obj[obj_off_in_top] != 0);
+                if ((level_filter == 1 && !shot_on_upper) || (level_filter == 0 && shot_on_upper))
+                    continue;
+            }
             ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
             if (orp->z <= 0) continue;
-            objs[obj_count].idx = 80 + slot;
+            objs[obj_count].src = DRAW_SRC_SHOT;
+            objs[obj_count].idx = slot;
             objs[obj_count].z = orp->z;
+            obj_count++;
+        }
+    }
+
+    /* Add explosion sprites into the same sorted list so particles and billboards interleave by depth. */
+    if (state->num_explosions > 0 && obj_count < max_draw_entries &&
+        r->sprite_wad[8] && r->sprite_ptr[8]) {
+        int16_t sin_v = r->sinval;
+        int16_t cos_v = r->cosval;
+        int16_t cam_x = r->xoff;
+        int16_t cam_z = r->zoff;
+
+        for (int ei = 0; ei < state->num_explosions && obj_count < max_draw_entries; ei++) {
+            if (state->explosions[ei].zone != (int16_t)zone_id) continue;
+            if (state->explosions[ei].start_delay > 0) continue;
+            if ((int)state->explosions[ei].frame >= 9) continue;
+            if (level_filter >= 0) {
+                int expl_on_upper = (state->explosions[ei].in_top != 0);
+                if ((level_filter == 1 && !expl_on_upper) || (level_filter == 0 && expl_on_upper))
+                    continue;
+            }
+
+            int16_t dx = (int16_t)(state->explosions[ei].x - cam_x);
+            int16_t dz = (int16_t)(state->explosions[ei].z - cam_z);
+            int32_t vz = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
+            vz <<= 2;
+            int32_t orp_z = (int32_t)(int16_t)(vz >> 16);
+            if (orp_z <= 0) continue;
+
+            objs[obj_count].src = DRAW_SRC_EXPLOSION;
+            objs[obj_count].idx = ei;
+            objs[obj_count].z = orp_z;
             obj_count++;
         }
     }
@@ -1633,7 +1681,8 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
     /* Sort by Z (farthest first - painter's algorithm) */
     for (int i = 0; i < obj_count - 1; i++) {
         for (int j = i + 1; j < obj_count; j++) {
-            if (objs[j].z > objs[i].z) {
+            /* Match Amiga insertion order for equal-depth ties: later entries draw first. */
+            if (objs[j].z >= objs[i].z) {
                 ObjEntry tmp = objs[i];
                 objs[i] = objs[j];
                 objs[j] = tmp;
@@ -1654,11 +1703,81 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
      *   Offset 14: source columns (byte), offset 15: source rows (byte)
      *   Offset 26: GraphicRoom (word)
      */
+    const int expl_vect = 8;
+    const SpriteFrame *expl_ft = sprite_frames_table[expl_vect].frames;
+    const int expl_ft_count = sprite_frames_table[expl_vect].count;
     for (int oi = 0; oi < obj_count; oi++) {
+        int entry_src = objs[oi].src;
+        if (entry_src == DRAW_SRC_EXPLOSION) {
+            int ei = objs[oi].idx;
+            int16_t sin_v = r->sinval;
+            int16_t cos_v = r->cosval;
+            int16_t cam_x = r->xoff;
+            int16_t cam_z = r->zoff;
+            int scale = (int)state->explosions[ei].size_scale;
+            if (scale <= 0) scale = 100;
+            int expl_w = 256 * scale / 100;
+            int expl_h = 256 * scale / 100;
+            int frame_num = state->explosions[ei].frame;
+            if (frame_num >= expl_ft_count) frame_num = expl_ft_count - 1;
+            if (frame_num < 0) continue;
+
+            int16_t dx = (int16_t)(state->explosions[ei].x - cam_x);
+            int16_t dz = (int16_t)(state->explosions[ei].z - cam_z);
+            int32_t vx = (int32_t)dx * cos_v - (int32_t)dz * sin_v;
+            vx <<= 1;
+            int16_t vx16 = (int16_t)(vx >> 16);
+            int32_t vz = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
+            vz <<= 2;
+            int16_t vz16 = (int16_t)(vz >> 16);
+            int32_t vx_fine = (int32_t)vx16 << 7;
+            vx_fine += r->xwobble;
+            int32_t orp_z = (int32_t)vz16;
+            if (orp_z <= 0) continue;
+
+            int scr_x = (int)(vx_fine * RENDER_SCALE / (int32_t)orp_z) + (r->width / 2);
+            int32_t floor_rel = state->explosions[ei].y_floor - y_off;
+            int32_t floor_rel_8 = floor_rel >> WORLD_Y_FRAC_BITS;
+            int center_y = r->height / 2;
+            int floor_screen_y = (int)((int64_t)floor_rel_8 * (int64_t)r->proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp_z) + center_y;
+            int z_for_size = orp_z;
+            if (z_for_size < 1) z_for_size = 1;
+            int sprite_w = (int)((int32_t)expl_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+            int sprite_h = (int)((int64_t)expl_h * (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+            if (sprite_w < 1) sprite_w = 1;
+            if (sprite_h < 1) sprite_h = 1;
+            int half_h = sprite_h / 2;
+            int scr_y = floor_screen_y - half_h + 1;
+
+            uint32_t ptr_off = 0;
+            uint16_t down_strip = 0;
+            if (expl_ft && frame_num < expl_ft_count) {
+                ptr_off = expl_ft[frame_num].ptr_off;
+                down_strip = expl_ft[frame_num].down_strip;
+            }
+
+            int32_t clip_top_y = (int)((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE / orp_z) + center_y;
+            int32_t clip_bot_y = (int)((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE / orp_z) + center_y;
+            int bright = (orp_z >> 7);
+            const uint8_t *obj_pal = r->sprite_pal_data[expl_vect];
+            size_t obj_pal_size = r->sprite_pal_size[expl_vect];
+            renderer_draw_sprite((int16_t)scr_x, (int16_t)scr_y,
+                                 (int16_t)sprite_w, (int16_t)sprite_h,
+                                 (int16_t)(orp_z > 32767 ? 32767 : orp_z),
+                                 r->sprite_wad[expl_vect], r->sprite_wad_size[expl_vect],
+                                 r->sprite_ptr[expl_vect], r->sprite_ptr_size[expl_vect],
+                                 obj_pal, obj_pal_size,
+                                 ptr_off, down_strip,
+                                 32, 32,
+                                 (int16_t)bright, expl_vect,
+                                 clip_top_y, clip_bot_y);
+            continue;
+        }
+
         int obj_idx = objs[oi].idx;
-        const uint8_t *obj = (obj_idx < 80)
+        const uint8_t *obj = (entry_src == DRAW_SRC_OBJECT)
             ? (level->object_data + obj_idx * OBJECT_SIZE)
-            : (level->nasty_shot_data + (obj_idx - 80) * OBJECT_SIZE);
+            : (level->nasty_shot_data + obj_idx * OBJECT_SIZE);
         /* ObjDraw3: cmp.b #$ff,6(a0); bne BitMapObj; bsr PolygonObj.
          * When obj[6]==OBJ_3D_SPRITE the object is a 3D polygon mesh drawn via
          * the PolygonObj pipeline (renderer_3dobj.c). */
@@ -1816,84 +1935,6 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
                              src_cols, src_rows,
                              (int16_t)bright, vect_num,
                              clip_top_y, clip_bot_y);
-    }
-
-    /* Draw explosion animations (barrel, rocket/grenade impact, explode_into_bits) */
-    const int expl_vect = 8;
-    if (r->sprite_wad[expl_vect] && r->sprite_ptr[expl_vect] && state->num_explosions > 0) {
-        int16_t sin_v = r->sinval;
-        int16_t cos_v = r->cosval;
-        int16_t cam_x = r->xoff;
-        int16_t cam_z = r->zoff;
-        const SpriteFrame *ft = sprite_frames_table[expl_vect].frames;
-        int ft_count = sprite_frames_table[expl_vect].count;
-        /* Base world size for explosion sprite (256 = normal; barrel uses size_scale 150 = 50% larger). */
-        /* PTR has 64 columns per frame (frames_explosion ptr_off steps by 64*4); use src_cols/rows=32 so eff_cols/eff_rows=64. */
-        int src_cols = 32, src_rows = 32;
-
-        for (int ei = 0; ei < state->num_explosions; ei++) {
-            if (state->explosions[ei].zone != (int16_t)zone_id) continue;
-            if (state->explosions[ei].start_delay > 0) continue; /* not started yet */
-            if ((int)state->explosions[ei].frame >= 9) continue;
-            int scale = (int)state->explosions[ei].size_scale;
-            if (scale <= 0) scale = 100;
-            int expl_w = 256 * scale / 100;
-            int expl_h = 256 * scale / 100;
-            int frame_num = state->explosions[ei].frame;
-            if (frame_num >= ft_count) frame_num = ft_count - 1;
-
-            int16_t dx = (int16_t)(state->explosions[ei].x - cam_x);
-            int16_t dz = (int16_t)(state->explosions[ei].z - cam_z);
-            int32_t vx = (int32_t)dx * cos_v - (int32_t)dz * sin_v;
-            vx <<= 1;
-            int16_t vx16 = (int16_t)(vx >> 16);
-            int32_t vz = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
-            vz <<= 2;
-            int16_t vz16 = (int16_t)(vz >> 16);
-            int32_t vx_fine = (int32_t)vx16 << 7;
-            vx_fine += r->xwobble;
-
-            int32_t orp_z = (int32_t)vz16;
-            if (orp_z <= 0) continue;
-
-            int scr_x = (int)(vx_fine * RENDER_SCALE / (int32_t)orp_z) + (r->width / 2);
-            int32_t floor_rel = state->explosions[ei].y_floor - y_off;
-            int32_t floor_rel_8 = floor_rel >> WORLD_Y_FRAC_BITS;
-            int center_y = r->height / 2;
-            int floor_screen_y = (int)((int64_t)floor_rel_8 * (int64_t)r->proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp_z) + center_y;
-            int z_for_size = orp_z;
-            if (z_for_size < 1) z_for_size = 1;
-            int sprite_w = (int)((int32_t)expl_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
-            int sprite_h = (int)((int64_t)expl_h * (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
-            if (sprite_w < 1) sprite_w = 1;
-            if (sprite_h < 1) sprite_h = 1;
-            int half_h = sprite_h / 2;
-            int scr_y = floor_screen_y - half_h + 1;
-
-            uint32_t ptr_off = 0;
-            uint16_t down_strip = 0;
-            if (ft && frame_num >= 0 && frame_num < ft_count) {
-                ptr_off = ft[frame_num].ptr_off;
-                down_strip = ft[frame_num].down_strip;
-            }
-
-            int32_t clip_top_y = (int)((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE / orp_z) + center_y;
-            int32_t clip_bot_y = (int)((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE / orp_z) + center_y;
-            int bright = (orp_z >> 7) + 0;
-
-            const uint8_t *obj_pal = r->sprite_pal_data[expl_vect];
-            size_t obj_pal_size = r->sprite_pal_size[expl_vect];
-            renderer_draw_sprite((int16_t)scr_x, (int16_t)scr_y,
-                                 (int16_t)sprite_w, (int16_t)sprite_h,
-                                 (int16_t)(orp_z > 32767 ? 32767 : orp_z),
-                                 r->sprite_wad[expl_vect], r->sprite_wad_size[expl_vect],
-                                 r->sprite_ptr[expl_vect], r->sprite_ptr_size[expl_vect],
-                                 obj_pal, obj_pal_size,
-                                 ptr_off, down_strip,
-                                 src_cols, src_rows,
-                                 (int16_t)bright, expl_vect,
-                                 clip_top_y, clip_bot_y);
-        }
     }
 }
 
