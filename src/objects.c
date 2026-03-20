@@ -112,18 +112,34 @@ static int enemy_viewpoint(GameObject *obj, int16_t plr_x, int16_t plr_z,
      *     lat <= 0 && -lat > -fwd → LEFT(3)
      *     lat <= 0 && -lat <= -fwd → AWAY(2)
      */
+    int q;
     if (fwd > 0) {
         if (lat > 0)
-            return (lat > fwd)  ? 1 : 0;  /* RIGHT or TOWARDS */
+            q = (lat > fwd)  ? 1 : 0;  /* RIGHT or TOWARDS */
         else
-            return (-lat > fwd) ? 3 : 0;  /* LEFT  or TOWARDS */
+            q = (-lat > fwd) ? 3 : 0;  /* LEFT  or TOWARDS */
     } else {
         int32_t afwd = -fwd;
         if (lat > 0)
-            return (lat > afwd)  ? 1 : 2; /* RIGHT or AWAY */
+            q = (lat > afwd)  ? 1 : 2; /* RIGHT or AWAY */
         else
-            return (-lat > afwd) ? 3 : 2; /* LEFT  or AWAY */
+            q = (-lat > afwd) ? 3 : 2; /* LEFT  or AWAY */
     }
+
+    /* Sprite directional groups are rotated 180 degrees relative to the
+     * Amiga quadrant constants in this port's frame tables. */
+    return (q + 2) & 3;
+}
+
+/* Update only the facing quadrant in the frame index and preserve the
+ * low 2-bit walk/attack sub-frame (Amiga layout: frame = angle*4 + step). */
+static void enemy_update_display_facing_frame(GameObject *obj, const GameState *state,
+                                              int16_t view_x, int16_t view_z)
+{
+    int16_t old_frame = OBJ_DEADL(obj);
+    int16_t step = (int16_t)(old_frame & 3);
+    int16_t angle = (int16_t)(enemy_viewpoint(obj, view_x, view_z, &state->level) & 3);
+    OBJ_SET_DEADL(obj, (int16_t)((angle << 2) | step));
 }
 
 /* -----------------------------------------------------------------------
@@ -789,9 +805,8 @@ void objects_update(GameState *state)
             break;
         }
 
-        /* Set display frame from viewpoint (camera) relative to enemy facing, so the renderer
-         * gets the correct frame and down_strip. Amiga: ViewpointToDraw in enemy .s files
-         * computes which of 8/16 rotational frames to show based on viewer angle vs facing. */
+        /* Refresh display-facing for the current camera while preserving the
+         * walk/attack sub-frame in the low 2 bits (Amiga: frame=angle*4+step). */
         if (NASTY_LIVES(*obj) > 0) {
             switch (obj_type) {
             case OBJ_NBR_ALIEN: case OBJ_NBR_ROBOT: case OBJ_NBR_BIG_NASTY:
@@ -800,14 +815,11 @@ void objects_update(GameState *state)
             case OBJ_NBR_WORM: case OBJ_NBR_HUGE_RED_THING: case OBJ_NBR_SMALL_RED_THING:
             case OBJ_NBR_TREE:
                 {
-                    int16_t obj_x, obj_z;
-                    get_object_pos(&state->level, OBJ_CID(obj), &obj_x, &obj_z);
-                    /* Viewer = current player (camera); use plr1 for single-player. */
-                    int16_t view_x = (int16_t)(state->plr1.xoff >> 16);
-                    int16_t view_z = (int16_t)(state->plr1.zoff >> 16);
-                    int16_t facing = NASTY_FACING(*obj);
-                    int16_t frame = viewpoint_to_draw_16(view_x, view_z, obj_x, obj_z, facing);
-                    obj_sw(obj->raw + 10, frame);
+                    const PlayerState *view_plr = (state->mode == MODE_SLAVE)
+                        ? &state->plr2 : &state->plr1;
+                    int16_t view_x = (int16_t)(view_plr->xoff >> 16);
+                    int16_t view_z = (int16_t)(view_plr->zoff >> 16);
+                    enemy_update_display_facing_frame(obj, state, view_x, view_z);
                 }
                 break;
             default:
@@ -851,8 +863,10 @@ void objects_update_sprite_frames(GameState *state)
         for (int z = 0; z < 256; z++) vis_zones[z] = 1;
     }
 
-    int16_t view_x = (int16_t)(state->plr1.xoff >> 16);
-    int16_t view_z = (int16_t)(state->plr1.zoff >> 16);
+    const PlayerState *view_plr = (state->mode == MODE_SLAVE)
+        ? &state->plr2 : &state->plr1;
+    int16_t view_x = (int16_t)(view_plr->xoff >> 16);
+    int16_t view_z = (int16_t)(view_plr->zoff >> 16);
 
     int obj_index = 0;
     while (1) {
@@ -877,11 +891,7 @@ void objects_update_sprite_frames(GameState *state)
         case OBJ_NBR_WORM: case OBJ_NBR_HUGE_RED_THING: case OBJ_NBR_SMALL_RED_THING:
         case OBJ_NBR_TREE:
             {
-                int16_t obj_x, obj_z;
-                get_object_pos(&state->level, OBJ_CID(obj), &obj_x, &obj_z);
-                int16_t facing = NASTY_FACING(*obj);
-                int16_t frame = viewpoint_to_draw_16(view_x, view_z, obj_x, obj_z, facing);
-                obj_sw(obj->raw + 10, frame);
+                enemy_update_display_facing_frame(obj, state, view_x, view_z);
             }
             break;
         default:
