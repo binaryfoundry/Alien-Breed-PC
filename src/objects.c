@@ -822,6 +822,13 @@ void objects_update(GameState *state)
             object_handle_gas_pipe(obj, state);
             break;
         case OBJ_NBR_DEAD:
+            /* Decorative vector objects in level data also use obj.number == -1.
+             * Amiga ObjectDataHandler skips all negative objNumber entries; do not run
+             * corpse animation logic on 3D vector props (e.g. EXIT sign), or their
+             * objVectNumber/frame fields at +8/+10 get clobbered. */
+            if ((uint8_t)obj->raw[6] == (uint8_t)OBJ_3D_SPRITE)
+                break;
+
             /* Advance death animation; original type stored in type_data[1] when we died.
              * Amiga: ThirdTimer counts down from 25, one step per ObjMoveAnim (~0.5 s at 50 Hz).
              * Advance every tick (dead_l >= 1) to match. */

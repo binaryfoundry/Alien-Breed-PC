@@ -202,6 +202,34 @@ int main(int argc, char **argv)
         printf("  total switches: %d\n", idx);
     }
 
+    /* ----- OBJECTS (from level data) ----- */
+    {
+        int32_t obj_off = read_be32(data + 30);
+        printf("\n--- OBJECTS ---\n");
+        printf("object_offset=%ld\n", (long)obj_off);
+        if (obj_off < 0 || (size_t)obj_off >= data_size) {
+            printf("(object offset out of range)\n");
+        } else {
+            const uint8_t *o = data + obj_off;
+            for (int i = 0; i < 256; i++, o += 64) {
+                int16_t cid = read_be16(o + 0);
+                int16_t zone = read_be16(o + 12);
+                int16_t unk14 = read_be16(o + 14);
+                int16_t groom = read_be16(o + 26);
+                int8_t width_or_3d = (int8_t)o[6];
+                int8_t number = (int8_t)o[16];
+                int16_t vect = read_be16(o + 8);
+                int16_t frame = read_be16(o + 10);
+                if (cid < 0) break;
+                if (width_or_3d == (int8_t)0xFF || vect == 2 || number == 2 || groom != zone) {
+                    printf("  obj[%d] cid=%d zone=%d unk14=%d groom=%d n=%d w3d=%d vect=%d frame=%d in_top=%d\n",
+                           i, (int)cid, (int)zone, (int)unk14, (int)groom, (int)number, (int)width_or_3d,
+                           (int)vect, (int)frame, (int)(int8_t)o[63]);
+                }
+            }
+        }
+    }
+
     free(graph);
     free(data);
     return 0;
