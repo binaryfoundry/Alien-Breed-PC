@@ -665,9 +665,13 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     int rows = 1 << valshift;
     int h = (int)wall_height_world;
     if (h < 1) h = 1;
-    /* Full-height short walls: show full texture. Switch panels: use h=64 so full texture rows map onto panel (fixes half-visible). */
-    if (tex_id == SWITCHES_WALL_TEX_ID || (rows < 64 && h < 64)) h = 64;
-    int32_t tex_step = (int32_t)(((int64_t)rows * (int64_t)h << 16) / (64 * wall_pixels));
+    /* Full-height short walls: show full texture.
+     * Switch texture is 32 rows; map exactly one switch texture vertically. */
+    if (tex_id == SWITCHES_WALL_TEX_ID) h = rows;
+    else if (rows < 64 && h < 64) h = 64;
+    /* Amiga d4 progression is independent of VALSHIFT/VALAND; those only affect row masking/addressing.
+     * Scaling by rows over-wraps 128-row door textures vertically. */
+    int32_t tex_step = (int32_t)(((int64_t)h << 16) / wall_pixels);
     /* Amiga: totalyoff is added to row index then masked with VALAND (WallRoutine3 line 1803–1804). */
     int32_t yoff = (int32_t)((unsigned)totalyoff & (unsigned)valand);
     int32_t tex_y = (ct - y_top_tex) * tex_step + ((int32_t)yoff << 16);
@@ -2181,10 +2185,22 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 int16_t rx2 = (int16_t)(r->rotated[p2].x >> 7);
                 int16_t rz2 = (int16_t)r->rotated[p2].z;
                 const uint8_t *wall_tex = (tex_id >= 0 && tex_id < MAX_WALL_TILES) ? r->walltiles[tex_id] : NULL;
+                int32_t wall_gfx_off = (int32_t)((ptr - 2) - level->graphics);
+                int wall_is_door_wall = wall_is_door_controlled(level, zone_id, wall_gfx_off);
+                int wall_is_lift_wall = wall_is_lift_controlled(level, zone_id, wall_gfx_off);
 
-                /* Use dimensions from loaded file when available; else use level data. */
+                /* Prefer level-authored VALAND/VALSHIFT. Some textures have ambiguous raw sizes
+                 * (e.g. 64 vs 128 rows), and inferred file dimensions can misalign specific doors.
+                 * Only fall back to loaded-file dimensions when level data is missing/zero. */
                 uint8_t use_valand = valand, use_valshift = valshift;
-                if (tex_id >= 0 && tex_id < MAX_WALL_TILES && r->wall_valshift[tex_id] != 0) {
+                if (wall_is_lift_wall &&
+                    tex_id >= 0 && tex_id < MAX_WALL_TILES && r->wall_valshift[tex_id] != 0) {
+                    /* Lift walls regressed after texture-step changes; keep pre-fix behavior
+                     * by preferring dimensions discovered from texture data on lifts. */
+                    use_valand = r->wall_valand[tex_id];
+                    use_valshift = r->wall_valshift[tex_id];
+                } else if ((use_valand == 0 || use_valshift == 0) &&
+                           tex_id >= 0 && tex_id < MAX_WALL_TILES && r->wall_valshift[tex_id] != 0) {
                     use_valand = r->wall_valand[tex_id];
                     use_valshift = r->wall_valshift[tex_id];
                 }
@@ -2207,9 +2223,6 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 if (wall_height_for_tex < 1) wall_height_for_tex = 1;
                 int32_t door_yoff_add = 0;
                 int skip_this_wall = 0;
-                int32_t wall_gfx_off = (int32_t)((ptr - 2) - level->graphics);
-                int wall_is_door_wall = wall_is_door_controlled(level, zone_id, wall_gfx_off);
-                int wall_is_lift_wall = wall_is_lift_controlled(level, zone_id, wall_gfx_off);
                 int wall_is_dynamic_vertical = (wall_is_door_wall || wall_is_lift_wall);
 
                 /* Door/lift vertical movers: clip wall to the live zone roof/floor.
@@ -2258,6 +2271,16 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                         wall_height_for_tex = (int16_t)((zone_floor_rel - zone_roof_rel) >> 8);
                         if (wall_height_for_tex < 1) wall_height_for_tex = 1;
                     }
+                }
+
+                if (wall_is_lift_wall && tex_id != SWITCHES_WALL_TEX_ID) {
+                    /* Compensate lift texture phase for the normalized tex_step formula.
+                     * Equivalent to old (rows/64) factor for lift-controlled walls only. */
+                    int rows = 1 << use_valshift;
+                    int32_t scaled_h = ((int32_t)wall_height_for_tex * rows + 32) / 64;
+                    if (scaled_h < 1) scaled_h = 1;
+                    if (scaled_h > 32767) scaled_h = 32767;
+                    wall_height_for_tex = (int16_t)scaled_h;
                 }
 
                 /* Switch walls (tex_id 11): same texture has on/off states.

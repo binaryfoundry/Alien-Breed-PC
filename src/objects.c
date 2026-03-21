@@ -2353,9 +2353,12 @@ void door_routine(GameState *state)
                 }
                 if (gfx_off >= 0) {
                     uint8_t *wall_rec = state->level.graphics + (uint32_t)gfx_off;
-                    int16_t tex_scroll = (int16_t)(-((int16_t)(door_pos >> 8)));  /* Amiga: d0 = -(curr>>2) */
-                    int32_t tex_ptr = gfx_base + (int32_t)tex_scroll;             /* Amiga: adda.w d0,a2 */
-                    wbe32(wall_rec + 10, tex_ptr);    /* Amiga: move.l a2,10(a1) */
+                    /* Door/lift wall-list "graphic" is encoded in 12.4 form in level data.
+                     * Shift by 4 before adding the 8-bit scroll so the resulting long maps back to:
+                     *   high word -> fromtile, low word -> totalyoff (Amiga move.l a2,10(a1)). */
+                    uint32_t tex_scroll = (uint32_t)((-(int16_t)(door_pos >> 8)) & 0x00FF); /* d0 */
+                    uint32_t tex_ptr = ((uint32_t)gfx_base << 4) + tex_scroll;                /* a2 */
+                    wbe32(wall_rec + 10, (int32_t)tex_ptr);  /* Amiga: move.l a2,10(a1) */
                     wbe32(wall_rec + 24, door_pos);   /* Amiga: move.l d3,24(a1) = door height for this wall */
                 }
             }
