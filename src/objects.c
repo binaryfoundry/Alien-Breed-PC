@@ -2351,18 +2351,14 @@ void door_routine(GameState *state)
                 }
                 if (gfx_off >= 0) {
                     uint8_t *wall_rec = state->level.graphics + (uint32_t)gfx_off;
-                    uint8_t valshift = wall_rec[15];
-                    uint8_t valand = wall_rec[14];
-                    int shift = 0; // TODO: fix this properly
-                    if (valshift == 8) shift = 7;
-                    if (valshift == 6) shift = 8;
-                    if (valshift == 4) shift = 9;
-                    if (valshift == 2) shift = 10;
-                    if (valshift == 1) shift = 11;
-                    if (valshift == 0) shift = 12;
                     wbe32(wall_rec + 24, door_pos);   /* Amiga: move.l d3,24(a1) = door height for this wall */
-                    int16_t yoff = (int16_t)((uint16_t)((-(door_pos >> shift)) & 0xFFu));
-                    wbe32(wall_rec + 10, yoff);
+                    /* Amiga DoorRoutine:
+                     *   d0 = -(curr >> 2) & 255  => with curr stored as door_pos/64, this is -(door_pos>>8).
+                     * Preserve fromtile (high word at +10) and update totalyoff (low word). */
+                    uint16_t fromtile = (uint16_t)be16(wall_rec + 10);
+                    uint16_t tex_scroll = (uint16_t)((-(int16_t)(door_pos >> 8)) & 0x00FF);
+                    uint32_t tex_ptr = ((uint32_t)fromtile << 16) | (uint32_t)tex_scroll;
+                    wbe32(wall_rec + 10, (int32_t)tex_ptr);  /* Amiga: move.l a2,10(a1) */
                 }
             }
             if (triggered)
@@ -2552,6 +2548,11 @@ void lift_routine(GameState *state)
                 }
                 if (gfx_off >= 0) {
                     uint8_t *wall_rec = state->level.graphics + (uint32_t)gfx_off;
+                    /* Amiga LiftRoutine mirrors doors for wall texture phase update. */
+                    uint16_t fromtile = (uint16_t)be16(wall_rec + 10);
+                    uint16_t tex_scroll = (uint16_t)((-(int16_t)(lift_pos >> 8)) & 0x00FF);
+                    uint32_t tex_ptr = ((uint32_t)fromtile << 16) | (uint32_t)tex_scroll;
+                    wbe32(wall_rec + 10, (int32_t)tex_ptr);  /* Amiga: move.l a2,10(a1) */
                     wbe32(wall_rec + 20, lift_pos);
                 }
             }
