@@ -1999,8 +1999,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
 #define MAX_LIFT_ENTRIES 256
 #define LIFT_ENTRY_SIZE  20
 #define DOOR_ENTRY_SIZE  22
-#define LIFT_WALL_ENTRY_SIZE 10
-#define DOOR_WALL_ENTRY_SIZE 10
+#define DOOR_WALL_ENTRY_SIZE 6
 
 static int zone_has_door(const uint8_t *door_data, int16_t zone_id)
 {
@@ -2049,41 +2048,6 @@ static int zone_has_lift(const uint8_t *lift_data, int16_t zone_id)
     return 0;
 }
 
-/* Lift clipping should only apply to wall records listed for the lift (Anims.s liftwalls). */
-static int wall_is_lift_controlled(const LevelState *level, int16_t zone_id, int32_t gfx_off)
-{
-    if (!level || !level->lift_data || !level->lift_wall_list || !level->lift_wall_list_offsets) return 0;
-    if (level->num_lifts <= 0) return 0;
-
-    for (int lift_idx = 0; lift_idx < level->num_lifts; lift_idx++) {
-        const uint8_t *lift = level->lift_data + (size_t)lift_idx * LIFT_ENTRY_SIZE;
-        if (rd16(lift) != zone_id) continue;
-
-        uint32_t start = level->lift_wall_list_offsets[lift_idx];
-        uint32_t end   = level->lift_wall_list_offsets[lift_idx + 1];
-        for (uint32_t j = start; j < end; j++) {
-            const uint8_t *ent = level->lift_wall_list + j * LIFT_WALL_ENTRY_SIZE;
-            if (rd32(ent + 2) == gfx_off)
-                return 1;
-        }
-    }
-
-    return 0;
-}
-
-/* Resolve ListOfGraphRooms word0 to zone id.
- * Amiga format stores zone-graph index; fallback format stores zone id directly. */
-static int16_t lgr_word_to_zone_id(const LevelState *level, int16_t word0)
-{
-    if (!level || word0 < 0) return -1;
-    if (level->zone_graph_adds && level->graphics) {
-        if (word0 >= level->num_zones) return -1;
-        uint32_t gfx_off = (uint32_t)rd32(level->zone_graph_adds + (unsigned)word0 * 8u);
-        return rd16(level->graphics + gfx_off);
-    }
-    return word0;
-}
-
 void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
 {
     RendererState *r = &g_renderer;
@@ -2129,6 +2093,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
     int half_h = g_renderer.height / 2;
 
     int zone_has_door_flag = zone_has_door(level->door_data, zone_id);
+    int zone_has_lift_flag = zone_has_lift(level->lift_data, zone_id);
     int has_door_wall_list = (level->door_wall_list && level->door_wall_list_offsets && level->num_doors > 0);
 
     /* Read zone number from graphics data (consumed before polyloop) */
@@ -2187,19 +2152,12 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 const uint8_t *wall_tex = (tex_id >= 0 && tex_id < MAX_WALL_TILES) ? r->walltiles[tex_id] : NULL;
                 int32_t wall_gfx_off = (int32_t)((ptr - 2) - level->graphics);
                 int wall_is_door_wall = wall_is_door_controlled(level, zone_id, wall_gfx_off);
-                int wall_is_lift_wall = wall_is_lift_controlled(level, zone_id, wall_gfx_off);
 
                 /* Prefer level-authored VALAND/VALSHIFT. Some textures have ambiguous raw sizes
                  * (e.g. 64 vs 128 rows), and inferred file dimensions can misalign specific doors.
                  * Only fall back to loaded-file dimensions when level data is missing/zero. */
                 uint8_t use_valand = valand, use_valshift = valshift;
-                if (wall_is_lift_wall &&
-                    tex_id >= 0 && tex_id < MAX_WALL_TILES && r->wall_valshift[tex_id] != 0) {
-                    /* Lift walls regressed after texture-step changes; keep pre-fix behavior
-                     * by preferring dimensions discovered from texture data on lifts. */
-                    use_valand = r->wall_valand[tex_id];
-                    use_valshift = r->wall_valshift[tex_id];
-                } else if ((use_valand == 0 || use_valshift == 0) &&
+                if ((use_valand == 0 || use_valshift == 0) &&
                            tex_id >= 0 && tex_id < MAX_WALL_TILES && r->wall_valshift[tex_id] != 0) {
                     use_valand = r->wall_valand[tex_id];
                     use_valshift = r->wall_valshift[tex_id];
@@ -2223,13 +2181,11 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 if (wall_height_for_tex < 1) wall_height_for_tex = 1;
                 int32_t door_yoff_add = 0;
                 int skip_this_wall = 0;
-                int wall_is_dynamic_vertical = (wall_is_door_wall || wall_is_lift_wall);
 
-                /* Door/lift vertical movers: clip wall to the live zone roof/floor.
-                 * When door and lift are adjacent (or share influence), this avoids stale full-height sheets. */
-                if (wall_is_dynamic_vertical && !use_upper && tex_id != SWITCHES_WALL_TEX_ID) {
-                    int32_t live_zone_roof = zone_roof;
-                    int32_t live_zone_floor = zone_floor;
+                /* Lift zone: clip all walls to current zone floor/roof so we don't draw wall below the platform. */
+                if (zone_has_lift_flag && tex_id != SWITCHES_WALL_TEX_ID) {
+                    int32_t live_zone_roof = rd32(zone_data + 6);
+                    int32_t live_zone_floor = rd32(zone_data + 2);
                     int32_t zone_roof_rel = live_zone_roof - y_off;
                     int32_t zone_floor_rel = live_zone_floor - y_off;
                     int32_t draw_top = topwall > zone_roof_rel ? topwall : zone_roof_rel;
@@ -2271,16 +2227,6 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                         wall_height_for_tex = (int16_t)((zone_floor_rel - zone_roof_rel) >> 8);
                         if (wall_height_for_tex < 1) wall_height_for_tex = 1;
                     }
-                }
-
-                if (wall_is_lift_wall && tex_id != SWITCHES_WALL_TEX_ID) {
-                    /* Compensate lift texture phase for the normalized tex_step formula.
-                     * Equivalent to old (rows/64) factor for lift-controlled walls only. */
-                    int rows = 1 << use_valshift;
-                    int32_t scaled_h = ((int32_t)wall_height_for_tex * rows + 32) / 64;
-                    if (scaled_h < 1) scaled_h = 1;
-                    if (scaled_h > 32767) scaled_h = 32767;
-                    wall_height_for_tex = (int16_t)scaled_h;
                 }
 
                 /* Switch walls (tex_id 11): same texture has on/off states.
@@ -2830,8 +2776,7 @@ void renderer_draw_display(GameState *state)
             /* Find this zone's entry in ListOfGraphRooms */
             int found = 0;
             while (rd16(lgr) >= 0) {
-                int16_t entry_zone = lgr_word_to_zone_id(&state->level, rd16(lgr));
-                if (entry_zone == zone_id) {
+                if (rd16(lgr) == zone_id) {
                     found = 1;
                     break;
                 }
