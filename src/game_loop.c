@@ -291,7 +291,8 @@ void game_loop(GameState *state)
 
                     if (OBJ_ZONE(wobj) >= 0 && OBJ_ZONE(wobj) < 256) {
                         if (vis_zones[OBJ_ZONE(wobj)]) {
-                            wobj->obj.worry = 127;
+                            /* Amiga: or.b #127,objWorry(a0) */
+                            wobj->obj.worry |= 127;
                         }
                     }
                     obj_idx++;

@@ -484,6 +484,39 @@ static int16_t enemy_tick_third_timer(GameObject *obj, GameState *state,
     return third_timer;
 }
 
+/* Amiga ObjectDataHandler only runs enemy logic when objWorry != 0. */
+static bool object_type_uses_worry_gate(int8_t obj_type)
+{
+    switch (obj_type) {
+    case OBJ_NBR_ALIEN:
+    case OBJ_NBR_ROBOT:
+    case OBJ_NBR_BIG_NASTY:
+    case OBJ_NBR_FLYING_NASTY:
+    case OBJ_NBR_EYEBALL:
+    case OBJ_NBR_MARINE:
+    case OBJ_NBR_WORM:
+    case OBJ_NBR_HUGE_RED_THING:
+    case OBJ_NBR_SMALL_RED_THING:
+    case OBJ_NBR_TREE:
+    case OBJ_NBR_TOUGH_MARINE:
+    case OBJ_NBR_FLAME_MARINE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Amiga enemy handlers decay low 7 bits each tick, preserving bit 7 latch. */
+static void enemy_decay_worry(GameObject *obj)
+{
+    uint8_t w = (uint8_t)obj->obj.worry;
+    uint8_t hi = (uint8_t)(w & 0x80u);
+    uint8_t lo = (uint8_t)(w & 0x7Fu);
+    if (lo > 0)
+        lo--;
+    obj->obj.worry = (int8_t)(hi | lo);
+}
+
 static bool enemy_type_slot_reusable_for_tree_spawn(int8_t obj_type)
 {
     switch (obj_type) {
@@ -681,10 +714,6 @@ void objects_update(GameState *state)
             continue;
         }
 
-        /* Amiga processes all objects with zone >= 0 every frame.
-         * Just refresh worry so other systems (e.g. rendering hints) still work. */
-        obj->obj.worry = 1;
-
         /* Update rendering Y position from zone floor height.
          * Anims.s: each handler writes 4(a0) = (ToZoneFloor >> 7) - offset.
          * The offset is per-type; barrel uses -60 (= its world_h).
@@ -724,6 +753,12 @@ void objects_update(GameState *state)
         /* Dispatch by object type */
         int8_t obj_type = obj->obj.number;
         int param_idx;
+
+        /* Match Amiga wake behavior: dormant enemies (worry==0) do not run AI. */
+        if (object_type_uses_worry_gate(obj_type) && obj->obj.worry == 0) {
+            obj_index++;
+            continue;
+        }
 
         switch (obj_type) {
         case OBJ_NBR_ALIEN:
@@ -910,6 +945,7 @@ void objects_update_sprite_frames(GameState *state)
 static void enemy_handle_big_red_variant(GameObject *obj, GameState *state, bool big_claws)
 {
     if (!state->nasty) return;
+    enemy_decay_worry(obj);
 
     int param_idx = big_claws ? 8 : 2;
     const EnemyParams *params = &enemy_params[param_idx];
@@ -965,6 +1001,7 @@ static void enemy_handle_big_red_variant(GameObject *obj, GameState *state, bool
 void object_handle_alien(GameObject *obj, GameState *state)
 {
     if (!state->nasty) return;
+    enemy_decay_worry(obj);
 
     const EnemyParams *params = &enemy_params[0];
     if (enemy_check_damage(obj, params, state)) return;
@@ -1006,6 +1043,7 @@ void object_handle_alien(GameObject *obj, GameState *state)
 void object_handle_robot(GameObject *obj, GameState *state)
 {
     if (!state->nasty) return;
+    enemy_decay_worry(obj);
 
     const EnemyParams *params = &enemy_params[1];
     if (enemy_check_damage(obj, params, state)) return;
@@ -1055,6 +1093,7 @@ void object_handle_huge_red(GameObject *obj, GameState *state)
 void object_handle_worm(GameObject *obj, GameState *state)
 {
     if (!state->nasty) return;
+    enemy_decay_worry(obj);
 
     const EnemyParams *params = &enemy_params[3];
     if (enemy_check_damage(obj, params, state)) return;
@@ -1216,6 +1255,7 @@ static void marine_hitscan_burst(GameObject *obj, GameState *state,
 void object_handle_marine(GameObject *obj, GameState *state)
 {
     if (!state->nasty) return;
+    enemy_decay_worry(obj);
 
     int8_t type = obj->obj.number;
 
@@ -1286,6 +1326,7 @@ void object_handle_marine(GameObject *obj, GameState *state)
 void object_handle_big_nasty(GameObject *obj, GameState *state)
 {
     if (!state->nasty) return;
+    enemy_decay_worry(obj);
 
     const EnemyParams *params = &enemy_params[7];
     if (enemy_check_damage(obj, params, state)) return;
@@ -1338,6 +1379,7 @@ void object_handle_big_claws(GameObject *obj, GameState *state)
 void object_handle_flying_nasty(GameObject *obj, GameState *state)
 {
     if (!state->nasty) return;
+    enemy_decay_worry(obj);
 
     const EnemyParams *params = &enemy_params[9];
 
@@ -1406,6 +1448,7 @@ void object_handle_flying_nasty(GameObject *obj, GameState *state)
 void object_handle_tree(GameObject *obj, GameState *state)
 {
     if (!state->nasty) return;
+    enemy_decay_worry(obj);
 
     const EnemyParams *params = &enemy_params[10];
     if (enemy_check_damage(obj, params, state)) return;
