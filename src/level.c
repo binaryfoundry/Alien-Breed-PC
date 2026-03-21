@@ -360,9 +360,31 @@ int level_parse(LevelState *level)
     /* Byte 16: Number of zones (word) */
     level->num_zones = read_word(ld + 16);
 
+    /* zone_adds starts at lg+16 and runs until zone_graph_adds.
+     * On real Amiga data this can be num_zones+1 (extra connect slot). */
+    {
+        int32_t slots = level->num_zones;
+        if (zone_graph_offset > 16) {
+            int32_t table_bytes = zone_graph_offset - 16;
+            if ((table_bytes % 4) == 0) {
+                int32_t table_slots = table_bytes / 4;
+                if (table_slots > 0)
+                    slots = table_slots;
+            }
+        }
+        if (slots < level->num_zones)
+            slots = level->num_zones;
+        if (slots < 0)
+            slots = 0;
+        if (slots > 32767)
+            slots = 32767;
+        level->num_zone_slots = (int16_t)slots;
+    }
+
     /* Zone offset table at lg+16 is big-endian. Log each zone's loaded data. */
     if (level->num_zones > 0) {
-        printf("[LEVEL] Zones: %d zones (offset table big-endian)\n", level->num_zones);
+        printf("[LEVEL] Zones: %d zones, %d zone slots (offset table big-endian)\n",
+               level->num_zones, level->num_zone_slots);
         for (int z = 0; z < level->num_zones; z++) {
             int32_t zoff = read_long(level->zone_adds + z * 4);
             size_t data_len = level->data_byte_count;
@@ -381,6 +403,23 @@ int level_parse(LevelState *level)
             printf("[LEVEL]   zone[%d] offset %ld id=%d floor=%ld roof=%ld bright=(%d,%d) anim=(%s,%s)\n",
                    z, (long)zoff, (int)zone_id, (long)floor_y, (long)roof_y, (int)bright_lo, (int)bright_hi,
                    zone_anim_flag_name(anim_lo), zone_anim_flag_name(anim_hi));
+        }
+        if (level->num_zone_slots > level->num_zones) {
+            for (int z = level->num_zones; z < level->num_zone_slots; z++) {
+                int32_t zoff = read_long(level->zone_adds + z * 4);
+                size_t data_len = level->data_byte_count;
+                if (zoff < 0 || (data_len != 0 && (size_t)zoff + 48u > data_len)) {
+                    printf("[LEVEL]   zone_slot[%d] offset %ld - out of range (data_len=%zu)\n",
+                           z, (long)zoff, data_len);
+                    continue;
+                }
+                const uint8_t *zd = ld + zoff;
+                int16_t zone_id = read_word(zd + 0);
+                int32_t floor_y = read_long(zd + ZONE_OFF_FLOOR);
+                int32_t roof_y = read_long(zd + ZONE_OFF_ROOF);
+                printf("[LEVEL]   zone_slot[%d] offset %ld id=%d floor=%ld roof=%ld (extra slot)\n",
+                       z, (long)zoff, (int)zone_id, (long)floor_y, (long)roof_y);
+            }
         }
     }
 
@@ -633,19 +672,166 @@ void level_assign_clips(LevelState *level, int16_t num_zones)
            (int)clip_byte_offset);
 }
 
+int level_zone_slot_count(const LevelState *level)
+{
+    if (!level) return 0;
+    int slots = (int)level->num_zone_slots;
+    if (slots <= 0)
+        slots = (int)level->num_zones;
+    if (slots < (int)level->num_zones)
+        slots = (int)level->num_zones;
+    if (slots < 0)
+        slots = 0;
+    return slots;
+}
+
 int level_connect_to_zone_index(const LevelState *level, int16_t connect)
 {
-    if (!level->zone_adds || !level->data || level->num_zones <= 0 || connect < 0)
+    if (!level->zone_adds || !level->data || connect < 0)
         return -1;
-    for (int z = 0; z < level->num_zones; z++) {
+    int zone_slots = level_zone_slot_count(level);
+    if (zone_slots <= 0)
+        return -1;
+
+    size_t data_len = level->data_byte_count;
+    for (int z = 0; z < zone_slots; z++) {
         int32_t zoff = read_long(level->zone_adds + (size_t)z * 4u);
         if (zoff < 0) continue;
+        if (data_len != 0 && (size_t)zoff + 2u > data_len) continue;
         const uint8_t *zd = level->data + zoff;
         if (read_word(zd + 0) == (int16_t)connect)
             return z;
     }
-    if (connect < level->num_zones)
-        return (int)connect;
+    if (connect < zone_slots) {
+        int32_t zoff = read_long(level->zone_adds + (size_t)connect * 4u);
+        if (zoff >= 0 && (data_len == 0 || (size_t)zoff + 2u <= data_len))
+            return (int)connect;
+    }
+    return -1;
+}
+
+int level_zone_index_from_room_offset(const LevelState *level, int32_t room_offset)
+{
+    if (!level || !level->zone_adds || room_offset < 0)
+        return -1;
+    {
+        int zone_slots = level_zone_slot_count(level);
+        for (int z = 0; z < zone_slots; z++) {
+            if (read_long(level->zone_adds + (size_t)z * 4u) == room_offset)
+                return z;
+        }
+    }
+    return -1;
+}
+
+int level_zone_index_from_room_ptr(const LevelState *level, const uint8_t *room_ptr)
+{
+    if (!level || !level->data || !room_ptr)
+        return -1;
+    return level_zone_index_from_room_offset(level, (int32_t)(room_ptr - level->data));
+}
+
+static int point_on_segment_i32(int32_t px, int32_t pz,
+                                int32_t x1, int32_t z1,
+                                int32_t x2, int32_t z2)
+{
+    int64_t cross = (int64_t)(px - x1) * (int64_t)(z2 - z1) -
+                    (int64_t)(pz - z1) * (int64_t)(x2 - x1);
+    if (cross != 0) return 0;
+    if (px < (x1 < x2 ? x1 : x2) || px > (x1 > x2 ? x1 : x2)) return 0;
+    if (pz < (z1 < z2 ? z1 : z2) || pz > (z1 > z2 ? z1 : z2)) return 0;
+    return 1;
+}
+
+static int zone_contains_point(const LevelState *level, int zone_index, int32_t x, int32_t z)
+{
+    if (!level || !level->data || !level->zone_adds || !level->floor_lines)
+        return 0;
+    if (zone_index < 0 || zone_index >= level_zone_slot_count(level))
+        return 0;
+
+    {
+        int32_t zoff = read_long(level->zone_adds + (size_t)zone_index * 4u);
+        if (zoff < 0)
+            return 0;
+
+        size_t data_len = level->data_byte_count;
+        if (data_len != 0 && (size_t)zoff + 34u > data_len)
+            return 0;
+
+        const uint8_t *zd = level->data + zoff;
+        int16_t list_off = read_word(zd + 32);
+        if (list_off < 0)
+            return 0;
+        if (data_len != 0 && (size_t)zoff + (size_t)list_off + 2u > data_len)
+            return 0;
+
+        const uint8_t *list = zd + list_off;
+        int inside = 0;
+        int edges = 0;
+
+        for (int i = 0; i < 256; i++) {
+            if (data_len != 0 && (size_t)(list - level->data) + (size_t)i * 2u + 2u > data_len)
+                break;
+
+            int16_t entry = read_word(list + i * 2);
+            if (entry == -2)
+                break;
+            if (entry < 0)
+                continue; /* -1 separator between exits and wall list */
+            if (entry >= level->num_floor_lines)
+                continue;
+
+            const uint8_t *fl = level->floor_lines + (size_t)entry * 16u;
+            int32_t x1 = read_word(fl + 0);
+            int32_t z1 = read_word(fl + 2);
+            int32_t x2 = x1 + read_word(fl + 4);
+            int32_t z2 = z1 + read_word(fl + 6);
+            edges++;
+
+            if (point_on_segment_i32(x, z, x1, z1, x2, z2))
+                return 1;
+
+            if ((z1 > z) != (z2 > z)) {
+                int64_t dz = (int64_t)z2 - (int64_t)z1;
+                int64_t lhs = (int64_t)(x - x1) * dz;
+                int64_t rhs = (int64_t)(x2 - x1) * (int64_t)(z - z1);
+                if ((dz > 0 && lhs < rhs) || (dz < 0 && lhs > rhs))
+                    inside ^= 1;
+            }
+        }
+
+        if (edges == 0)
+            return 0;
+        return inside;
+    }
+}
+
+int level_find_zone_for_point(const LevelState *level, int32_t x, int32_t z, int16_t hint_zone)
+{
+    if (!level || !level->data || !level->zone_adds || !level->floor_lines)
+        return -1;
+
+    {
+        int zone_slots = level_zone_slot_count(level);
+        if (zone_slots <= 0)
+            return -1;
+
+        int hint = -1;
+        if (hint_zone >= 0) {
+            hint = level_connect_to_zone_index(level, hint_zone);
+            if (hint < 0 && hint_zone < zone_slots)
+                hint = hint_zone;
+            if (hint >= 0 && zone_contains_point(level, hint, x, z))
+                return hint;
+        }
+
+        for (int zi = 0; zi < zone_slots; zi++) {
+            if (zi == hint) continue;
+            if (zone_contains_point(level, zi, x, z))
+                return zi;
+        }
+    }
     return -1;
 }
 
@@ -758,9 +944,10 @@ static void log_broken_floor_line_connects(LevelState *level)
 
 int level_get_zone_info(const LevelState *level, int16_t zone_id, ZoneInfo *out)
 {
-    if (!out || !level->zone_adds || !level->data || level->num_zones <= 0)
+    int zone_slots = level_zone_slot_count(level);
+    if (!out || !level->zone_adds || !level->data || zone_slots <= 0)
         return -1;
-    if (zone_id < 0 || zone_id >= level->num_zones)
+    if (zone_id < 0 || zone_id >= zone_slots)
         return -1;
     int32_t zoff = read_long(level->zone_adds + (size_t)zone_id * 4u);
     size_t data_len = level->data_byte_count;
@@ -783,9 +970,10 @@ int level_get_zone_info(const LevelState *level, int16_t zone_id, ZoneInfo *out)
 
 uint8_t *level_get_zone_data_ptr(LevelState *level, int16_t zone_id)
 {
-    if (!level->zone_adds || !level->data || level->num_zones <= 0)
+    int zone_slots = level_zone_slot_count(level);
+    if (!level->zone_adds || !level->data || zone_slots <= 0)
         return NULL;
-    if (zone_id < 0 || zone_id >= level->num_zones)
+    if (zone_id < 0 || zone_id >= zone_slots)
         return NULL;
     int32_t zoff = read_long(level->zone_adds + (size_t)zone_id * 4u);
     size_t data_len = level->data_byte_count;
@@ -805,9 +993,10 @@ static inline unsigned zone_anim_type_from_word(int16_t word)
 
 int16_t level_get_zone_brightness(const LevelState *level, int16_t zone_id, int use_upper)
 {
-    if (!level->zone_adds || !level->data || level->num_zones <= 0)
+    int zone_slots = level_zone_slot_count(level);
+    if (!level->zone_adds || !level->data || zone_slots <= 0)
         return 0;
-    if (zone_id < 0 || zone_id >= level->num_zones)
+    if (zone_id < 0 || zone_id >= zone_slots)
         return 0;
 
     int32_t zoff = read_long(level->zone_adds + (size_t)zone_id * 4u);

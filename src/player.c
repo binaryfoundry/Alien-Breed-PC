@@ -8,6 +8,7 @@
 
 #include "player.h"
 #include "game_data.h"
+#include "level.h"
 #include "movement.h"
 #include "objects.h"
 #include "math_tables.h"
@@ -529,6 +530,7 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
 {
     MoveContext ctx;
     move_context_init(&ctx);
+    const int zone_slots = level_zone_slot_count(&state->level);
 
     /* 1. Snapshot positions (16.16 fixed-point) */
     plr->oldxoff = plr->xoff;
@@ -587,7 +589,7 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
      *     zone's walls; keep roompt in sync so zone is updated from it. */
     ctx.objroom = NULL;
     if (state->level.data && state->level.zone_adds && plr->zone >= 0 &&
-        plr->zone < state->level.num_zones) {
+        plr->zone < zone_slots) {
         int32_t zone_off = (int32_t)(
             (state->level.zone_adds[plr->zone * 4    ] << 24) |
             (state->level.zone_adds[plr->zone * 4 + 1] << 16) |
@@ -764,7 +766,7 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
             if (ctx.objroom && state->level.data) {
                 roompt = (int32_t)(ctx.objroom - state->level.data);
                 zone_id = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
-                if (zone_id < 0 || zone_id >= state->level.num_zones)
+                if (zone_id < 0 || zone_id >= zone_slots)
                     zone_id = -1;
             }
             printf("[PLAYER] wall collision plr%d at (%d, %d) zone=%d roompt=%ld\n",
@@ -783,29 +785,19 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
     if (ctx.objroom && state->level.data) {
         plr->roompt = (int32_t)(ctx.objroom - state->level.data);
 
-        /* Update plr->zone from the room data so next frame we use the right zone's walls.
-         * Zone data offset 0 contains the zone number (word).
-         * Translated from AB3DI.s line ~3100: Roompt -> zone lookup */
-        int16_t new_zone = (int16_t)(
-            (ctx.objroom[0] << 8) | ctx.objroom[1]);
-        if (new_zone >= 0 && new_zone < state->level.num_zones) {
-            plr->zone = new_zone;
-        } else if (state->level.zone_adds) {
-            /* Fallback: some levels have wrong/missing zone id in room data.
-             * Derive zone from roompt so wall collision uses the correct room. */
-            int32_t roompt = plr->roompt;
-            for (int16_t z = 0; z < state->level.num_zones; z++) {
-                int32_t zoff = (int32_t)(
-                    (state->level.zone_adds[z * 4    ] << 24) |
-                    (state->level.zone_adds[z * 4 + 1] << 16) |
-                    (state->level.zone_adds[z * 4 + 2] <<  8) |
-                     state->level.zone_adds[z * 4 + 3]);
-                if (zoff == roompt) {
-                    plr->zone = z;
-                    break;
-                }
-            }
+        /* Room pointer is authoritative. Some levels have incorrect zone words at room+0. */
+        int16_t new_zone = -1;
+        int room_zone = level_zone_index_from_room_ptr(&state->level, ctx.objroom);
+        if (room_zone >= 0) {
+            new_zone = (int16_t)room_zone;
+        } else {
+            int16_t room_zone_word = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+            int mapped = level_connect_to_zone_index(&state->level, room_zone_word);
+            if (mapped >= 0)
+                new_zone = (int16_t)mapped;
         }
+        if (new_zone >= 0 && new_zone < zone_slots)
+            plr->zone = new_zone;
     }
 
     /* Write MoveObject's integer result back to the 16.16 position.
@@ -838,7 +830,8 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
      *   adda.w #10,a0                   ; a0 = zone_data + 48
      *   move.l a0,PLR1_ListOfGraphRooms
      */
-    if (state->level.zone_adds && state->level.data && plr->zone >= 0) {
+    if (state->level.zone_adds && state->level.data && plr->zone >= 0 &&
+        plr->zone < zone_slots) {
         const uint8_t *za = state->level.zone_adds;
         int z = plr->zone;
         int32_t zoff = (int32_t)((za[z*4]<<24)|(za[z*4+1]<<16)|
@@ -935,7 +928,9 @@ void player1_control(GameState *state)
     {
         int32_t water_level = 0;
         bool in_water = false;
-        if (state->level.zone_adds && state->level.data && state->plr1.zone >= 0) {
+        int zone_slots = level_zone_slot_count(&state->level);
+        if (state->level.zone_adds && state->level.data &&
+            state->plr1.zone >= 0 && state->plr1.zone < zone_slots) {
             const uint8_t *za = state->level.zone_adds;
             int z = state->plr1.zone;
             int32_t zoff = (int32_t)((za[z*4]<<24)|(za[z*4+1]<<16)|
@@ -965,7 +960,9 @@ void player2_control(GameState *state)
     {
         int32_t water_level = 0;
         bool in_water = false;
-        if (state->level.zone_adds && state->level.data && state->plr2.zone >= 0) {
+        int zone_slots = level_zone_slot_count(&state->level);
+        if (state->level.zone_adds && state->level.data &&
+            state->plr2.zone >= 0 && state->plr2.zone < zone_slots) {
             const uint8_t *za = state->level.zone_adds;
             int z = state->plr2.zone;
             int32_t zoff = (int32_t)((za[z*4]<<24)|(za[z*4+1]<<16)|
@@ -1018,6 +1015,68 @@ fail:
 }
 
 #ifndef NDEBUG
+static void player_debug_sync_loaded_player(GameState *state, PlayerState *plr, int plr_num)
+{
+    int zone_slots = level_zone_slot_count(&state->level);
+    int16_t saved_zone = plr->zone;
+
+    int resolved_zone = level_find_zone_for_point(
+        &state->level, plr->xoff >> 16, plr->zoff >> 16, saved_zone);
+    if (resolved_zone < 0)
+        resolved_zone = level_connect_to_zone_index(&state->level, saved_zone);
+    if (resolved_zone < 0 && saved_zone >= 0 && saved_zone < zone_slots)
+        resolved_zone = saved_zone;
+
+    if (!state->level.zone_adds || !state->level.data ||
+        resolved_zone < 0 || resolved_zone >= zone_slots) {
+        printf("[PLAYER] debug load: plr%d unresolved zone %d at (%d,%d)\n",
+               plr_num, (int)saved_zone,
+               (int)(plr->xoff >> 16), (int)(plr->zoff >> 16));
+        return;
+    }
+
+    if (resolved_zone != saved_zone) {
+        printf("[PLAYER] debug load: plr%d remapped zone %d -> %d at (%d,%d)\n",
+               plr_num, (int)saved_zone, resolved_zone,
+               (int)(plr->xoff >> 16), (int)(plr->zoff >> 16));
+    }
+
+    plr->zone = (int16_t)resolved_zone;
+    plr->s_zone = plr->zone;
+
+    {
+        const uint8_t *za = state->level.zone_adds;
+        int z = plr->zone;
+        int32_t zoff = (int32_t)((za[z*4]<<24)|(za[z*4+1]<<16)|(za[z*4+2]<<8)|za[z*4+3]);
+        const uint8_t *zd = state->level.data + zoff;
+        int32_t roof_h = (int32_t)((zd[6]<<24)|(zd[7]<<16)|(zd[8]<<8)|zd[9]);
+        int zd_off;
+        int32_t floor_h;
+
+        plr->stood_in_top = (plr->yoff < roof_h) ? 1 : 0;
+        zd_off = plr->stood_in_top ? 8 : 0;
+        floor_h = (int32_t)((zd[2+zd_off]<<24)|(zd[3+zd_off]<<16)|
+                            (zd[4+zd_off]<<8)|zd[5+zd_off]);
+
+        plr->s_tyoff = floor_h - PLAYER_HEIGHT;
+        plr->tyoff = plr->s_tyoff;
+        plr->roompt = zoff;
+        plr->old_roompt = zoff;
+        plr->s_roompt = zoff;
+        plr->s_old_roompt = zoff;
+
+        {
+            int16_t pts = (int16_t)((zd[34] << 8) | zd[35]);
+            int32_t pts_ptr = zoff + (int32_t)pts;
+            int32_t graph_ptr = zoff + 48;
+            plr->points_to_rotate_ptr = pts_ptr;
+            plr->s_points_to_rotate_ptr = pts_ptr;
+            plr->list_of_graph_rooms = graph_ptr;
+            plr->s_list_of_graph_rooms = graph_ptr;
+        }
+    }
+}
+
 /* In debug builds: load debug_save.bin and override player start position/orientation. */
 static void player_debug_load_position_if_present(GameState *state)
 {
@@ -1050,29 +1109,8 @@ static void player_debug_load_position_if_present(GameState *state)
     state->plr2.s_zoff = state->plr2.zoff;
     state->plr2.s_yoff = state->plr2.yoff;
     state->plr2.s_angpos = state->plr2.angpos;
-    /* Re-apply zone-derived state (roompt, points_to_rotate_ptr, list_of_graph_rooms) */
-    if (state->level.zone_adds && state->plr1.zone >= 0 && state->plr1.zone < state->level.num_zones) {
-        const uint8_t *za = state->level.zone_adds;
-        int z = state->plr1.zone;
-        int32_t zoff = (int32_t)((za[z*4]<<24)|(za[z*4+1]<<16)|(za[z*4+2]<<8)|za[z*4+3]);
-        const uint8_t *zd = state->level.data + zoff;
-        state->plr1.s_tyoff = (int32_t)((zd[2]<<24)|(zd[3]<<16)|(zd[4]<<8)|zd[5]) - PLAYER_HEIGHT;
-        state->plr1.roompt = zoff;
-        int16_t pts1 = (int16_t)((zd[34] << 8) | zd[35]);
-        state->plr1.points_to_rotate_ptr = zoff + (int32_t)pts1;
-        state->plr1.list_of_graph_rooms = zoff + 48;
-    }
-    if (state->level.zone_adds && state->plr2.zone >= 0 && state->plr2.zone < state->level.num_zones) {
-        const uint8_t *za = state->level.zone_adds;
-        int z = state->plr2.zone;
-        int32_t zoff = (int32_t)((za[z*4]<<24)|(za[z*4+1]<<16)|(za[z*4+2]<<8)|za[z*4+3]);
-        const uint8_t *zd = state->level.data + zoff;
-        state->plr2.s_tyoff = (int32_t)((zd[2]<<24)|(zd[3]<<16)|(zd[4]<<8)|zd[5]) - PLAYER_HEIGHT;
-        state->plr2.roompt = zoff;
-        int16_t pts2 = (int16_t)((zd[34] << 8) | zd[35]);
-        state->plr2.points_to_rotate_ptr = zoff + (int32_t)pts2;
-        state->plr2.list_of_graph_rooms = zoff + 48;
-    }
+    player_debug_sync_loaded_player(state, &state->plr1, 1);
+    player_debug_sync_loaded_player(state, &state->plr2, 2);
     printf("[PLAYER] debug load: position/orientation overridden from %s\n", path);
     return;
 load_fail:
@@ -1135,7 +1173,9 @@ void player_init_from_level(GameState *state)
 
         /* Set initial Y from zone floor height + initialize roompt.
          * Translated from AB3DI.s: Initial PLR1_Roompt / PLR2_Roompt setup */
-        if (state->level.zone_adds && state->plr1.zone >= 0) {
+        int zone_slots = level_zone_slot_count(&state->level);
+        if (state->level.zone_adds && state->plr1.zone >= 0 &&
+            state->plr1.zone < zone_slots) {
             const uint8_t *za = state->level.zone_adds;
             int z = state->plr1.zone;
             int32_t zoff = (int32_t)((za[z*4]<<24)|(za[z*4+1]<<16)|
@@ -1152,7 +1192,8 @@ void player_init_from_level(GameState *state)
             /* ListOfGraphRooms = zone_data + 48 (ToListOfGraph) */
             state->plr1.list_of_graph_rooms = zoff + 48;
         }
-        if (state->level.zone_adds && state->plr2.zone >= 0) {
+        if (state->level.zone_adds && state->plr2.zone >= 0 &&
+            state->plr2.zone < zone_slots) {
             const uint8_t *za = state->level.zone_adds;
             int z = state->plr2.zone;
             int32_t zoff = (int32_t)((za[z*4]<<24)|(za[z*4+1]<<16)|

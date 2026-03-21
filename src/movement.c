@@ -435,6 +435,7 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
 
     int16_t connect = (int16_t)read_be16(fline + FLINE_CONNECT);
     int connect_index = level_connect_to_zone_index(level, connect);
+    int zone_slots = level_zone_slot_count(level);
     int32_t lx = (int32_t)(int16_t)read_be16(fline + FLINE_X) << ps;
     int32_t lz = (int32_t)(int16_t)read_be16(fline + FLINE_Z) << ps;
     int16_t lxlen = (int16_t)read_be16(fline + FLINE_XLEN);
@@ -447,7 +448,7 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
     mark_floorline_touch_if_near(ctx, fline, lx, lz, lxlen, lzlen, ps);
 
     /* ---- Exit line: if passable, skip (transition handled later in find_room). ---- */
-    if (zone_data && level->zone_adds && connect_index >= 0 && connect_index < level->num_zones) {
+    if (zone_data && level->zone_adds && connect_index >= 0 && connect_index < zone_slots) {
         int32_t target_zone_off = read_be32(level->zone_adds + (size_t)connect_index * 4);
         const uint8_t* target_zone = level->data + target_zone_off;
 
@@ -566,6 +567,8 @@ static void find_room(MoveContext* ctx, LevelState* level,
 {
     const uint8_t* zone_data = *zone_data_ptr;
     if (!zone_data || !level->zone_adds) return;
+    int zone_slots = level_zone_slot_count(level);
+    if (zone_slots <= 0) return;
 
     {
         int ps = ctx->pos_shift;
@@ -587,6 +590,7 @@ static void find_room(MoveContext* ctx, LevelState* level,
                     int16_t connect = (int16_t)read_be16(fline + FLINE_CONNECT);
                     int connect_index = level_connect_to_zone_index(level, connect);
                     if (connect_index < 0) continue;
+                    if (connect_index >= zone_slots) continue;
 
                     int32_t lx = (int32_t)(int16_t)read_be16(fline + FLINE_X) << ps;
                     int32_t lz = (int32_t)(int16_t)read_be16(fline + FLINE_Z) << ps;
@@ -990,6 +994,8 @@ void head_towards_angle(MoveContext* ctx, int16_t* facing,
 bool check_teleport(MoveContext* ctx, LevelState* level, int16_t zone_id)
 {
     if (!level->data || !level->zone_adds) return false;
+    int zone_slots = level_zone_slot_count(level);
+    if (zone_id < 0 || zone_id >= zone_slots) return false;
 
     {
         int32_t zone_off = read_be32(level->zone_adds + zone_id * 4);
@@ -997,6 +1003,7 @@ bool check_teleport(MoveContext* ctx, LevelState* level, int16_t zone_id)
 
         int16_t tel_zone = read_be16(zone_data + 38);
         if (tel_zone < 0) return false;
+        if (tel_zone >= zone_slots) return false;
 
         {
             int16_t tel_x = read_be16(zone_data + 40);

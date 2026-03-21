@@ -388,6 +388,7 @@ static void build_test_level_data(LevelState *level)
     level->plr2_obj = buf + off_obj_data + OBJECT_SIZE;
     level->num_object_points = num_obj_pts;
     level->num_zones = NUM_ZONES;
+    level->num_zone_slots = (int16_t)NUM_ZONES;
     level->num_floor_lines = NUM_FLINES;
     level->point_brights = NULL; /* No per-point brightness for test level */
 
@@ -758,6 +759,7 @@ void io_release_level_memory(LevelState *level)
     }
     level->zone_adds = NULL;
     level->zone_adds_owned = false;
+    level->num_zone_slots = 0;
     free(level->data);              level->data = NULL;
     level->data_byte_count = 0;
     free(level->graphics);          level->graphics = NULL;

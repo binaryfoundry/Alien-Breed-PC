@@ -72,22 +72,35 @@ static inline int reg_btst32(uint32_t value, unsigned int bit_index)
 static int16_t lgr_word_to_zone_id(const LevelState *level, int16_t word0)
 {
     if (word0 < 0) return -1;
+    int zone_slots = level_zone_slot_count(level);
+    if (zone_slots <= 0) return -1;
 
     if (level->zone_graph_adds && level->graphics) {
-        if (word0 >= level->num_zones) return -1;
+        if (word0 >= zone_slots) return -1;
         uint32_t gfx_off = (uint32_t)read_be32(level->zone_graph_adds + (unsigned)word0 * 8u);
-        return read_be16(level->graphics + gfx_off);
+        int16_t zone_word = read_be16(level->graphics + gfx_off);
+        int mapped = level_connect_to_zone_index(level, zone_word);
+        if (mapped >= 0) return (int16_t)mapped;
+        if (zone_word >= 0 && zone_word < zone_slots) return zone_word;
+        return -1;
     }
 
-    return word0;
+    {
+        int mapped = level_connect_to_zone_index(level, word0);
+        if (mapped >= 0) return (int16_t)mapped;
+    }
+    if (word0 < zone_slots) return word0;
+    return -1;
 }
 
 /* Return zone index whose zone data pointer equals room, or -1. */
 static int16_t zone_index_from_room(const LevelState *level, const uint8_t *room)
 {
     if (!level->zone_adds || !level->data || room < level->data) return -1;
+    int zone_slots = level_zone_slot_count(level);
+    if (zone_slots <= 0) return -1;
     int32_t room_off = (int32_t)(room - level->data);
-    for (int16_t z = 0; z < level->num_zones; z++) {
+    for (int16_t z = 0; z < zone_slots; z++) {
         int32_t zoff = (int32_t)read_be32(level->zone_adds + (unsigned)z * 4u);
         if (zoff == room_off) return z;
     }
@@ -333,6 +346,8 @@ uint8_t can_it_be_seen(const LevelState *level,
     }
 
     if (!level->zone_adds) return 0;
+    int zone_slots = level_zone_slot_count(level);
+    if (zone_slots <= 0) return 0;
 
     /* to_zone_id is the target's zone id (caller passes it; do not read from to_room) */
     const uint8_t *list = from_room + ZONE_LIST_OF_GRAPH;
@@ -458,7 +473,7 @@ uint8_t can_it_be_seen(const LevelState *level,
             /* Wall (no exit) → not visible (Amiga: blt outlist) */
             if (connect < 0) return 0;
             int connect_index = level_connect_to_zone_index(level, connect);
-            if (connect_index < 0) return 0;
+            if (connect_index < 0 || connect_index >= zone_slots) return 0;
 
             /* Closed door blocks this exit. */
             if (is_exit_blocked_by_door(level, current_zone_id, line_idx)) return 0;

@@ -170,6 +170,7 @@ typedef struct {
 
     int16_t  num_object_points;
     int16_t  num_zones;           /* Number of zones in the level */
+    int16_t  num_zone_slots;      /* Number of entries in zone_adds table (can be num_zones+1 on Amiga data) */
     int32_t  num_floor_lines;    /* Number of floor/wall line segments (for brute-force collision) */
 
 } LevelState;

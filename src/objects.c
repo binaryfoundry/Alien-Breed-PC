@@ -351,10 +351,15 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
     ctx.coll_id = OBJ_CID(obj);
     ctx.pos_shift = 0;
     ctx.stood_in_top = obj->obj.in_top;
-    if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data &&
-        OBJ_ZONE(obj) < state->level.num_zones) {
-        int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)OBJ_ZONE(obj) * 4u);
-        ctx.objroom = (uint8_t *)(state->level.data + zo);
+    int zone_slots = level_zone_slot_count(&state->level);
+    if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data) {
+        int src_zone = level_connect_to_zone_index(&state->level, OBJ_ZONE(obj));
+        if (src_zone < 0 && OBJ_ZONE(obj) < zone_slots)
+            src_zone = OBJ_ZONE(obj);
+        if (src_zone >= 0 && src_zone < zone_slots) {
+            int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)src_zone * 4u);
+            ctx.objroom = (uint8_t *)(state->level.data + zo);
+        }
     }
 
     move_object_substepped(&ctx, &state->level);
@@ -365,18 +370,13 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
         obj_sw(pts + 4, (int16_t)ctx.newz);
     }
     if (ctx.objroom && state->level.data) {
-        int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
-        if (new_zone >= 0 && new_zone < state->level.num_zones) {
-            OBJ_SET_ZONE(obj, new_zone);
-        } else {
-            int32_t roompt = (int32_t)(ctx.objroom - state->level.data);
-            for (int16_t z = 0; z < state->level.num_zones; z++) {
-                if ((int32_t)be32(state->level.zone_adds + (uint32_t)z * 4u) == roompt) {
-                    OBJ_SET_ZONE(obj, z);
-                    break;
-                }
-            }
+        int new_zone = level_zone_index_from_room_ptr(&state->level, ctx.objroom);
+        if (new_zone < 0) {
+            int16_t room_zone_word = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+            new_zone = level_connect_to_zone_index(&state->level, room_zone_word);
         }
+        if (new_zone >= 0 && new_zone < zone_slots)
+            OBJ_SET_ZONE(obj, (int16_t)new_zone);
         obj->obj.in_top = ctx.stood_in_top;
     }
 
@@ -599,6 +599,7 @@ static int16_t enemy_anim_vect_for_type(int8_t obj_type)
  * ----------------------------------------------------------------------- */
 void objects_update(GameState *state)
 {
+    const int zone_slots = level_zone_slot_count(&state->level);
     /* Process delayed blasts (barrel splash etc.) - frame-rate independent */
     for (int i = 0; i < state->num_pending_blasts; ) {
         if (state->current_ticks_ms >= state->pending_blasts[i].trigger_time_ms) {
@@ -627,7 +628,7 @@ void objects_update(GameState *state)
             PlayerState *plr = (p == 0) ? &state->plr1 : &state->plr2;
             plr->stood_on_lift = 0;
             int16_t zid = plr->zone;
-            if (zid < 0 || zid >= state->level.num_zones) continue;
+            if (zid < 0 || zid >= zone_slots) continue;
             int32_t zone_off = (int32_t)be32(state->level.zone_adds + (uint32_t)zid * 4u);
             if (zone_off < 0) continue;
             const uint8_t *zd = state->level.data + zone_off;
@@ -695,7 +696,8 @@ void objects_update(GameState *state)
          * by movement.c when the object crosses a floor boundary) to pick the floor. */
         {
             int16_t obj_zone = OBJ_ZONE(obj);
-            if (obj_zone >= 0 && state->level.zone_adds && state->level.data) {
+            if (obj_zone >= 0 && obj_zone < zone_slots &&
+                state->level.zone_adds && state->level.data) {
                 int32_t zo = be32(state->level.zone_adds + obj_zone * 4);
                 if (zo > 0) {
                     const uint8_t *zd = state->level.data + zo;
@@ -1146,11 +1148,16 @@ static int32_t marine_track_target(GameObject *obj, const EnemyParams *params,
     ctx.coll_id = OBJ_CID(obj);
     ctx.pos_shift = 0;
     ctx.stood_in_top = obj->obj.in_top;
+    int zone_slots = level_zone_slot_count(&state->level);
 
-    if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data &&
-        OBJ_ZONE(obj) < state->level.num_zones) {
-        int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)OBJ_ZONE(obj) * 4u);
-        ctx.objroom = (uint8_t *)(state->level.data + zo);
+    if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data) {
+        int src_zone = level_connect_to_zone_index(&state->level, OBJ_ZONE(obj));
+        if (src_zone < 0 && OBJ_ZONE(obj) < zone_slots)
+            src_zone = OBJ_ZONE(obj);
+        if (src_zone >= 0 && src_zone < zone_slots) {
+            int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)src_zone * 4u);
+            ctx.objroom = (uint8_t *)(state->level.data + zo);
+        }
     }
 
     int16_t facing = NASTY_FACING(*obj);
@@ -1173,18 +1180,13 @@ static int32_t marine_track_target(GameObject *obj, const EnemyParams *params,
     }
 
     if (ctx.objroom && state->level.data) {
-        int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
-        if (new_zone >= 0 && new_zone < state->level.num_zones) {
-            OBJ_SET_ZONE(obj, new_zone);
-        } else {
-            int32_t roompt = (int32_t)(ctx.objroom - state->level.data);
-            for (int16_t z = 0; z < state->level.num_zones; z++) {
-                if ((int32_t)be32(state->level.zone_adds + (uint32_t)z * 4u) == roompt) {
-                    OBJ_SET_ZONE(obj, z);
-                    break;
-                }
-            }
+        int new_zone = level_zone_index_from_room_ptr(&state->level, ctx.objroom);
+        if (new_zone < 0) {
+            int16_t room_zone_word = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+            new_zone = level_connect_to_zone_index(&state->level, room_zone_word);
         }
+        if (new_zone >= 0 && new_zone < zone_slots)
+            OBJ_SET_ZONE(obj, (int16_t)new_zone);
         obj->obj.in_top = ctx.stood_in_top;
     }
 
@@ -1732,6 +1734,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     int16_t flags = SHOT_FLAGS(*obj);
     int8_t  shot_status = SHOT_STATUS(*obj);
     int8_t  shot_size = SHOT_SIZE(*obj);
+    int zone_slots = level_zone_slot_count(&state->level);
     bool    timed_out = false;
 
     /* If already popping (impact animation), skip movement */
@@ -1813,10 +1816,18 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     accypos += y_delta;
     SHOT_SET_ACCYPOS(*obj, accypos);
 
+    int bullet_zone_idx = -1;
+    if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data) {
+        bullet_zone_idx = level_connect_to_zone_index(&state->level, OBJ_ZONE(obj));
+        if (bullet_zone_idx < 0 && OBJ_ZONE(obj) < zone_slots)
+            bullet_zone_idx = OBJ_ZONE(obj);
+    }
+
     /* Floor/roof collision (from Anims.s ItsABullet lines 2882-3015) */
-    if (state->level.zone_adds && state->level.data && OBJ_ZONE(obj) >= 0) {
+    if (state->level.zone_adds && state->level.data &&
+        bullet_zone_idx >= 0 && bullet_zone_idx < zone_slots) {
         const uint8_t *za = state->level.zone_adds;
-        int16_t zone = OBJ_ZONE(obj);
+        int16_t zone = (int16_t)bullet_zone_idx;
         int32_t zone_off = (int32_t)((za[zone*4]<<24)|(za[zone*4+1]<<16)|
                            (za[zone*4+2]<<8)|za[zone*4+3]);
         const uint8_t *zd = state->level.data + zone_off;
@@ -1881,9 +1892,9 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     ctx.stood_in_top = obj->obj.in_top;
     ctx.wall_flags = 0x0400;
     /* Set objroom from bullet's current zone so move_object uses zone-based collision and updates zone on transition */
-    if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data &&
-        OBJ_ZONE(obj) < state->level.num_zones) {
-        int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)OBJ_ZONE(obj) * 4u);
+    if (bullet_zone_idx >= 0 && state->level.zone_adds && state->level.data &&
+        bullet_zone_idx < zone_slots) {
+        int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)bullet_zone_idx * 4u);
         ctx.objroom = (uint8_t *)(state->level.data + zo);
     }
 
@@ -1952,20 +1963,15 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         obj_sw(obj->raw + 4, (int16_t)((accypos >> 7) - world_h));
     }
 
-    /* Update zone from room (zone word at offset 0; fallback derive from roompt if invalid) */
+    /* Update zone from room (room pointer is authoritative). */
     if (ctx.objroom && state->level.data) {
-        int16_t new_zone = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
-        if (new_zone >= 0 && new_zone < state->level.num_zones) {
-            OBJ_SET_ZONE(obj, new_zone);
-        } else if (state->level.zone_adds) {
-            int32_t roompt = (int32_t)(ctx.objroom - state->level.data);
-            for (int16_t z = 0; z < state->level.num_zones; z++) {
-                if ((int32_t)be32(state->level.zone_adds + (uint32_t)z * 4u) == roompt) {
-                    OBJ_SET_ZONE(obj, z);
-                    break;
-                }
-            }
+        int new_zone = level_zone_index_from_room_ptr(&state->level, ctx.objroom);
+        if (new_zone < 0) {
+            int16_t room_zone_word = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+            new_zone = level_connect_to_zone_index(&state->level, room_zone_word);
         }
+        if (new_zone >= 0 && new_zone < zone_slots)
+            OBJ_SET_ZONE(obj, (int16_t)new_zone);
     }
 
     /* ---- Object-to-object hit detection (ObjectMove.s Collision) ---- */
@@ -2096,7 +2102,7 @@ static bool player_at_door_zone(GameState *state, int16_t door_zone_id, int16_t 
     if (player_zone < 0) return false;
 
     if (!state->level.door_wall_list || !state->level.door_wall_list_offsets || !state->level.floor_lines) return false;
-    if (door_idx < 0 || (uint32_t)door_idx >= state->level.num_doors) return false;
+    if (door_idx < 0 || door_idx >= state->level.num_doors) return false;
     uint16_t player_touch_flag = (plr_num == 0) ? 0x0100u : 0x0800u;
 
     uint32_t start = state->level.door_wall_list_offsets[door_idx];
@@ -2140,6 +2146,7 @@ static bool player_at_lift_zone(GameState *state, int16_t lift_zone_id, int16_t 
 void door_routine(GameState *state)
 {
     if (!state->level.door_data) return;
+    const int zone_slots = level_zone_slot_count(&state->level);
 
     uint8_t *door = state->level.door_data;
     int door_idx = 0;
@@ -2224,7 +2231,7 @@ void door_routine(GameState *state)
         wbe16(door + 18, timer);
 
         /* Update zone data: write door position directly to zone roof (same as Amiga). */
-        if (zone_id >= 0 && zone_id < state->level.num_zones)
+        if (zone_id >= 0 && zone_id < zone_slots)
             level_set_zone_roof(&state->level, zone_id, door_pos);
 
         /* Amiga-style: patch floor line 14 and graphics wall record for each door wall (when data was loaded). */
@@ -2279,6 +2286,7 @@ void door_routine(GameState *state)
 void lift_routine(GameState *state)
 {
     if (!state->level.lift_data) return;
+    const int zone_slots = level_zone_slot_count(&state->level);
 
     uint8_t *lift = state->level.lift_data;
     int lift_idx = 0;
@@ -2399,7 +2407,7 @@ void lift_routine(GameState *state)
 
         wbe32(lift + 4, lift_pos);
 
-        if (zone_id >= 0 && zone_id < state->level.num_zones)
+        if (zone_id >= 0 && zone_id < zone_slots)
         {
             level_set_zone_floor(&state->level, (int16_t)zone_id, lift_pos);
         }
@@ -2578,6 +2586,7 @@ void do_water_anims(GameState *state)
      * water zone, storing current level, min, max, speed, direction.
      * When level data provides this list, the water floor height oscillates. */
     if (!state->level.water_list) return;
+    const int zone_slots = level_zone_slot_count(&state->level);
 
     uint8_t *wl = state->level.water_list;
     while (1) {
@@ -2602,7 +2611,7 @@ void do_water_anims(GameState *state)
         wl[17] = (uint8_t)(dir);
 
         /* Update zone water: write current level directly (same as Amiga). */
-        if (zone_id >= 0 && zone_id < state->level.num_zones)
+        if (zone_id >= 0 && zone_id < zone_slots)
             level_set_zone_water(&state->level, zone_id, cur_level);
 
         wl += 18;
@@ -3038,6 +3047,7 @@ void use_player2(GameState *state)
 void calc_plr1_in_line(GameState *state)
 {
     if (!state->level.object_data || !state->level.object_points) return;
+    const int zone_slots = level_zone_slot_count(&state->level);
 
     int16_t sin_val = state->plr1.sinval;
     int16_t cos_val = state->plr1.cosval;
@@ -3048,7 +3058,7 @@ void calc_plr1_in_line(GameState *state)
     /* Player's room pointer (for can_it_be_seen) */
     const uint8_t *plr_room = NULL;
     if (state->level.data && state->level.zone_adds && state->plr1.zone >= 0 &&
-        state->plr1.zone < state->level.num_zones) {
+        state->plr1.zone < zone_slots) {
         int32_t zoff = be32(state->level.zone_adds + state->plr1.zone * 4);
         if (zoff >= 0) plr_room = state->level.data + zoff;
     }
@@ -3101,7 +3111,7 @@ void calc_plr1_in_line(GameState *state)
             if (plr_room) {
                 const uint8_t *obj_room = NULL;
                 if (state->level.data && state->level.zone_adds && obj_zone >= 0 &&
-                    obj_zone < state->level.num_zones) {
+                    obj_zone < zone_slots) {
                     int32_t zoff = be32(state->level.zone_adds + obj_zone * 4);
                     if (zoff >= 0) obj_room = state->level.data + zoff;
                 }
@@ -3124,6 +3134,7 @@ void calc_plr1_in_line(GameState *state)
 void calc_plr2_in_line(GameState *state)
 {
     if (!state->level.object_data || !state->level.object_points) return;
+    const int zone_slots = level_zone_slot_count(&state->level);
 
     int16_t sin_val = state->plr2.sinval;
     int16_t cos_val = state->plr2.cosval;
@@ -3133,7 +3144,7 @@ void calc_plr2_in_line(GameState *state)
 
     const uint8_t *plr_room = NULL;
     if (state->level.data && state->level.zone_adds && state->plr2.zone >= 0 &&
-        state->plr2.zone < state->level.num_zones) {
+        state->plr2.zone < zone_slots) {
         int32_t zoff = be32(state->level.zone_adds + state->plr2.zone * 4);
         if (zoff >= 0) plr_room = state->level.data + zoff;
     }
@@ -3177,7 +3188,7 @@ void calc_plr2_in_line(GameState *state)
                 int16_t obj_zone = OBJ_ZONE(obj);
                 const uint8_t *obj_room = NULL;
                 if (state->level.data && state->level.zone_adds && obj_zone >= 0 &&
-                    obj_zone < state->level.num_zones) {
+                    obj_zone < zone_slots) {
                     int32_t zoff = be32(state->level.zone_adds + obj_zone * 4);
                     if (zoff >= 0) obj_room = state->level.data + zoff;
                 }

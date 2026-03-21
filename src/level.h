@@ -80,11 +80,29 @@ int level_set_zone_floor(LevelState *level, int16_t zone_id, int32_t floor_y);
 int level_set_zone_water(LevelState *level, int16_t zone_id, int32_t water_y);
 
 /*
- * Map floor-line connect value (zone id from file) to zone index (0..num_zones-1).
- * Some levels store zone id at zone data offset 0; this finds the index for that id.
- * Returns zone index, or connect if connect < num_zones and no id match, or -1 if invalid.
+ * Number of zone entries available in the zone_adds table.
+ * Usually equals num_zones, but real Amiga levels can have an extra slot.
+ */
+int level_zone_slot_count(const LevelState *level);
+
+/*
+ * Map floor-line connect value (zone id/index from file) to a zone_adds slot index.
+ * Returns index in range 0..level_zone_slot_count()-1, or -1 if invalid/unresolvable.
  */
 int level_connect_to_zone_index(const LevelState *level, int16_t connect);
+
+/*
+ * Resolve zone_adds slot index from an absolute room pointer/offset into level->data.
+ * Returns index in range 0..level_zone_slot_count()-1, or -1 if unresolved.
+ */
+int level_zone_index_from_room_ptr(const LevelState *level, const uint8_t *room_ptr);
+int level_zone_index_from_room_offset(const LevelState *level, int32_t room_offset);
+
+/*
+ * Find which zone contains world point (x,z). hint_zone is optional and tested first.
+ * Returns index in range 0..level_zone_slot_count()-1, or -1 if no containing zone is found.
+ */
+int level_find_zone_for_point(const LevelState *level, int32_t x, int32_t z, int16_t hint_zone);
 
 /*
  * Log each zone's offset, id, floor, roof, brightness to stdout (for periodic debug output).

@@ -272,9 +272,10 @@ void play_the_game(GameState *state)
          * No global allocation needed here. */
 
         /* Allocate workspace (zone visibility bitmask) */
-        if (state->level.num_zones > 0 && !state->level.workspace) {
+        int zone_slots = level_zone_slot_count(&state->level);
+        if (zone_slots > 0 && !state->level.workspace) {
             state->level.workspace = (uint8_t *)calloc(1,
-                (size_t)(state->level.num_zones + 1));
+                (size_t)(zone_slots + 1));
         }
 
         /* Initialize brightness animation state (Amiga brightAnimTable indices) */
