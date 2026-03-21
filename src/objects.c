@@ -728,31 +728,34 @@ void objects_update(GameState *state)
         /* Dispatch by object type (needed before Y refresh — Amiga gates on objNumber). */
         int8_t obj_type = obj->obj.number;
 
-        /* Update rendering Y from zone floor for types that run an ItsA* handler on Amiga.
-         * ObjectDataHandler (Anims.s ~1083): move.b objNumber(a0),d0 / blt.s doneObj — types < 0
-         * (decorative 3D props, corpses, etc.) skip all handlers and never refresh 4(a0) here.
-         * Pickups use ToZoneFloor / ToUpperFloor + fixed offset (e.g. ItsAMediKit sub.w #32).
-         *
-         * Generic: obj[4] = (floor>>7) - world_h with upper floor when objInTop (Defs.i +63). */
-        if (obj_type >= 0) {
-            int16_t obj_zone = OBJ_ZONE(obj);
-            if (obj_zone >= 0 && obj_zone < zone_slots &&
-                state->level.zone_adds && state->level.data) {
-                int32_t zo = be32(state->level.zone_adds + obj_zone * 4);
-                if (zo > 0) {
-                    const uint8_t *zd = state->level.data + zo;
-                    int32_t floor_h = be32(zd + 2);  /* ToZoneFloor */
+        /* Update rendering Y from live zone floor (lift_routine / doors write ToZoneFloor each tick).
+         * ObjectDataHandler (Anims.s): objNumber < 0 skips ItsA* — we still skip for decorative 3D
+         * (obj[6]==OBJ_3D_SPRITE) so level-authored obj[4] is preserved (e.g. exit sign).
+         * Billboard corpses (OBJ_NBR_DEAD, not 3D) must refresh like pickups or they stay fixed
+         * while a moving lift changes the floor under them. */
+        {
+            int corpse_on_floor = (obj_type == OBJ_NBR_DEAD &&
+                                   (uint8_t)obj->raw[6] != (uint8_t)OBJ_3D_SPRITE);
+            if (obj_type >= 0 || corpse_on_floor) {
+                int16_t obj_zone = OBJ_ZONE(obj);
+                if (obj_zone >= 0 && obj_zone < zone_slots &&
+                    state->level.zone_adds && state->level.data) {
+                    int32_t zo = be32(state->level.zone_adds + obj_zone * 4);
+                    if (zo > 0) {
+                        const uint8_t *zd = state->level.data + zo;
+                        int32_t floor_h = be32(zd + 2);  /* ToZoneFloor */
 
-                    int32_t upper_floor = be32(zd + 10);
-                    if (upper_floor != 0 && obj->obj.in_top)
-                        floor_h = upper_floor;
+                        int32_t upper_floor = be32(zd + 10);
+                        if (upper_floor != 0 && obj->obj.in_top)
+                            floor_h = upper_floor;
 
-                    int world_h = (int)(int8_t)obj->raw[7];
-                    if (world_h == 0)
-                        world_h = 32;
+                        int world_h = (int)(int8_t)obj->raw[7];
+                        if (world_h == 0)
+                            world_h = 32;
 
-                    int16_t render_y = (int16_t)((floor_h >> 7) - world_h);
-                    obj_sw(obj->raw + 4, render_y);
+                        int16_t render_y = (int16_t)((floor_h >> 7) - world_h);
+                        obj_sw(obj->raw + 4, render_y);
+                    }
                 }
             }
         }
