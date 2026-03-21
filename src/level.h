@@ -65,6 +65,14 @@ uint8_t *level_get_zone_data_ptr(LevelState *level, int16_t zone_id);
 int16_t level_get_zone_brightness(const LevelState *level, int16_t zone_id, int use_upper);
 
 /*
+ * Get per-point brightness (pointBrights table) for a rotated level point.
+ * use_upper: 0 = lower word at +0, 1 = upper word at +2.
+ * Applies animated brightness encoding used by Amiga pointBrights entries.
+ * Returns 0 if point table is unavailable or point_id is out of range.
+ */
+int16_t level_get_point_brightness(const LevelState *level, int16_t point_id, int use_upper);
+
+/*
  * Set the zone roof Y (big-endian long at ZONE_OFF_ROOF). Returns 0 on success, -1 if invalid.
  */
 int level_set_zone_roof(LevelState *level, int16_t zone_id, int32_t roof_y);

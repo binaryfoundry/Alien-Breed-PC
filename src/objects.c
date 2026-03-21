@@ -2640,8 +2640,8 @@ static int16_t bright_anim_advance(const int16_t *table, unsigned int *idx)
  * Brightness animation handler
  *
  * Advances the three global anims (pulse, flicker, fire) each tick.
- * Zone brightness is read from level data at render time via level_get_zone_brightness();
- * zones with brightness word high/low byte 1/2/3 use these values. No per-zone list.
+ * Render time reads these via level_get_zone_brightness() and level_get_point_brightness().
+ * Anim selection is encoded in zone words and pointBrights entries (Amiga format).
  * ----------------------------------------------------------------------- */
 void bright_anim_handler(GameState *state)
 {

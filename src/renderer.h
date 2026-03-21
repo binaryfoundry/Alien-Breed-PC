@@ -259,7 +259,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper);
 void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
                         int16_t top, int16_t bot,
                         const uint8_t *texture, int16_t tex_start,
-                        int16_t tex_end, int16_t brightness,
+                        int16_t tex_end, int16_t left_brightness, int16_t right_brightness,
                         uint8_t valand, uint8_t valshift, int16_t horand,
                         int16_t totalyoff, int16_t fromtile,
                         int16_t tex_id, int16_t wall_height_for_tex);

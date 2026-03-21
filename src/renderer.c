@@ -756,7 +756,7 @@ static void draw_wall_column(int x, int y_top, int y_bot,
 void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
                         int16_t top, int16_t bot,
                         const uint8_t *texture, int16_t tex_start,
-                        int16_t tex_end, int16_t brightness,
+                        int16_t tex_end, int16_t left_brightness, int16_t right_brightness,
                         uint8_t valand, uint8_t valshift, int16_t horand,
                         int16_t totalyoff, int16_t fromtile,
                         int16_t tex_id, int16_t wall_height_for_tex)
@@ -842,8 +842,6 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
     int64_t tex_over_z1_64 = (int64_t)ct1 * 65536LL / cz1;
     int64_t tex_over_z2_64 = (int64_t)ct2 * 65536LL / cz2;
 
-    int zone_d6 = brightness * 2;
-
     for (int screen_x = draw_start; screen_x <= draw_end; screen_x++) {
         /* t linear in screen x, 0..65535 (stable, no sensitive denominator) */
         int64_t t_fp = (int64_t)(screen_x - scr_x1) * 65536LL / span;
@@ -855,7 +853,9 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
         int32_t col_z = (int32_t)(65536LL / inv_z);
         if (col_z < 1) col_z = 1;
 
-        int amiga_d6 = (col_z >> 7) + zone_d6;
+        int32_t wall_bright = left_brightness +
+            (int32_t)(((int64_t)(right_brightness - left_brightness) * t_fp) / 65536LL);
+        int amiga_d6 = (col_z >> 7) + (wall_bright * 2);
         if (amiga_d6 < 0) amiga_d6 = 0;
         if (amiga_d6 > 64) amiga_d6 = 64;
 
@@ -2189,9 +2189,16 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     use_valshift = r->wall_valshift[tex_id];
                 }
 
-                /* Amiga: leftwallbright = pointBrightsPtr[pt] + 300 + wallbrightoff.
-                 * We use zone_bright + wallbrightoff (no per-vertex brightness yet). */
-                int16_t wall_bright = (int16_t)(zone_bright + wallbrightoff);
+                /* Amiga wall brightness uses per-point brightness (pointBrightsPtr), then adds wallbrightoff.
+                 * If point brightness data is unavailable, fall back to zone brightness. */
+                int16_t point_bright_l = zone_bright;
+                int16_t point_bright_r = zone_bright;
+                if (level->point_brights) {
+                    point_bright_l = level_get_point_brightness(level, p1, use_upper ? 1 : 0);
+                    point_bright_r = level_get_point_brightness(level, p2, use_upper ? 1 : 0);
+                }
+                int16_t wall_bright_l = (int16_t)(point_bright_l + wallbrightoff);
+                int16_t wall_bright_r = (int16_t)(point_bright_r + wallbrightoff);
 
                 int16_t wall_top = (int16_t)(topwall >> 8);
                 int16_t wall_bot = (int16_t)(botwall >> 8);
@@ -2268,7 +2275,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     renderer_draw_wall(rx1, rz1, rx2, rz2,
                                       wall_top, wall_bot,
                                       wall_tex, leftend, rightend,
-                                      wall_bright, use_valand, use_valshift, horand,
+                                      wall_bright_l, wall_bright_r,
+                                      use_valand, use_valshift, horand,
                                       eff_totalyoff, eff_fromtile, tex_id,
                                       wall_height_for_tex);
             }
@@ -2657,7 +2665,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                                           (int16_t)new_x, (int16_t)new_z,
                                           (int16_t)(topwall >> 8), (int16_t)(botwall >> 8),
                                           arc_tex, (int16_t)prev_t, (int16_t)new_t,
-                                          base_bright, 63, 6, 255,
+                                          base_bright, base_bright, 63, 6, 255,
                                           0, 0, tex_id, wall_ht);
                     }
                     

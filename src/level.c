@@ -431,6 +431,20 @@ int level_parse(LevelState *level)
     level->points = ld + points_offset;
     /* Point brights follow points: points + 4*num_points + 4 */
     level->point_brights = level->points + 4 + num_points * 4;
+    if (num_points > 0) {
+        int point_anim_lower = 0;
+        int point_anim_upper = 0;
+        for (int p = 0; p < num_points; p++) {
+            int16_t lo = read_word(level->point_brights + (size_t)p * 4u + 0u);
+            int16_t hi = read_word(level->point_brights + (size_t)p * 4u + 2u);
+            uint8_t lo_anim = (uint8_t)(((uint16_t)lo >> 8) & 0xFFu);
+            uint8_t hi_anim = (uint8_t)(((uint16_t)hi >> 8) & 0xFFu);
+            if ((int8_t)(lo & 0xFF) >= 0 && lo_anim != 0) point_anim_lower++;
+            if ((int8_t)(hi & 0xFF) >= 0 && hi_anim != 0) point_anim_upper++;
+        }
+        printf("[LEVEL] Point brightness anim flags: lower=%d upper=%d (from point_brights table)\n",
+               point_anim_lower, point_anim_upper);
+    }
 
     /* Long 26: Offset to floor lines */
     int32_t floor_offset = read_long(ld + 26);
@@ -1017,6 +1031,47 @@ int16_t level_get_zone_brightness(const LevelState *level, int16_t zone_id, int 
     if (anim >= 1 && anim <= 3)
         return (int16_t)level->bright_anim_values[anim - 1];
     return word;
+}
+
+int16_t level_get_point_brightness(const LevelState *level, int16_t point_id, int use_upper)
+{
+    if (!level || !level->data || !level->point_brights)
+        return 0;
+    if (point_id < 0)
+        return 0;
+
+    {
+        int num_points = (int)read_word(level->data + 14);
+        if (num_points <= 0 || point_id >= num_points)
+            return 0;
+    }
+
+    {
+        /* Match AB3DI.s "currentPointBrights" decode exactly:
+         *  - base brightness is signed low byte (ext.w d2)
+         *  - high byte encodes anim select/blend factor
+         *  - final result is ext.w d2 again (signed low byte) */
+        const uint8_t *pb = level->point_brights + (size_t)point_id * 4u + (use_upper ? 2u : 0u);
+        int16_t d2 = read_word(pb);
+
+        if ((int8_t)(d2 & 0xFF) >= 0) {
+            uint8_t d3 = (uint8_t)(((uint16_t)d2 >> 8) & 0xFFu);
+            if (d3 != 0) {
+                uint8_t anim = (uint8_t)(d3 & 0x0Fu);             /* and.w #$f,d3 */
+                uint8_t blend = (uint8_t)((d3 >> 4) + 1u);        /* lsr.w #4,d4 ; addq #1,d4 */
+                if (anim >= 1u && anim <= 3u) {
+                    int16_t base = (int16_t)(int8_t)(d2 & 0xFF);  /* ext.w d2 */
+                    int16_t target = (int16_t)level->bright_anim_values[anim - 1u];
+                    int32_t delta = (int32_t)(target - base) * (int32_t)blend;
+                    /* ASR #4 semantics (round toward -inf), not C /16 (toward zero). */
+                    int32_t scaled = (delta >= 0) ? (delta / 16) : -(((-delta) + 15) / 16);
+                    d2 = (int16_t)(base + (int16_t)scaled);
+                }
+            }
+        }
+
+        return (int16_t)(int8_t)(d2 & 0xFF); /* ext.w d2 */
+    }
 }
 
 static inline int16_t swap16(int16_t v)
