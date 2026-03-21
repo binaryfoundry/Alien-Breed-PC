@@ -2550,10 +2550,7 @@ void lift_routine(GameState *state)
                 }
                 if (gfx_off >= 0) {
                     uint8_t *wall_rec = state->level.graphics + (uint32_t)gfx_off;
-                    /* Amiga LiftRoutine mirrors doors for wall texture phase update. */
-                    uint32_t tex_scroll = (uint32_t)((-(int16_t)(lift_pos >> 8)) & 0x00FF);
-                    uint32_t tex_ptr = (uint32_t)((int32_t)gfx_base + (int32_t)tex_scroll); /* Amiga: adda.w d0,a2 */
-                    wbe32(wall_rec + 10, (int32_t)tex_ptr);  /* Amiga: move.l a2,10(a1) */
+                    (void)gfx_base; /* Keep door-only texture scroll patch; do not alter lift wall_rec+10. */
                     wbe32(wall_rec + 20, lift_pos);
                 }
             }
