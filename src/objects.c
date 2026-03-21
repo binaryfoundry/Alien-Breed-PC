@@ -2258,7 +2258,7 @@ void door_routine(GameState *state)
         int16_t door_type = be16(door + 2); /* high byte=open mode, low byte=close mode (Amiga bytes 16/17) */
         int32_t door_pos = be32(door + 4);
         int16_t door_vel = be16(door + 8);
-        int32_t door_top = be32(door + 10)+1024;  /* open position (more negative) */
+        int32_t door_top = be32(door + 10);  /* open position (more negative) */
         int32_t door_bot = be32(door + 14);  /* closed position (more positive) */
         int16_t timer = be16(door + 18);
         uint16_t door_flags = (uint16_t)be16(door + 20);
@@ -2357,7 +2357,12 @@ void door_routine(GameState *state)
                     /* Amiga DoorRoutine:
                      *   d0 = -(curr >> 2) & 255  => with curr stored as door_pos/64, this is -(door_pos>>8).
                      *   a2 = gfx_base + d0 ; move.l a2,10(a1)  (writes fromtile+totalyoff together). */
-                    uint32_t tex_scroll = (uint32_t)((-(int16_t)(door_pos >> 8)) & 0x00FF);
+                    /* Align scroll relative to this door's closed position.
+                     * Doors whose closed Y is not 0 need this per-door phase offset. */
+                    int16_t door_phase = (int16_t)(door_pos >> 8);
+                    int16_t door_closed_phase = (int16_t)(door_bot >> 8);
+                    int16_t rel_phase = (int16_t)(door_phase - door_closed_phase);
+                    uint32_t tex_scroll = (uint32_t)((-(int16_t)rel_phase) & 0x00FF);
                     uint32_t tex_ptr = (uint32_t)((int32_t)gfx_base + (int32_t)tex_scroll); /* Amiga: adda.w d0,a2 */
                     wbe32(wall_rec + 10, (int32_t)tex_ptr);  /* Amiga: move.l a2,10(a1) */
                 }
