@@ -323,8 +323,7 @@ static uint32_t make_poly_color(int slot, uint16_t tex_map_word, int shade_level
  * Main entry point – implements the PolygonObj pipeline from
  * ObjDraw3.ChipRam.s.
  * ----------------------------------------------------------------------- */
-void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
-                           int32_t bot_of_room, GameState *state)
+void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameState *state)
 {
     RendererState *r = &g_renderer;
 
@@ -361,14 +360,10 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
     int16_t cos_v = cos_lookup(rel_ang);
 
     /* ---- 3. Y-axis offset for object --------------------------------- */
-    /* Amiga: d2 = (obj[4] << 7) - yoff.
-     * obj[4] stores the object's floor anchor in the same units as bot_of_room,
-     * scaled by 1/128 (so obj[4]*128 == anchor world-height).
-     * When obj[4]==0 (most static props), anchor directly to bot_of_room. */
+    /* ObjDraw3 PolygonObj @ convtoscr: move.w 2(a0),d2 / ext.l d2 / asl.l #7,d2 / sub.l yoff,d2
+     * (a0 points at object+2 after move.w (a0)+,d0 at PolygonObj entry). */
     int16_t obj_y4 = vec_rd16(obj + 4);
-    int32_t y_adjust = (obj_y4 != 0)
-                       ? ((int32_t)obj_y4 << 7) - r->yoff
-                       : bot_of_room - r->yoff;
+    int32_t y_adjust = ((int32_t)obj_y4 << 7) - r->yoff;
 
     /* ---- 4. Select animation frame ----------------------------------- */
     /* ObjDraw3 PolygonObj currently forces frame 0:

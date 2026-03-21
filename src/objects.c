@@ -17,7 +17,6 @@
 #include "level.h"
 #include "movement.h"
 #include "math_tables.h"
-#include "poly_object.h"
 #include "stub_audio.h"
 #include "visibility.h"
 #include <stdio.h>
@@ -201,9 +200,12 @@ static void enemy_update_anim_with_step(GameObject *obj, GameState *state,
  * ----------------------------------------------------------------------- */
 void object_init_world_sizes_from_types(LevelState *level)
 {
-    if (!level->object_data || level->num_object_points <= 0) return;
-    for (int i = 0; i < level->num_object_points; i++) {
+    if (!level->object_data) return;
+    /* Object table is CID-terminated; do not use num_object_points (different pool size). */
+    for (int i = 0; i < 256; i++) {
         uint8_t *raw = level->object_data + i * OBJECT_SIZE;
+        int16_t cid = be16(raw);
+        if (cid < 0) break;
         int t = (int8_t)raw[16];
         if (t < 0 || t > 20) continue;
         if (raw[6] == 0 || raw[7] == 0) {
@@ -723,57 +725,38 @@ void objects_update(GameState *state)
             continue;
         }
 
-        /* Update rendering Y position from zone floor height.
-         * Anims.s: each handler writes 4(a0) = (ToZoneFloor >> 7) - offset.
-         * The offset is per-type; barrel uses -60 (= its world_h).
-         * Generic formula: obj[4] = (floor >> 7) - world_h, so that
-         *   scr_y + half_h ≈ floor_screen_y  (sprite bottom sits on floor).
-         * Proof: (obj[4]<<7 + world_h*128) = floor, matching the floor projection.
+        /* Dispatch by object type (needed before Y refresh — Amiga gates on objNumber). */
+        int8_t obj_type = obj->obj.number;
+
+        /* Update rendering Y from zone floor for types that run an ItsA* handler on Amiga.
+         * ObjectDataHandler (Anims.s ~1083): move.b objNumber(a0),d0 / blt.s doneObj — types < 0
+         * (decorative 3D props, corpses, etc.) skip all handlers and never refresh 4(a0) here.
+         * Pickups use ToZoneFloor / ToUpperFloor + fixed offset (e.g. ItsAMediKit sub.w #32).
          *
-         * For two-level zones, use in_top (loaded from the level file, kept in sync
-         * by movement.c when the object crosses a floor boundary) to pick the floor. */
-        {
+         * Generic: obj[4] = (floor>>7) - world_h with upper floor when objInTop (Defs.i +63). */
+        if (obj_type >= 0) {
             int16_t obj_zone = OBJ_ZONE(obj);
             if (obj_zone >= 0 && obj_zone < zone_slots &&
                 state->level.zone_adds && state->level.data) {
                 int32_t zo = be32(state->level.zone_adds + obj_zone * 4);
                 if (zo > 0) {
                     const uint8_t *zd = state->level.data + zo;
-                    int32_t floor_h = be32(zd + 2);  /* default: ToZoneFloor (lower) */
+                    int32_t floor_h = be32(zd + 2);  /* ToZoneFloor */
 
-                    /* Two-level zone: if upper floor is set and object is flagged as on
-                     * the upper floor, use the upper floor height.
-                     * Never modify in_top here – it is authoritative from the level file
-                     * and is updated by movement.c when the object moves between floors. */
-                    int32_t upper_floor = be32(zd + 10);  /* ZD_UPPER_FLOOR */
-                    if (upper_floor != 0 && obj->obj.in_top) {
+                    int32_t upper_floor = be32(zd + 10);
+                    if (upper_floor != 0 && obj->obj.in_top)
                         floor_h = upper_floor;
-                    }
 
-                    /* world_height at [7] is signed (e.g. barrel -60); only default when 0 */
                     int world_h = (int)(int8_t)obj->raw[7];
-                    if (world_h == 0) world_h = 32;
+                    if (world_h == 0)
+                        world_h = 32;
 
-                    /* Level exit sign (3D vector slot 2): anchor Y to ceiling, not floor
-                     * (same roof offsets as renderer_draw_zone / ZD_ROOF, ZD_UPPER_ROOF). */
-                    int32_t anchor_h = floor_h;
-                    if ((uint8_t)obj->raw[6] == (uint8_t)OBJ_3D_SPRITE &&
-                        be16(obj->raw + 8) == (int16_t)POLY_SLOT_EXIT_SIGN) {
-                        int32_t roof_h = be32(zd + 6);
-                        if (upper_floor != 0 && obj->obj.in_top) {
-                            int32_t upper_roof = be32(zd + 14);
-                            roof_h = (upper_roof != 0) ? upper_roof : roof_h;
-                        }
-                        anchor_h = roof_h;
-                    }
-                    int16_t render_y = (int16_t)((anchor_h >> 7) - world_h);
+                    int16_t render_y = (int16_t)((floor_h >> 7) - world_h);
                     obj_sw(obj->raw + 4, render_y);
                 }
             }
         }
 
-        /* Dispatch by object type */
-        int8_t obj_type = obj->obj.number;
         int param_idx;
 
         /* Match Amiga wake behavior: dormant enemies (worry==0) do not run AI. */

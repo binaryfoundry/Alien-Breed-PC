@@ -1790,7 +1790,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
          * the PolygonObj pipeline (renderer_3dobj.c). */
         if ((uint8_t)obj[6] == (uint8_t)OBJ_3D_SPRITE) {
             ObjRotatedPoint *orp3d = &r->obj_rotated[rd16(obj)];
-            draw_3d_vector_object(obj, orp3d, bot_of_room, state);
+            draw_3d_vector_object(obj, orp3d, state);
             continue;
         }
 

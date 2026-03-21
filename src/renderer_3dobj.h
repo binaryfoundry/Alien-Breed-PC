@@ -91,12 +91,14 @@ void poly_obj_set_use_object_frame(int enabled);
 
 /*
  * Draw a 3D vector/polygon object at its view-space position.
- *   obj         - raw 64-byte object data (Amiga big-endian)
- *   orp         - view-space centre of object (from RotateObjectPts)
- *   bot_of_room - world-space Y of zone floor (fallback Y placement)
- *   state       - game state (for player angle)
+ *   obj    - raw 64-byte object data (Amiga big-endian)
+ *   orp    - view-space centre of object (from RotateObjectPts)
+ *   state  - game state (for player angle)
+ *
+ * Vertical placement matches ObjDraw3.ChipRam.s PolygonObj / convtoscr:
+ *   d2 = ext.l 2(a0) ; asl.l #7,d2 ; sub.l yoff,d2  (a0 advanced +2 after first word)
+ *   i.e. y_adjust = ((int32_t)(int16_t)obj[4] << 7) - yoff — no TOPOFROOM/BOTOFROOM path.
  */
-void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp,
-                           int32_t bot_of_room, GameState *state);
+void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameState *state);
 
 #endif /* RENDERER_3DOBJ_H */
