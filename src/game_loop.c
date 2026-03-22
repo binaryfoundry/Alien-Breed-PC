@@ -54,7 +54,7 @@ static bool mark_visible_zones_from_graph_list(uint8_t vis_zones[256],
                                                const LevelState *level,
                                                int32_t list_offset)
 {
-    if (!vis_zones || !level || !level->data || list_offset <= 0) {
+    if (!vis_zones || !level || !level->data || list_offset < 0) {
         return false;
     }
 
@@ -317,24 +317,20 @@ void game_loop(GameState *state)
                 /* Amiga builds WorkSpace from each player's ToListOfGraph list,
                  * then wakes objects whose objZone bit is set in WorkSpace. */
                 if (state->mode != MODE_SINGLE) {
+                    int32_t lgr2 = state->plr2.roompt;
+                    if (lgr2 >= 0) lgr2 += 48;  /* ToListOfGraph */
+                    else lgr2 = state->plr2.list_of_graph_rooms;
                     has_visible |= mark_visible_zones_from_graph_list(
-                        vis_zones, &state->level, state->plr2.list_of_graph_rooms);
+                        vis_zones, &state->level, lgr2);
                 }
+                int32_t lgr1 = state->plr1.roompt;
+                if (lgr1 >= 0) lgr1 += 48;  /* ToListOfGraph */
+                else lgr1 = state->plr1.list_of_graph_rooms;
                 has_visible |= mark_visible_zones_from_graph_list(
-                    vis_zones, &state->level, state->plr1.list_of_graph_rooms);
+                    vis_zones, &state->level, lgr1);
 
-                /* Fallback for malformed data/state: retain prior approximation. */
-                if (!has_visible && state->zone_order_count > 0) {
-                    for (int i = 0; i < state->zone_order_count && i < 256; i++) {
-                        int16_t z = state->zone_order_zones[i];
-                        if (z >= 0 && z < 256) {
-                            vis_zones[(uint8_t)z] = 1;
-                            has_visible = true;
-                        }
-                    }
-                }
                 if (!has_visible) {
-                    memset(vis_zones, 1, sizeof(vis_zones));
+                    /* Match Amiga behavior: no visible-zone bits -> no wake this tick. */
                 }
 
                 int obj_idx = 0;
