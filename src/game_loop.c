@@ -50,6 +50,44 @@
 /* Max frames before auto-exit (0 = disabled, relies on ESC key) */
 #define STUB_MAX_FRAMES 0
 
+static bool mark_visible_zones_from_graph_list(uint8_t vis_zones[256],
+                                               const LevelState *level,
+                                               int32_t list_offset)
+{
+    if (!vis_zones || !level || !level->data || list_offset <= 0) {
+        return false;
+    }
+
+    const uint8_t *list = level->data + list_offset;
+    const uint8_t *data_end = NULL;
+    if (level->data_byte_count > 0) {
+        data_end = level->data + level->data_byte_count;
+    }
+
+    bool any = false;
+    for (int i = 0; i < 1024; i++) {
+        if (data_end && (list + 1) >= data_end) {
+            break;
+        }
+
+        int16_t zone = (int16_t)((list[0] << 8) | list[1]);
+        if (zone < 0) {
+            break;
+        }
+        if (zone >= 0 && zone < 256) {
+            vis_zones[(uint8_t)zone] = 1;
+            any = true;
+        }
+
+        if (data_end && (list + 8) > data_end) {
+            break;
+        }
+        list += 8;
+    }
+
+    return any;
+}
+
 /*
  * game_loop - The main per-frame game loop
  *
@@ -274,16 +312,28 @@ void game_loop(GameState *state)
             if (state->level.object_data) {
                 uint8_t vis_zones[256];
                 memset(vis_zones, 0, sizeof(vis_zones));
+                bool has_visible = false;
 
-                /* Build visibility from zones in draw order (order_zones output).
-                 * level.workspace was never populated, so use zone_order_zones instead. */
-                if (state->zone_order_count > 0) {
+                /* Amiga builds WorkSpace from each player's ToListOfGraph list,
+                 * then wakes objects whose objZone bit is set in WorkSpace. */
+                if (state->mode != MODE_SINGLE) {
+                    has_visible |= mark_visible_zones_from_graph_list(
+                        vis_zones, &state->level, state->plr2.list_of_graph_rooms);
+                }
+                has_visible |= mark_visible_zones_from_graph_list(
+                    vis_zones, &state->level, state->plr1.list_of_graph_rooms);
+
+                /* Fallback for malformed data/state: retain prior approximation. */
+                if (!has_visible && state->zone_order_count > 0) {
                     for (int i = 0; i < state->zone_order_count && i < 256; i++) {
                         int16_t z = state->zone_order_zones[i];
-                        if (z >= 0 && z < 256)
-                            vis_zones[z] = 1;
+                        if (z >= 0 && z < 256) {
+                            vis_zones[(uint8_t)z] = 1;
+                            has_visible = true;
+                        }
                     }
-                } else {
+                }
+                if (!has_visible) {
                     memset(vis_zones, 1, sizeof(vis_zones));
                 }
 
