@@ -512,8 +512,8 @@ const EnemyParams enemy_params[] = {
         .thing_height   = 160 * 128,
         .step_up        = 20 * 256,
         .step_down      = 20 * 256,
-        .extlen         = 80,
-        .awayfromwall   = 1,
+        .extlen         = 160,
+        .awayfromwall   = 2,
         .nas_height     = 128,
         .melee_damage   = 0,
         .melee_cooldown = 0,
@@ -707,7 +707,7 @@ const EnemyParams enemy_params[] = {
     },
     /* [7] Big Ugly Alien (BigUglyAlien.s ItsABigNasty) */
     {
-        .thing_height   = 50 * 128,
+        .thing_height   = 50 * 256,
         .step_up        = 20 * 256,
         .step_down      = 20 * 256,
         .extlen         = 80,
@@ -775,7 +775,7 @@ const EnemyParams enemy_params[] = {
         .step_up        = 0,
         .step_down      = 0x1000000,
         .extlen         = 160,
-        .awayfromwall   = 1,
+        .awayfromwall   = 2,
         .nas_height     = 64,
         .melee_damage   = 0,
         .melee_cooldown = 0,

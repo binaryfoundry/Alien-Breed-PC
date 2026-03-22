@@ -36,8 +36,8 @@
  * movement.c default is 40*256. Step-UP blocked when ledge is higher than this.
  * Step-DOWN always passable (unlimited). */
 #define STEP_UP_NORMAL      (40 * 256)   /* 10240 - match Amiga ObjectMove step-up */
-#define STEP_UP_DUCKED      (20 * 256)   /* 5120 - stricter when ducked */
-#define STEP_DOWN_DEFAULT   0x3fffffff  /* effectively unlimited */
+#define STEP_UP_DUCKED      (10 * 256)   /* 2560 - AB3DI.s ducked step-up */
+#define STEP_DOWN_DEFAULT   0x1000000    /* AB3DI.s step-down */
 
 /* Gun selection key -> gun index mapping (from GUNVALS in Plr1Control.s) */
 static const int8_t gun_key_map[6] = { 0, 7, 1, 2, 3, 4 };
@@ -760,18 +760,6 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
         ctx.objroom = cur_room;
         ctx.stood_in_top = cur_top;
         ctx.hitwall = any_hit;
-        if (any_hit) {
-            int16_t zone_id = -1;
-            int32_t roompt = -1;
-            if (ctx.objroom && state->level.data) {
-                roompt = (int32_t)(ctx.objroom - state->level.data);
-                zone_id = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
-                if (zone_id < 0 || zone_id >= zone_slots)
-                    zone_id = -1;
-            }
-            printf("[PLAYER] wall collision plr%d at (%d, %d) zone=%d roompt=%ld\n",
-                   plr_num, (int)ctx.newx, (int)ctx.newz, (int)zone_id, (long)roompt);
-        }
     }
 
     plr->stood_in_top = ctx.stood_in_top;
