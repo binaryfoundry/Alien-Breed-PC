@@ -511,6 +511,11 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
 
         {
             double radius = (double)((int64_t)ext << ps);
+            int64_t old_cross = (int64_t)(ctx->oldx - lx) * lzlen -
+                                (int64_t)(ctx->oldz - lz) * lxlen;
+            int64_t new_cross = (int64_t)(ctx->newx - lx) * lzlen -
+                                (int64_t)(ctx->newz - lz) * lxlen;
+            int crossed_blocked_side = (old_cross >= 0 && new_cross < 0);
 
             double ax = (double)lx;
             double az = (double)lz;
@@ -530,12 +535,21 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
             {
                 double d_old = point_segment_distance_and_normal(p0x, p0z, ax, az, bx, bz, NULL, NULL);
                 double d_new = point_segment_distance_and_normal(p1x, p1z, ax, az, bx, bz, NULL, NULL);
-                if (d_old < radius && d_new > d_old) return 0;
+                if (!crossed_blocked_side && d_old < radius && d_new > d_old) return 0;
             }
 
             if (do_wall_slide_radius(ctx, ax, az, bx, bz, radius)) {
+                int64_t slide_cross = (int64_t)(ctx->newx - lx) * lzlen -
+                                      (int64_t)(ctx->newz - lz) * lxlen;
                 mark_floorline_touch_flag(ctx, fline);
                 ctx->hitwall = 1;
+                if (crossed_blocked_side && slide_cross < 0) {
+                    /* Keep solid/blocked lines one-sided: never accept a result
+                     * that leaves us on the far side of this segment. */
+                    ctx->newx = ctx->oldx;
+                    ctx->newz = ctx->oldz;
+                    return 3;
+                }
                 *xdiff = ctx->newx - ctx->oldx;
                 *zdiff = ctx->newz - ctx->oldz;
                 return 2;
