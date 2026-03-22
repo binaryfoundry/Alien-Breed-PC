@@ -1367,22 +1367,21 @@ void renderer_draw_gun(GameState *state)
                     const uint8_t *col_ptr = gun_ptr + ptr_off + (uint32_t)src_col * 4;
                     uint8_t mode = col_ptr[0];
                     uint32_t wad_off = ((uint32_t)col_ptr[1] << 16) | ((uint32_t)col_ptr[2] << 8) | (uint32_t)col_ptr[3];
-                    if (wad_off == 0 || wad_off >= gun_wad_size) continue;
+                    /* Match sprite PTR semantics: skip only when whole entry is zero.
+                     * mode!=0 with wad_off==0 is valid (column data at WAD start). */
+                    if (mode == 0 && wad_off == 0) continue;
+                    if (wad_off >= gun_wad_size) continue;
 
                     const uint8_t *src = gun_wad + wad_off;
-                    uint32_t idx = 0;
+                    if (wad_off + (size_t)(src_row + 1) * 2 > gun_wad_size) continue;
+                    uint16_t w = (uint16_t)((src[src_row * 2u] << 8) | src[src_row * 2u + 1]);
+                    uint32_t idx;
                     if (mode == 0) {
-                        if (wad_off + (size_t)(src_row + 1) * 2 > gun_wad_size) continue;
-                        uint16_t w = (uint16_t)((src[src_row * 2u] << 8) | src[src_row * 2u + 1]);
                         idx = (uint32_t)(w & 31u);
                     } else if (mode == 1) {
-                        if (wad_off + (size_t)(src_row + 1) * 2 > gun_wad_size) continue;
-                        uint16_t w = (uint16_t)((src[src_row * 2u] << 8) | src[src_row * 2u + 1]);
                         idx = (uint32_t)((w >> 5) & 31u);
                     } else {
-                        if (wad_off + (size_t)src_row * 2u + 1 >= gun_wad_size) continue;
-                        uint8_t b = src[src_row * 2u];
-                        idx = (uint32_t)((b >> 2) & 31u);
+                        idx = (uint32_t)((w >> 10) & 31u);
                     }
                     if (idx == 0) continue;
 
