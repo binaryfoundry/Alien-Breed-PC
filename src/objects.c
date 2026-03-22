@@ -68,6 +68,12 @@ enum {
     ENEMY_FOURTH_TIMER_OFF = 36  /* FourthTimer(raw+54) */
 };
 
+static bool enemy_type_uses_floor_minus_height_move_y(int8_t obj_type);
+static int32_t enemy_move_y_for_context(const GameObject *obj,
+                                        const EnemyParams *params,
+                                        const GameState *state,
+                                        int zone_slots);
+
 /* -----------------------------------------------------------------------
  * enemy_viewpoint - Amiga AlienControl.s ViewpointToDraw
  * Returns 0=towards, 1=right, 2=away, 3=left based on angle between
@@ -498,11 +504,9 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
     ctx.newx = obj_x - ((int32_t)s * speed * state->temp_frames) / 16384;
     ctx.newz = obj_z - ((int32_t)c * speed * state->temp_frames) / 16384;
     ctx.thing_height = params->thing_height;
+    int zone_slots = level_zone_slot_count(&state->level);
     {
-        /* Match Amiga collision vertical span: bottom = center - half_height. */
-        int16_t center_y = obj_w(obj->raw + 4);
-        int32_t half_h = ctx.thing_height >> 8;
-        int32_t move_y = ((int32_t)center_y - half_h) << 7;
+        int32_t move_y = enemy_move_y_for_context(obj, params, state, zone_slots);
         ctx.oldy = move_y;
         ctx.newy = move_y;
     }
@@ -514,7 +518,6 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
     ctx.coll_id = OBJ_CID(obj);
     ctx.pos_shift = 0;
     ctx.stood_in_top = obj->obj.in_top;
-    int zone_slots = level_zone_slot_count(&state->level);
     if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data) {
         int src_zone = level_connect_to_zone_index(&state->level, OBJ_ZONE(obj));
         if (src_zone < 0 && OBJ_ZONE(obj) < zone_slots)
@@ -837,6 +840,52 @@ static int16_t enemy_anim_vect_for_type(int8_t obj_type)
     case OBJ_NBR_FLAME_MARINE:    return 17;
     default:                      return -1;
     }
+}
+
+/* Most ground enemies in Amiga scripts derive move Y from floor and full
+ * collision height (newy+thingheight ~= floor). Keep Robot/BigUgly/BigRed
+ * on legacy path because their scripts use special offsets/states. */
+static bool enemy_type_uses_floor_minus_height_move_y(int8_t obj_type)
+{
+    switch (obj_type) {
+    case OBJ_NBR_ALIEN:
+    case OBJ_NBR_MARINE:
+    case OBJ_NBR_TOUGH_MARINE:
+    case OBJ_NBR_FLAME_MARINE:
+    case OBJ_NBR_WORM:
+    case OBJ_NBR_SMALL_RED_THING:
+    case OBJ_NBR_TREE:
+    case OBJ_NBR_FLYING_NASTY:
+    case OBJ_NBR_EYEBALL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static int32_t enemy_move_y_for_context(const GameObject *obj,
+                                        const EnemyParams *params,
+                                        const GameState *state,
+                                        int zone_slots)
+{
+    int32_t move_y = (((int32_t)obj_w(obj->raw + 4) -
+                      (int32_t)(params->thing_height >> 8)) << 7);
+
+    if (!enemy_type_uses_floor_minus_height_move_y(obj->obj.number))
+        return move_y;
+
+    if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data) {
+        int src_zone = level_connect_to_zone_index(&state->level, OBJ_ZONE(obj));
+        if (src_zone < 0 && OBJ_ZONE(obj) < zone_slots)
+            src_zone = OBJ_ZONE(obj);
+        if (src_zone >= 0 && src_zone < zone_slots) {
+            int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)src_zone * 4u);
+            const uint8_t *zd = state->level.data + zo;
+            int32_t floor_h = be32(zd + (obj->obj.in_top ? ZONE_OFF_UPPER_FLOOR : ZONE_OFF_FLOOR));
+            move_y = floor_h - params->thing_height;
+        }
+    }
+    return move_y;
 }
 /* -----------------------------------------------------------------------
  * objects_update - Main per-frame object processing
@@ -1436,10 +1485,9 @@ static int32_t marine_track_target(GameObject *obj, const EnemyParams *params,
     ctx.oldx = obj_x;
     ctx.oldz = obj_z;
     ctx.thing_height = params->thing_height;
+    int zone_slots = level_zone_slot_count(&state->level);
     {
-        int16_t center_y = obj_w(obj->raw + 4);
-        int32_t half_h = ctx.thing_height >> 8;
-        int32_t move_y = ((int32_t)center_y - half_h) << 7;
+        int32_t move_y = enemy_move_y_for_context(obj, params, state, zone_slots);
         ctx.oldy = move_y;
         ctx.newy = move_y;
     }
@@ -1451,7 +1499,6 @@ static int32_t marine_track_target(GameObject *obj, const EnemyParams *params,
     ctx.coll_id = OBJ_CID(obj);
     ctx.pos_shift = 0;
     ctx.stood_in_top = obj->obj.in_top;
-    int zone_slots = level_zone_slot_count(&state->level);
 
     if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data) {
         int src_zone = level_connect_to_zone_index(&state->level, OBJ_ZONE(obj));

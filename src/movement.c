@@ -71,33 +71,15 @@ static int32_t read_be32(const uint8_t* p)
     return (int32_t)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
 }
 
-static bool ctx_is_player_mover(const MoveContext *ctx, const LevelState *level)
-{
-    if (!ctx || !level || !level->object_data) return false;
-    if (ctx->coll_id < 0) return false;
-
-    for (int i = 0; i < 512; i++) {
-        GameObject *o = (GameObject *)(level->object_data + i * OBJECT_SIZE);
-        int16_t cid = OBJ_CID(o);
-        if (cid < 0) break;
-        if (cid != ctx->coll_id) continue;
-        return (o->obj.number == OBJ_NBR_PLR1 || o->obj.number == OBJ_NBR_PLR2);
-    }
-    return false;
-}
-
 /* Amiga MoveObject exit passability test (ObjectMove.s chkstepup/botinsidebot):
  *  1) target room clearance must be strictly greater than thingheight
  *  2) d1 = mover_y + thingheight - target_floor
  *     if d1 > 0  -> d1 < StepUpVal
  *     else       -> -d1 < StepDownVal
  *  3) mover_y - target_roof must be >= 0
- *
- * Port note: for non-player movers we still enforce step-up limits, but we
- * relax step-down limits so enemies can drop into pits/water without getting
- * stuck at transition edges. */
-static bool transition_height_ok(const MoveContext *ctx, int32_t mover_y,
-    int32_t target_floor, int32_t target_roof, bool strict_steps)
+ */
+static bool transition_height_ok_single(const MoveContext *ctx, int32_t mover_y,
+    int32_t target_floor, int32_t target_roof)
 {
     int64_t clearance = (int64_t)target_floor - (int64_t)target_roof;
     if (clearance <= (int64_t)ctx->thing_height) return false;
@@ -106,13 +88,40 @@ static bool transition_height_ok(const MoveContext *ctx, int32_t mover_y,
         int64_t d1 = (int64_t)mover_y + (int64_t)ctx->thing_height - (int64_t)target_floor;
         if (d1 > 0) {
             if (d1 >= (int64_t)ctx->step_up_val) return false;
-        } else if (strict_steps) {
+        } else {
             if ((-d1) >= (int64_t)ctx->step_down_val) return false;
         }
     }
 
     if ((int64_t)mover_y - (int64_t)target_roof < 0) return false;
     return true;
+}
+
+/* Amiga checkotherwalls first tests lower floor/roof, then upper floor/roof. */
+static bool transition_height_ok_zone(const MoveContext *ctx, int32_t mover_y,
+    const uint8_t *target_zone, int8_t *out_in_top)
+{
+    if (!ctx || !target_zone) return false;
+
+    {
+        int32_t floor_h = read_be32(target_zone + ZONE_FLOOR_HEIGHT);
+        int32_t roof_h = read_be32(target_zone + ZONE_ROOF_HEIGHT);
+        if (transition_height_ok_single(ctx, mover_y, floor_h, roof_h)) {
+            if (out_in_top) *out_in_top = 0;
+            return true;
+        }
+    }
+
+    {
+        int32_t floor_h = read_be32(target_zone + ZONE_UPPER_FLOOR);
+        int32_t roof_h = read_be32(target_zone + ZONE_UPPER_ROOF);
+        if (transition_height_ok_single(ctx, mover_y, floor_h, roof_h)) {
+            if (out_in_top) *out_in_top = 1;
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /* Amiga MoveObject ORs wallflags into floorline word 14(a2) when the mover
@@ -471,7 +480,6 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
     int16_t connect = (int16_t)read_be16(fline + FLINE_CONNECT);
     int connect_index = level_connect_to_zone_index(level, connect);
     int zone_slots = level_zone_slot_count(level);
-    bool strict_steps = ctx_is_player_mover(ctx, level);
     int32_t lx = (int32_t)(int16_t)read_be16(fline + FLINE_X) << ps;
     int32_t lz = (int32_t)(int16_t)read_be16(fline + FLINE_Z) << ps;
     int16_t lxlen = (int16_t)read_be16(fline + FLINE_XLEN);
@@ -488,11 +496,9 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
         int32_t target_zone_off = read_be32(level->zone_adds + (size_t)connect_index * 4);
         const uint8_t* target_zone = level->data + target_zone_off;
 
-        int32_t target_floor = read_be32(target_zone + ZONE_FLOOR_HEIGHT);
-        int32_t target_roof = read_be32(target_zone + ZONE_ROOF_HEIGHT);
         uint8_t* target_room = (uint8_t*)(level->data + target_zone_off);
 
-        if (transition_height_ok(ctx, ctx->newy, target_floor, target_roof, strict_steps)) {
+        if (transition_height_ok_zone(ctx, ctx->newy, target_zone, NULL)) {
             if (!(ctx->no_transition_back && target_room == ctx->no_transition_back)) {
                 /* Passable exit: do not treat as wall. */
                 return 0;
@@ -641,10 +647,8 @@ static void find_room(MoveContext* ctx, LevelState* level,
                         int32_t target_zone_off = read_be32(level->zone_adds + (size_t)connect_index * 4);
                         const uint8_t* target_zone = level->data + target_zone_off;
 
-                        int32_t target_floor = read_be32(target_zone + ZONE_FLOOR_HEIGHT);
-                        int32_t target_roof = read_be32(target_zone + ZONE_ROOF_HEIGHT);
-                        if (!transition_height_ok(ctx, ctx->newy, target_floor, target_roof,
-                                                  ctx_is_player_mover(ctx, level)))
+                        int8_t target_in_top = 0;
+                        if (!transition_height_ok_zone(ctx, ctx->newy, target_zone, &target_in_top))
                             continue;
 
                         {
@@ -652,7 +656,7 @@ static void find_room(MoveContext* ctx, LevelState* level,
                             if (ctx->no_transition_back && target_room == ctx->no_transition_back) continue;
 
                             ctx->objroom = target_room;
-                            ctx->stood_in_top = (ctx->newy < target_roof) ? 1 : 0;
+                            ctx->stood_in_top = target_in_top;
                             zone_data = target_zone;
                             *zone_data_ptr = target_zone;
 
