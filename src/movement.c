@@ -92,18 +92,21 @@ static bool ctx_is_player_mover(const MoveContext *ctx, const LevelState *level)
  *     if d1 > 0  -> d1 < StepUpVal
  *     else       -> -d1 < StepDownVal
  *  3) mover_y - target_roof must be >= 0
- */
+ *
+ * Port note: for non-player movers we still enforce step-up limits, but we
+ * relax step-down limits so enemies can drop into pits/water without getting
+ * stuck at transition edges. */
 static bool transition_height_ok(const MoveContext *ctx, int32_t mover_y,
     int32_t target_floor, int32_t target_roof, bool strict_steps)
 {
     int64_t clearance = (int64_t)target_floor - (int64_t)target_roof;
     if (clearance <= (int64_t)ctx->thing_height) return false;
 
-    if (strict_steps) {
+    {
         int64_t d1 = (int64_t)mover_y + (int64_t)ctx->thing_height - (int64_t)target_floor;
         if (d1 > 0) {
             if (d1 >= (int64_t)ctx->step_up_val) return false;
-        } else {
+        } else if (strict_steps) {
             if ((-d1) >= (int64_t)ctx->step_down_val) return false;
         }
     }
