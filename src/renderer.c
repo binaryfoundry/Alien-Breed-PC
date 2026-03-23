@@ -2686,10 +2686,15 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 }
             }
 
-            /* Sign decides which half of screen (floor vs ceiling). */
-            int32_t floor_y_dist = (entry_type == 1 || entry_type == 2)
-                ? (draw_h_world - y_off)
-                : ((int32_t)ypos - (int32_t)r->flooryoff);
+            /* Sign decides which half of screen (floor vs ceiling).
+             * Keep water in world-space like rel_h so near-surface behavior
+             * stays aligned with fillscrnwater tint thresholds. */
+            int32_t floor_y_dist;
+            if (entry_type == 1 || entry_type == 2 || entry_type == 7) {
+                floor_y_dist = draw_h_world - y_off;
+            } else {
+                floor_y_dist = ((int32_t)ypos - (int32_t)r->flooryoff);
+            }
 
             if (floor_y_dist == 0) {
                 /* At eye level - skip */

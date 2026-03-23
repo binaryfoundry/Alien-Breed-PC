@@ -751,10 +751,15 @@ int level_connect_to_zone_index(const LevelState *level, int16_t connect)
         if (read_word(zd + 0) == (int16_t)connect)
             return z;
     }
-    if (connect < zone_slots) {
+    {
+        int max_index = (int)level->num_zones;
+        if (max_index <= 0 || max_index > zone_slots)
+            max_index = zone_slots;
+        if (connect >= 0 && connect < max_index) {
         int32_t zoff = read_long(level->zone_adds + (size_t)connect * 4u);
         if (zoff >= 0 && (data_len == 0 || (size_t)zoff + 2u <= data_len))
             return (int)connect;
+        }
     }
     return -1;
 }

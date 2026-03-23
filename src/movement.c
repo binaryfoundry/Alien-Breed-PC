@@ -10,6 +10,7 @@
 #include "math_tables.h"
 #include "level.h"
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -71,6 +72,97 @@ static int32_t read_be32(const uint8_t* p)
     return (int32_t)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
 }
 
+static int move_debug_enabled(void)
+{
+    static int init = 0;
+    static int enabled = 0;
+    if (!init) {
+        const char *v = getenv("AB3D_DEBUG_MOVE");
+        enabled = (v && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+        init = 1;
+    }
+    return enabled;
+}
+
+/* Optional filter to one collision id. -1 means all. */
+static int move_debug_cid_filter(void)
+{
+    static int init = 0;
+    static int cid = -1;
+    if (!init) {
+        const char *v = getenv("AB3D_DEBUG_MOVE_CID");
+        if (v && v[0] != '\0')
+            cid = atoi(v);
+        init = 1;
+    }
+    return cid;
+}
+
+static int move_debug_obj_type_by_cid(const LevelState *level, int16_t coll_id)
+{
+    if (!level || !level->object_data || coll_id < 0) return -1;
+    for (int i = 0; i < 256; i++) {
+        const GameObject *obj = (const GameObject *)(level->object_data + (size_t)i * OBJECT_SIZE);
+        int16_t cid = OBJ_CID(obj);
+        if (cid < 0) break;
+        if (cid == coll_id)
+            return (int)(int8_t)obj->raw[16];
+    }
+    return -1;
+}
+
+static bool move_debug_is_enemy_type(int obj_type)
+{
+    switch (obj_type) {
+    case OBJ_NBR_ALIEN:
+    case OBJ_NBR_ROBOT:
+    case OBJ_NBR_BIG_NASTY:
+    case OBJ_NBR_FLYING_NASTY:
+    case OBJ_NBR_MARINE:
+    case OBJ_NBR_WORM:
+    case OBJ_NBR_HUGE_RED_THING:
+    case OBJ_NBR_SMALL_RED_THING:
+    case OBJ_NBR_TREE:
+    case OBJ_NBR_EYEBALL:
+    case OBJ_NBR_TOUGH_MARINE:
+    case OBJ_NBR_FLAME_MARINE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool move_ctx_is_enemy(const MoveContext *ctx, const LevelState *level, int *out_obj_type)
+{
+    if (out_obj_type) *out_obj_type = -1;
+    if (!ctx || !level) return false;
+    {
+        int obj_type = move_debug_obj_type_by_cid(level, ctx->coll_id);
+        if (out_obj_type) *out_obj_type = obj_type;
+        return move_debug_is_enemy_type(obj_type);
+    }
+}
+
+static bool move_debug_should_log(const MoveContext *ctx, const LevelState *level, int *out_obj_type)
+{
+    if (out_obj_type) *out_obj_type = -1;
+    if (!move_debug_enabled() || !ctx || !level) return false;
+
+    {
+        int filter = move_debug_cid_filter();
+        if (filter >= 0 && (int)ctx->coll_id != filter) return false;
+    }
+
+    return move_ctx_is_enemy(ctx, level, out_obj_type);
+}
+
+static int move_debug_line_index(const LevelState *level, const uint8_t *fline)
+{
+    if (!level || !level->floor_lines || !fline) return -1;
+    if (fline < level->floor_lines) return -1;
+    return (int)((fline - level->floor_lines) / FLINE_SIZE);
+}
+
 /* Amiga MoveObject exit passability test (ObjectMove.s chkstepup/botinsidebot):
  *  1) target room clearance must be strictly greater than thingheight
  *  2) d1 = mover_y + thingheight - target_floor
@@ -122,6 +214,76 @@ static bool transition_height_ok_zone(const MoveContext *ctx, int32_t mover_y,
     }
 
     return false;
+}
+
+/* Classify a failed transition where geometry/clearance is valid but only
+ * step-down threshold rejects it. In original behavior, enemies can still
+ * end up crossing into pits via room-crossing phase; this preserves that
+ * practical result without affecting players. */
+static bool transition_fail_is_stepdown_only(const MoveContext *ctx, int32_t mover_y,
+    const uint8_t *target_zone, int8_t *out_in_top)
+{
+    if (out_in_top) *out_in_top = 0;
+    if (!ctx || !target_zone) return false;
+
+    for (int pass = 0; pass < 2; pass++) {
+        int32_t floor_h = (pass == 0)
+            ? read_be32(target_zone + ZONE_FLOOR_HEIGHT)
+            : read_be32(target_zone + ZONE_UPPER_FLOOR);
+        int32_t roof_h = (pass == 0)
+            ? read_be32(target_zone + ZONE_ROOF_HEIGHT)
+            : read_be32(target_zone + ZONE_UPPER_ROOF);
+
+        {
+            int64_t clearance = (int64_t)floor_h - (int64_t)roof_h;
+            if (clearance <= (int64_t)ctx->thing_height) continue;
+        }
+        if ((int64_t)mover_y - (int64_t)roof_h < 0) continue;
+
+        {
+            int64_t d1 = (int64_t)mover_y + (int64_t)ctx->thing_height - (int64_t)floor_h;
+            if (d1 <= 0 && (-d1) >= (int64_t)ctx->step_down_val) {
+                if (out_in_top) *out_in_top = (int8_t)pass;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+static int32_t zone_floor_for_layer(const uint8_t *zone, int8_t in_top)
+{
+    if (!zone) return 0;
+    if (in_top) {
+        int32_t uf = read_be32(zone + ZONE_UPPER_FLOOR);
+        int32_t ur = read_be32(zone + ZONE_UPPER_ROOF);
+        if (uf != 0 || ur != 0) return uf;
+    }
+    return read_be32(zone + ZONE_FLOOR_HEIGHT);
+}
+
+/* Enemy-only relaxed rule: allow transition when normal gate fails only
+ * because the destination is a large step-down, and destination floor is
+ * actually lower than current floor. */
+static bool enemy_drop_transition_ok(const MoveContext *ctx,
+    const uint8_t *current_zone,
+    const uint8_t *target_zone,
+    int8_t *out_in_top)
+{
+    int8_t drop_in_top = 0;
+    if (!transition_fail_is_stepdown_only(ctx, ctx->newy, target_zone, &drop_in_top))
+        return false;
+
+    if (current_zone) {
+        int32_t src_floor = zone_floor_for_layer(current_zone, ctx->stood_in_top);
+        int32_t dst_floor = zone_floor_for_layer(target_zone, drop_in_top);
+        /* In this coordinate system, larger floor value means lower/down. */
+        if (dst_floor <= src_floor) return false;
+    }
+
+    if (out_in_top) *out_in_top = drop_in_top;
+    return true;
 }
 
 /* Amiga MoveObject ORs wallflags into floorline word 14(a2) when the mover
@@ -497,13 +659,75 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
         const uint8_t* target_zone = level->data + target_zone_off;
 
         uint8_t* target_room = (uint8_t*)(level->data + target_zone_off);
+        int dbg_type = -1;
+        int is_enemy = move_ctx_is_enemy(ctx, level, &dbg_type) ? 1 : 0;
 
-        if (transition_height_ok_zone(ctx, ctx->newy, target_zone, NULL)) {
-            if (!(ctx->no_transition_back && target_room == ctx->no_transition_back)) {
-                /* Passable exit: do not treat as wall. */
-                return 0;
+        {
+            int8_t target_in_top = 0;
+            if (transition_height_ok_zone(ctx, ctx->newy, target_zone, &target_in_top)) {
+                if (!(ctx->no_transition_back && target_room == ctx->no_transition_back)) {
+                    /* Passable exit: do not treat as wall. */
+                    return 0;
+                }
+                if (move_debug_enabled()) {
+                    if (is_enemy) {
+                        int cur_zone = level_zone_index_from_room_ptr(level, zone_data);
+                        int line_idx = move_debug_line_index(level, fline);
+                        printf("[MOVEDBG] no_back_block cid=%d type=%d line=%d zone=%d->%d connect=%d in_top=%d pos=(%d,%d) y=%d\n",
+                               (int)ctx->coll_id, dbg_type, line_idx, cur_zone, connect_index, (int)connect,
+                               (int)target_in_top, (int)ctx->newx, (int)ctx->newz, (int)ctx->newy);
+                    }
+                }
+                /* If blocked by no_transition_back, treat as wall below. */
+            } else {
+                /* Enemy-only drop fallback: if the only reason this exit fails
+                 * is a large step-down, don't hard-wall it. This allows falling
+                 * into pits/pools like the original gameplay behavior. */
+                int8_t drop_in_top = 0;
+                if (is_enemy && enemy_drop_transition_ok(ctx, zone_data, target_zone, &drop_in_top)) {
+                    int64_t new_cross = (int64_t)(ctx->newx - lx) * lzlen -
+                                        (int64_t)(ctx->newz - lz) * lxlen;
+                    int crossing_now = (new_cross < 0 &&
+                                        path_hits_segment(ctx->oldx, ctx->oldz,
+                                                          ctx->newx, ctx->newz,
+                                                          lx, lz, wx, wz));
+                    if (crossing_now && !(ctx->no_transition_back && target_room == ctx->no_transition_back)) {
+                        if (move_debug_enabled()) {
+                            int cur_zone = level_zone_index_from_room_ptr(level, zone_data);
+                            int line_idx = move_debug_line_index(level, fline);
+                            printf("[MOVEDBG] drop_allow cid=%d type=%d line=%d zone=%d->%d connect=%d pos=(%d,%d) y=%d\n",
+                                   (int)ctx->coll_id, dbg_type, line_idx, cur_zone, connect_index, (int)connect,
+                                   (int)ctx->newx, (int)ctx->newz, (int)ctx->newy);
+                        }
+                        return 0;
+                    }
+                }
+
+                if (move_debug_enabled() && is_enemy) {
+                    int cur_zone = level_zone_index_from_room_ptr(level, zone_data);
+                    int line_idx = move_debug_line_index(level, fline);
+
+                    int32_t lf = read_be32(target_zone + ZONE_FLOOR_HEIGHT);
+                    int32_t lr = read_be32(target_zone + ZONE_ROOF_HEIGHT);
+                    int32_t uf = read_be32(target_zone + ZONE_UPPER_FLOOR);
+                    int32_t ur = read_be32(target_zone + ZONE_UPPER_ROOF);
+
+                    long long lclear = (long long)lf - (long long)lr;
+                    long long ld1 = (long long)ctx->newy + (long long)ctx->thing_height - (long long)lf;
+                    long long uclear = (long long)uf - (long long)ur;
+                    long long ud1 = (long long)ctx->newy + (long long)ctx->thing_height - (long long)uf;
+                    int lroof_ok = ((long long)ctx->newy - (long long)lr >= 0) ? 1 : 0;
+                    int uroof_ok = ((long long)ctx->newy - (long long)ur >= 0) ? 1 : 0;
+
+                    printf("[MOVEDBG] step_block cid=%d type=%d line=%d zone=%d->%d connect=%d pos=(%d,%d) y=%d h=%d up=%d down=%d "
+                           "L{f=%d r=%d clr=%lld d1=%lld roof_ok=%d} U{f=%d r=%d clr=%lld d1=%lld roof_ok=%d}\n",
+                           (int)ctx->coll_id, dbg_type, line_idx, cur_zone, connect_index, (int)connect,
+                           (int)ctx->newx, (int)ctx->newz, (int)ctx->newy, (int)ctx->thing_height,
+                           (int)ctx->step_up_val, (int)ctx->step_down_val,
+                           (int)lf, (int)lr, lclear, ld1, lroof_ok,
+                           (int)uf, (int)ur, uclear, ud1, uroof_ok);
+                }
             }
-            /* If blocked by no_transition_back, treat as wall below. */
         }
         /* Exit blocked by step/clearance/roof constraints: treat as wall. */
     }
@@ -666,12 +890,39 @@ static void find_room(MoveContext* ctx, LevelState* level,
                         const uint8_t* target_zone = level->data + target_zone_off;
 
                         int8_t target_in_top = 0;
-                        if (!transition_height_ok_zone(ctx, ctx->newy, target_zone, &target_in_top))
-                            continue;
+                        int used_drop_fallback = 0;
+                        if (!transition_height_ok_zone(ctx, ctx->newy, target_zone, &target_in_top)) {
+                            int is_enemy = move_ctx_is_enemy(ctx, level, NULL) ? 1 : 0;
+                            if (!(is_enemy && enemy_drop_transition_ok(ctx, zone_data, target_zone, &target_in_top)))
+                                continue;
+                            used_drop_fallback = 1;
+                        }
 
                         {
                             uint8_t* target_room = (uint8_t*)(level->data + target_zone_off);
-                            if (ctx->no_transition_back && target_room == ctx->no_transition_back) continue;
+                            if (ctx->no_transition_back && target_room == ctx->no_transition_back) {
+                                if (move_debug_enabled()) {
+                                    int dbg_type = -1;
+                                    if (move_debug_should_log(ctx, level, &dbg_type)) {
+                                        int cur_zone = level_zone_index_from_room_ptr(level, zone_data);
+                                        printf("[MOVEDBG] transition_rejected_no_back cid=%d type=%d line=%d zone=%d->%d pos=(%d,%d) y=%d\n",
+                                               (int)ctx->coll_id, dbg_type, (int)entry, cur_zone, connect_index,
+                                               (int)ctx->newx, (int)ctx->newz, (int)ctx->newy);
+                                    }
+                                }
+                                continue;
+                            }
+
+                            if (move_debug_enabled()) {
+                                int dbg_type = -1;
+                                if (move_debug_should_log(ctx, level, &dbg_type)) {
+                                    int cur_zone = level_zone_index_from_room_ptr(level, zone_data);
+                                    printf("[MOVEDBG] transition cid=%d type=%d line=%d zone=%d->%d pos=(%d,%d) y=%d in_top=%d drop=%d\n",
+                                           (int)ctx->coll_id, dbg_type, (int)entry, cur_zone, connect_index,
+                                           (int)ctx->newx, (int)ctx->newz, (int)ctx->newy,
+                                           (int)target_in_top, used_drop_fallback);
+                                }
+                            }
 
                             ctx->objroom = target_room;
                             ctx->stood_in_top = target_in_top;
