@@ -3317,6 +3317,16 @@ static int16_t blast_rand_xz_delta(int16_t spread)
     return d;
 }
 
+static int16_t blast_rand_s16(void)
+{
+    /* Amiga ComputeBlast Y jitter uses GetRand low word with MULS (signed word).
+     * Compose a full 16-bit value so sign bit is not lost on CRT rand() impls
+     * that only return 15 random bits. */
+    uint16_t lo = (uint16_t)(rand() & 0xFF);
+    uint16_t hi = (uint16_t)(rand() & 0xFF);
+    return (int16_t)(lo | (uint16_t)(hi << 8));
+}
+
 static void spawn_blast_particles(GameState *state, int32_t x, int32_t z, int32_t y,
                                   int16_t zone, int8_t in_top)
 {
@@ -3355,7 +3365,7 @@ static void spawn_blast_particles(GameState *state, int32_t x, int32_t z, int32_
             ctx.newx = x + blast_rand_xz_delta(spread);
             ctx.newz = z + blast_rand_xz_delta(spread);
             {
-                int16_t ry = (int16_t)(rand() & 0xFFFF);
+                int16_t ry = blast_rand_s16();
                 ctx.newy = y + (((int32_t)ry * (int32_t)spread) >> 3); /* asr.l #3 */
             }
             ctx.objroom = src_room;
