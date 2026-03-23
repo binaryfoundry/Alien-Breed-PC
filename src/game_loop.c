@@ -136,20 +136,21 @@ void game_loop(GameState *state)
         }
 
         /* ================================================================
-         * Game logic: only runs when enough VBlanks have accumulated
+         * Game logic: Amiga-style cadence.
+         *
+         * FramesToDraw is accumulated by VBlank interrupt, then TempFrames
+         * is latched once per main-loop iteration (clamped) and a single
+         * ObjMoveAnim-style logic pass runs with that TempFrames value.
          * ================================================================ */
         if (pending_vblanks >= GAME_TICK_VBLANKS) {
-
-            state->frames_to_draw = (int16_t)pending_vblanks;
-            state->temp_frames = (int16_t)pending_vblanks;
-            if (state->temp_frames > MAX_TEMP_FRAMES)
-                state->temp_frames = MAX_TEMP_FRAMES;
-            if (state->temp_frames < 1)
-                state->temp_frames = 1;
-            /* Water waves on Amiga advance once per VBlank. Drive it from the same
-             * 50Hz logic cadence so animation speed stays stable at high render FPS. */
-            renderer_step_water_anim(state->temp_frames);
+            int ticks = pending_vblanks;
+            if (ticks > MAX_TEMP_FRAMES) ticks = MAX_TEMP_FRAMES;
             pending_vblanks = 0;
+
+            state->frames_to_draw = (int16_t)ticks;
+            state->temp_frames = (int16_t)ticks;
+            /* Water waves on Amiga advance once per VBlank. */
+            renderer_step_water_anim(state->temp_frames);
 
             /* ---- Phase 1: Pause handling ---- */
             if (state->mode == MODE_SINGLE) {

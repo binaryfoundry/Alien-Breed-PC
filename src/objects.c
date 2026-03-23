@@ -68,6 +68,10 @@ enum {
     ENEMY_FOURTH_TIMER_OFF = 36  /* FourthTimer(raw+54) */
 };
 
+/* Explosion visual pacing in logic vblank units.
+ * 2 means one animation frame every 2 logic-vblank units. */
+#define EXPLOSION_FRAME_STEP_VBLANKS 2
+
 static bool enemy_type_uses_floor_minus_height_move_y(int8_t obj_type);
 static int32_t enemy_move_y_for_context(const GameObject *obj,
                                         const EnemyParams *params,
@@ -1970,13 +1974,27 @@ void object_handle_barrel(GameObject *obj, GameState *state)
 
     /* Anims.s ItsABarrel: exploding state is vect=8, frame increments 0..7 then remove. */
     if (obj_w(obj->raw + 8) == 8) {
-        obj->raw[6] = (uint8_t)((uint8_t)obj->raw[6] + 4u);
-        obj->raw[7] = (uint8_t)((uint8_t)obj->raw[7] + 4u);
+        int16_t tf = state->temp_frames;
+        if (tf < 1) tf = 1;
 
-        int16_t frame = (int16_t)(obj_w(obj->raw + 10) + 1);
-        if (frame == 8) {
-            OBJ_SET_ZONE(obj, -1);
-            return;
+        int16_t accum = OBJ_TD_W(obj, ENEMY_OBJ_TIMER_OFF);
+        if (accum < 0) accum = 0;
+        accum = (int16_t)(accum + tf);
+        int steps = accum / EXPLOSION_FRAME_STEP_VBLANKS;
+        accum = (int16_t)(accum % EXPLOSION_FRAME_STEP_VBLANKS);
+        OBJ_SET_TD_W(obj, ENEMY_OBJ_TIMER_OFF, accum);
+
+        if (steps <= 0) return;
+
+        int16_t frame = obj_w(obj->raw + 10);
+        while (steps-- > 0) {
+            obj->raw[6] = (uint8_t)((uint8_t)obj->raw[6] + 4u);
+            obj->raw[7] = (uint8_t)((uint8_t)obj->raw[7] + 4u);
+            frame = (int16_t)(frame + 1);
+            if (frame == 8) {
+                OBJ_SET_ZONE(obj, -1);
+                return;
+            }
         }
         obj_sw(obj->raw + 10, frame);
         return;
@@ -2019,6 +2037,7 @@ void object_handle_barrel(GameObject *obj, GameState *state)
 
     obj_sw(obj->raw + 8, 8);     /* vect = explosion */
     obj_sw(obj->raw + 10, 0);    /* frame = 0 */
+    OBJ_SET_TD_W(obj, ENEMY_OBJ_TIMER_OFF, 0);
     obj->raw[14] = 0x20;         /* src cols = 32 */
     obj->raw[15] = 0x20;         /* src rows = 32 */
     obj_sw(obj->raw + 2, -30);   /* objVectBright */
@@ -2183,8 +2202,25 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             return;
         }
 
+        const BulletAnimFrame *table = bullet_pop_tables[shot_size];
+
+        /* RockPop explosion uses frame-gated stepping so its 9-frame sequence is visible. */
+        if (shot_size == 2) {
+            int16_t tf = state->temp_frames;
+            if (tf < 1) tf = 1;
+            int16_t pop_accum = SHOT_LIFE(*obj);
+            if (pop_accum < 0) pop_accum = 0;
+            pop_accum = (int16_t)(pop_accum + tf);
+            if (pop_accum < EXPLOSION_FRAME_STEP_VBLANKS) {
+                SHOT_SET_LIFE(*obj, pop_accum);
+                return;
+            }
+            pop_accum = (int16_t)(pop_accum - EXPLOSION_FRAME_STEP_VBLANKS);
+            SHOT_SET_LIFE(*obj, pop_accum);
+        }
+
         uint8_t anim_idx = SHOT_ANIM(*obj);
-        const BulletAnimFrame *f = &bullet_pop_tables[shot_size][anim_idx];
+        const BulletAnimFrame *f = &table[anim_idx];
         if (f->width < 0) {
             OBJ_SET_ZONE(obj, -1);
             SHOT_STATUS(*obj) = 0;
@@ -2394,6 +2430,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     if (timed_out) {
         SHOT_STATUS(*obj) = 1;
         SHOT_ANIM(*obj) = 0;
+        SHOT_SET_LIFE(*obj, 0);
 
         /* Hit sound */
         if (shot_size >= 0 && shot_size < 8 &&
@@ -2537,6 +2574,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         /* Set bullet to popping */
         SHOT_STATUS(*obj) = 1;
         SHOT_ANIM(*obj) = 0;
+        SHOT_SET_LIFE(*obj, 0);
 
         /* Hit sound + explosive splash */
         if (shot_size >= 0 && shot_size < 8 &&
@@ -3360,6 +3398,7 @@ static void spawn_blast_particles(GameState *state, int32_t x, int32_t z, int32_
             SHOT_STATUS(*part) = 1;
             SHOT_SIZE(*part) = 2;                /* RockPop */
             SHOT_ANIM(*part) = (uint8_t)start_anim;
+            SHOT_SET_LIFE(*part, 0);
             part->raw[14] = 0x20;
             part->raw[15] = 0x20;
             if (bullet_pop_tables[2]) {
@@ -3541,23 +3580,19 @@ void explosion_spawn(GameState *state, int16_t x, int16_t z, int16_t zone, int8_
     state->explosions[i].start_delay = (int8_t)(rand() & 3);
 }
 
-/* Amiga: explosion advances one step per ObjMoveAnim (per vblank). We advance by temp_frames
- * so when we simulate multiple vblanks in one tick, explosion timing matches.
- * anim_rate 100 = normal; 75 = 25% slower (barrel). start_delay gives per-particle variation. */
+/* Amiga-style cadence: advance explosion anim once per ObjMoveAnim call.
+ * anim_rate is percentage of one frame step per call (100 = 1 frame/call). */
 void explosion_advance(GameState *state)
 {
     int n = state->num_explosions;
-    int tf = state->temp_frames;
-    if (tf <= 0) tf = 1;
     for (int i = 0; i < n; i++) {
         if (state->explosions[i].start_delay > 0) {
-            state->explosions[i].start_delay = (int8_t)(state->explosions[i].start_delay - tf);
+            state->explosions[i].start_delay = (int8_t)(state->explosions[i].start_delay - 1);
             if (state->explosions[i].start_delay < 0) state->explosions[i].start_delay = 0;
         } else {
             int rate = (int)state->explosions[i].anim_rate;
             if (rate <= 0) rate = 100;
-            rate = (rate * 50) / 100;  /* slow down explosion animations by half */
-            int frac = (int)state->explosions[i].frame_frac + tf * rate;
+            int frac = (int)state->explosions[i].frame_frac + rate;
             while (frac >= 100) {
                 state->explosions[i].frame = (int8_t)(state->explosions[i].frame + 1);
                 frac -= 100;
