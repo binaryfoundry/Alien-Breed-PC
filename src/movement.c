@@ -531,9 +531,25 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
                 return 0;
             }
 
+            {
+                int64_t den = old_cross - new_cross;
+                if (den != 0) {
+                    int64_t dx = (int64_t)ctx->newx - (int64_t)ctx->oldx;
+                    int64_t dz = (int64_t)ctx->newz - (int64_t)ctx->oldz;
+                    int64_t dy = (int64_t)ctx->newy - (int64_t)ctx->oldy;
+                    int64_t hit_x = (int64_t)ctx->oldx + (dx * old_cross) / den;
+                    int64_t hit_z = (int64_t)ctx->oldz + (dz * old_cross) / den;
+                    int64_t hit_y = (int64_t)ctx->oldy + (dy * old_cross) / den;
+                    ctx->newx = (int32_t)hit_x;
+                    ctx->newz = (int32_t)hit_z;
+                    ctx->wall_hit_y = (int32_t)hit_y;
+                } else {
+                    ctx->newx = ctx->oldx;
+                    ctx->newz = ctx->oldz;
+                    ctx->wall_hit_y = ctx->newy;
+                }
+            }
             mark_floorline_touch_flag(ctx, fline);
-            ctx->newx = ctx->oldx;
-            ctx->newz = ctx->oldz;
             ctx->hitwall = 1;
             return 3;
         }
@@ -572,6 +588,7 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
                                       (int64_t)(ctx->newz - lz) * lxlen;
                 mark_floorline_touch_flag(ctx, fline);
                 ctx->hitwall = 1;
+                ctx->wall_hit_y = ctx->newy;
                 if (crossed_blocked_side && slide_cross < 0) {
                     /* Keep solid/blocked lines one-sided: never accept a result
                      * that leaves us on the far side of this segment. */
@@ -588,6 +605,7 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
             ctx->newx = ctx->oldx;
             ctx->newz = ctx->oldz;
             ctx->hitwall = 1;
+            ctx->wall_hit_y = ctx->newy;
             return 3;
         }
     }
@@ -693,6 +711,7 @@ void move_object_substepped(MoveContext* ctx, LevelState* level)
     uint8_t* cur_room = ctx->objroom;
     int8_t cur_top = ctx->stood_in_top;
     int8_t any_hit = 0;
+    int32_t hit_y = ctx->newy;
 
     for (int i = 1; i <= steps; i++) {
         MoveContext step = *ctx;
@@ -707,7 +726,10 @@ void move_object_substepped(MoveContext* ctx, LevelState* level)
 
         move_object(&step, level);
 
-        if (step.hitwall) any_hit = 1;
+        if (step.hitwall) {
+            any_hit = 1;
+            hit_y = step.wall_hit_y;
+        }
         cur_x = step.newx;
         cur_z = step.newz;
         cur_room = step.objroom;
@@ -719,6 +741,7 @@ void move_object_substepped(MoveContext* ctx, LevelState* level)
     ctx->objroom = cur_room;
     ctx->stood_in_top = cur_top;
     ctx->hitwall = any_hit;
+    ctx->wall_hit_y = hit_y;
 }
 
 /* -----------------------------------------------------------------------
@@ -726,12 +749,14 @@ void move_object_substepped(MoveContext* ctx, LevelState* level)
  * ----------------------------------------------------------------------- */
 void move_object(MoveContext* ctx, LevelState* level)
 {
-    if (!level->data || !level->floor_lines) {
+    if (!level || !level->data || !level->floor_lines) {
         ctx->hitwall = 0;
+        ctx->wall_hit_y = ctx->newy;
         return;
     }
 
     ctx->hitwall = 0;
+    ctx->wall_hit_y = ctx->newy;
 
     {
         int32_t xdiff = ctx->newx - ctx->oldx;

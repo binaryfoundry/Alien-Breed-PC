@@ -52,6 +52,9 @@
 #define CHUNKY_TOPCLIP_BIAS  (12 * RENDER_SCALE)
 /* Minimum z in view space; vertices behind this are clipped. Used for walls and floor polygons. */
 #define RENDERER_NEAR_PLANE 4
+/* Amiga ObjDraw3 BitMapObj/PolygonObj: cmp.w #50,d1 ; ble objbehind.
+ * Keep the same near cutoff for billboards so close sprites don't over-scale. */
+#define SPRITE_NEAR_CLIP_Z 50
 
 /* Raise view height for rendering only (gameplay uses plr->yoff unchanged).
  * Makes the camera draw from higher so the floor appears further away, matching Amiga. */
@@ -1453,7 +1456,7 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
     uint32_t *rgb = g_renderer.rgb_buffer;
     uint16_t *cw = g_renderer.cw_buffer;
     if (!buf || !rgb || !cw) return;
-    if (z <= 0) return;
+    if (z <= SPRITE_NEAR_CLIP_Z) return;
     if (!wad || !ptr_data) return;
     int rw = g_renderer.width, rh = g_renderer.height;
     if (src_cols < 1) src_cols = 32;
@@ -1946,7 +1949,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         }
 
         ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
-        if (orp->z <= 0) continue; /* Behind camera */
+        if (orp->z <= SPRITE_NEAR_CLIP_Z) continue; /* Amiga ObjDraw near clip */
 
         objs[obj_count].src = DRAW_SRC_OBJECT;
         objs[obj_count].idx = obj_idx;
@@ -1971,7 +1974,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
                     continue;
             }
             ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
-            if (orp->z <= 0) continue;
+            if (orp->z <= SPRITE_NEAR_CLIP_Z) continue;
             objs[obj_count].src = DRAW_SRC_SHOT;
             objs[obj_count].idx = slot + (pool * 20);
             objs[obj_count].z = orp->z;
@@ -2002,7 +2005,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
             int32_t vz = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
             vz <<= 2;
             int32_t orp_z = (int32_t)(int16_t)(vz >> 16);
-            if (orp_z <= 0) continue;
+            if (orp_z <= SPRITE_NEAR_CLIP_Z) continue;
 
             objs[obj_count].src = DRAW_SRC_EXPLOSION;
             objs[obj_count].idx = ei;
@@ -2081,7 +2084,7 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
             int32_t vx_fine = (int32_t)vx16 << 7;
             vx_fine += r->xwobble;
             int32_t orp_z = (int32_t)vz16;
-            if (orp_z <= 0) continue;
+            if (orp_z <= SPRITE_NEAR_CLIP_Z) continue;
 
             int scr_x = (int)(vx_fine * RENDER_SCALE / (int32_t)orp_z) + (r->width / 2);
             int32_t rel_y_8 = (state->explosions[ei].y_floor - y_off) >> WORLD_Y_FRAC_BITS;

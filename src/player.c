@@ -38,9 +38,281 @@
 #define STEP_UP_NORMAL      (40 * 256)   /* 10240 - match Amiga ObjectMove step-up */
 #define STEP_UP_DUCKED      (10 * 256)   /* 2560 - AB3DI.s ducked step-up */
 #define STEP_DOWN_DEFAULT   0x1000000    /* AB3DI.s step-down */
+#define INSTANT_TRACE_MAX_ITERS 1024
 
 /* Gun selection key -> gun index mapping (from GUNVALS in Plr1Control.s) */
 static const int8_t gun_key_map[6] = { 0, 7, 1, 2, 3, 4 };
+
+static GameObject *find_free_player_shot_slot(uint8_t *shots, int16_t *saved_cid)
+{
+    if (!shots) return NULL;
+    for (int i = 0; i < 20; i++) {
+        GameObject *candidate = (GameObject *)(shots + i * OBJECT_SIZE);
+        if (OBJ_ZONE(candidate) < 0) {
+            if (saved_cid) *saved_cid = OBJ_CID(candidate);
+            return candidate;
+        }
+    }
+    return NULL;
+}
+
+static uint8_t *resolve_player_room_ptr(GameState *state, const PlayerState *plr)
+{
+    if (!state || !state->level.data || !plr) return NULL;
+    if (plr->roompt >= 0) {
+        return state->level.data + plr->roompt;
+    }
+    if (state->level.zone_adds) {
+        int zi = level_connect_to_zone_index(&state->level, plr->zone);
+        if (zi < 0) {
+            int zone_slots = level_zone_slot_count(&state->level);
+            if (plr->zone >= 0 && plr->zone < zone_slots) zi = plr->zone;
+        }
+        if (zi >= 0) return level_get_zone_data_ptr(&state->level, (int16_t)zi);
+    }
+    return NULL;
+}
+
+static int16_t zone_from_room_or_fallback(LevelState *level, const uint8_t *room, int16_t fallback)
+{
+    if (room) {
+        int zi = level_zone_index_from_room_ptr(level, room);
+        if (zi >= 0) return (int16_t)zi;
+        {
+            int16_t room_zone = (int16_t)((room[0] << 8) | room[1]);
+            zi = level_connect_to_zone_index(level, room_zone);
+            if (zi >= 0) return (int16_t)zi;
+            return room_zone;
+        }
+    }
+    return fallback;
+}
+
+/* Matches PlayerShoot.s MISSINSTANT path:
+ * repeated MoveObject steps until hitwall, then use impact coords for pop sprite. */
+static bool trace_instant_miss_path(GameState *state, const PlayerState *plr,
+                                    int16_t init_newx, int16_t init_newz, int32_t init_newy,
+                                    bool use_wall_hit_y,
+                                    int16_t *out_x, int16_t *out_z, int32_t *out_y,
+                                    uint8_t **out_room, int8_t *out_in_top)
+{
+    if (!state || !plr || !out_x || !out_z || !out_y || !out_room || !out_in_top) return false;
+    if (!state->level.data || !state->level.floor_lines) return false;
+
+    MoveContext ctx;
+    move_context_init(&ctx);
+    ctx.exitfirst = 1;
+    ctx.wallbounce = 0;
+    ctx.extlen = 0;
+    ctx.awayfromwall = -1;
+    ctx.wall_flags = 0x0400;
+    ctx.step_up_val = 0;
+    ctx.step_down_val = 0x1000000;
+    ctx.thing_height = 0;
+    ctx.stood_in_top = plr->stood_in_top;
+
+    uint8_t *room = resolve_player_room_ptr(state, plr);
+    if (!room) return false;
+
+    int16_t oldx = (int16_t)plr->p_xoff;
+    int16_t oldz = (int16_t)plr->p_zoff;
+    int16_t newx = init_newx;
+    int16_t newz = init_newz;
+    int32_t oldy = plr->p_yoff + 20 * 128;
+    int32_t newy = init_newy;
+    int8_t in_top = plr->stood_in_top;
+
+    for (int iter = 0; iter < INSTANT_TRACE_MAX_ITERS; iter++) {
+        ctx.oldx = oldx;
+        ctx.oldz = oldz;
+        ctx.newx = newx;
+        ctx.newz = newz;
+        ctx.oldy = oldy;
+        ctx.newy = newy;
+        ctx.objroom = room;
+        ctx.stood_in_top = in_top;
+
+        move_object(&ctx, &state->level);
+        room = ctx.objroom;
+        in_top = ctx.stood_in_top;
+
+        if (ctx.hitwall) {
+            *out_x = (int16_t)ctx.newx;
+            *out_z = (int16_t)ctx.newz;
+            *out_y = use_wall_hit_y ? ctx.wall_hit_y : newy;
+            *out_room = room;
+            *out_in_top = in_top;
+            return true;
+        }
+
+        {
+            int16_t dx = (int16_t)((int16_t)ctx.newx - (int16_t)ctx.oldx);
+            int16_t dz = (int16_t)((int16_t)ctx.newz - (int16_t)ctx.oldz);
+            oldx = (int16_t)(oldx + dx);
+            newx = (int16_t)(newx + dx);
+            oldz = (int16_t)(oldz + dz);
+            newz = (int16_t)(newz + dz);
+        }
+
+        {
+            int32_t dy = newy - oldy;
+            oldy += dy;
+            newy += dy;
+        }
+    }
+    return false;
+}
+
+static void init_instant_pop_slot(GameObject *shot, int gun_idx, int16_t zone,
+                                  int8_t in_top, int32_t accypos)
+{
+    shot->obj.number = OBJ_NBR_BULLET;
+    OBJ_SET_ZONE(shot, zone);
+    shot->obj.in_top = in_top;
+    SHOT_STATUS(*shot) = 1;
+    SHOT_SET_GRAV(*shot, 0);
+    SHOT_SIZE(*shot) = (int8_t)gun_idx;
+    SHOT_ANIM(*shot) = 0;
+    SHOT_SET_ACCYPOS(*shot, accypos);
+    obj_sw(shot->raw + 4, (int16_t)(accypos >> 7));
+    shot->obj.worry = 127;
+}
+
+/* PlayerShoot.s PLR1HITINSTANT/PLR2HITINSTANT behavior:
+ * find free slot, spawn pop at target, then apply damage+impact push. */
+static void spawn_instant_hit_effect(GameState *state, const PlayerState *plr, int gun_idx,
+                                     GameObject *target, int8_t shot_power,
+                                     int16_t dir_x, int16_t dir_z)
+{
+    if (!state || !plr || !target) return;
+    if (gun_idx < 0 || gun_idx >= MAX_BULLET_ANIM_IDX) return;
+
+    uint8_t *shot_pool = state->level.player_shot_data;
+    if (!shot_pool) return;
+
+    int16_t saved_cid = -1;
+    GameObject *impact = find_free_player_shot_slot(shot_pool, &saved_cid);
+    if (!impact) return;
+
+    obj_sw(impact->raw, saved_cid);
+
+    {
+        int16_t target_cid = OBJ_CID(target);
+        if (saved_cid >= 0 && target_cid >= 0 &&
+            state->level.object_points &&
+            saved_cid < state->level.num_object_points &&
+            target_cid < state->level.num_object_points) {
+            const uint8_t *src = state->level.object_points + (uint32_t)(uint16_t)target_cid * 8u;
+            uint8_t *dst = state->level.object_points + (uint32_t)(uint16_t)saved_cid * 8u;
+            dst[0] = src[0]; dst[1] = src[1];
+            dst[4] = src[4]; dst[5] = src[5];
+        }
+    }
+
+    {
+        int16_t target_y = obj_w(target->raw + 4);
+        init_instant_pop_slot(impact, gun_idx, OBJ_ZONE(target), target->obj.in_top,
+                              ((int32_t)target_y) << 7);
+    }
+
+    {
+        int8_t cur = NASTY_DAMAGE(*target);
+        NASTY_SET_DAMAGE(target, (int8_t)(cur + shot_power));
+    }
+
+    {
+        int16_t impact_x = (int16_t)(((int32_t)dir_x << 3) >> 16);
+        int16_t impact_z = (int16_t)(((int32_t)dir_z << 3) >> 16);
+        NASTY_SET_IMPACTX(target, impact_x);
+        NASTY_SET_IMPACTZ(target, impact_z);
+    }
+}
+
+/* PlayerShoot.s PLR1MISSINSTANT/PLR2MISSINSTANT behavior (miss with a target):
+ * trace toward midpoint to target, continue along ray until first wall hit, spawn pop there. */
+static void spawn_instant_miss_effect_target(GameState *state, const PlayerState *plr,
+                                             int gun_idx, const GameObject *target)
+{
+    if (!state || !plr || !target) return;
+    if (gun_idx < 0 || gun_idx >= MAX_BULLET_ANIM_IDX) return;
+    if (!state->level.player_shot_data || !state->level.object_points) return;
+
+    int16_t target_cid = OBJ_CID(target);
+    if (target_cid < 0 || target_cid >= state->level.num_object_points) return;
+
+    int16_t oldx = (int16_t)plr->p_xoff;
+    int16_t oldz = (int16_t)plr->p_zoff;
+    const uint8_t *target_pt = state->level.object_points + (uint32_t)(uint16_t)target_cid * 8u;
+    int16_t tx = obj_w(target_pt + 0);
+    int16_t tz = obj_w(target_pt + 4);
+    int16_t newx = (int16_t)(oldx + ((int16_t)(tx - oldx) >> 1));
+    int16_t newz = (int16_t)(oldz + ((int16_t)(tz - oldz) >> 1));
+    int32_t newy = ((int32_t)obj_w(target->raw + 4)) << 7;
+
+    int16_t hit_x = 0, hit_z = 0;
+    int32_t hit_y = 0;
+    uint8_t *hit_room = NULL;
+    int8_t hit_in_top = plr->stood_in_top;
+    if (!trace_instant_miss_path(state, plr, newx, newz, newy, false,
+                                 &hit_x, &hit_z, &hit_y, &hit_room, &hit_in_top))
+        return;
+
+    int16_t saved_cid = -1;
+    GameObject *impact = find_free_player_shot_slot(state->level.player_shot_data, &saved_cid);
+    if (!impact) return;
+    obj_sw(impact->raw, saved_cid);
+
+    if (saved_cid >= 0 && saved_cid < state->level.num_object_points) {
+        uint8_t *pt = state->level.object_points + (uint32_t)(uint16_t)saved_cid * 8u;
+        obj_sw(pt, hit_x);
+        obj_sw(pt + 4, hit_z);
+    }
+
+    init_instant_pop_slot(impact, gun_idx,
+                          zone_from_room_or_fallback(&state->level, hit_room, plr->zone),
+                          hit_in_top, hit_y);
+}
+
+/* PlayerShoot.s nothingtoshoot path for instant weapons:
+ * fire forward, random vertical offset, trace until wall hit, spawn pop at wallhitheight. */
+static void spawn_instant_miss_effect_no_target(GameState *state, const PlayerState *plr,
+                                                int gun_idx, int16_t sin_val, int16_t cos_val)
+{
+    if (!state || !plr) return;
+    if (gun_idx < 0 || gun_idx >= MAX_BULLET_ANIM_IDX) return;
+    if (!state->level.player_shot_data) return;
+
+    int16_t oldx = (int16_t)plr->p_xoff;
+    int16_t oldz = (int16_t)plr->p_zoff;
+    int16_t newx = (int16_t)(oldx + (sin_val >> 7));
+    int16_t newz = (int16_t)(oldz + (cos_val >> 7));
+    int32_t oldy = plr->p_yoff + 20 * 128;
+    int32_t newy = oldy + (int32_t)((rand() & 0x0FFF) - 0x800);
+
+    int16_t hit_x = 0, hit_z = 0;
+    int32_t hit_y = 0;
+    uint8_t *hit_room = NULL;
+    int8_t hit_in_top = plr->stood_in_top;
+    if (!trace_instant_miss_path(state, plr, newx, newz, newy, true,
+                                 &hit_x, &hit_z, &hit_y, &hit_room, &hit_in_top))
+        return;
+
+    int16_t saved_cid = -1;
+    GameObject *impact = find_free_player_shot_slot(state->level.player_shot_data, &saved_cid);
+    if (!impact) return;
+    obj_sw(impact->raw, saved_cid);
+
+    if (saved_cid >= 0 && state->level.object_points &&
+        saved_cid < state->level.num_object_points) {
+        uint8_t *pt = state->level.object_points + (uint32_t)(uint16_t)saved_cid * 8u;
+        obj_sw(pt, hit_x);
+        obj_sw(pt + 4, hit_z);
+    }
+
+    init_instant_pop_slot(impact, gun_idx,
+                          zone_from_room_or_fallback(&state->level, hit_room, plr->zone),
+                          hit_in_top, hit_y);
+}
 
 /* -----------------------------------------------------------------------
  * Friction helper
@@ -1364,53 +1636,39 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
         /* Instant-hit weapon (pistol, shotgun) */
         int num_pellets = gun->bullet_count;
         if (num_pellets < 1) num_pellets = 1;
-
-        /* Amiga PlayerShoot.s FIREBULLETS:
-         *   rand_val = GetRand() & 0x7fff
-         *   scaled_dist_sq = ((ox-plr_x)^2 + (oz-plr_z)^2) >> 6
-         *   hit if rand_val*2 > scaled_dist_sq
-         * Same rule applies to every pellet (pistol 1x, shotgun 7x). */
-        int16_t tgt_ox = 0, tgt_oz = 0;
-        if (closest_idx >= 0 && state->level.object_points) {
-            GameObject *tgt = (GameObject*)(state->level.object_data + closest_idx * OBJECT_SIZE);
-            int16_t cid = OBJ_CID(tgt);
-            if (cid >= 0) {
-                const uint8_t *pt = state->level.object_points + (int)cid * 8;
-                tgt_ox = (int16_t)((pt[0] << 8) | pt[1]);
-                tgt_oz = (int16_t)((pt[4] << 8) | pt[5]);
-            }
+        if (closest_idx < 0 || !state->level.object_data || !state->level.object_points) {
+            /* Amiga nothingtoshoot instant branch: one miss effect straight ahead. */
+            spawn_instant_miss_effect_no_target(state, plr, gun_idx, sin_val, cos_val);
+            return;
         }
-        int32_t plr_ox = plr->p_xoff; /* already integer world units */
-        int32_t plr_oz = plr->p_zoff;
-        int32_t adx = tgt_ox - (int16_t)plr_ox;
-        int32_t adz = tgt_oz - (int16_t)plr_oz;
-        int32_t scaled_dist_sq = ((adx * adx) + (adz * adz)) >> 6;
 
-        for (int p = 0; p < num_pellets; p++) {
-            /* Amiga hit test: random [0,32767]*2 vs scaled dist² */
-            int32_t rand_val = (int32_t)(rand() & 0x7fff);
+        GameObject *target = (GameObject *)(state->level.object_data + closest_idx * OBJECT_SIZE);
+        int16_t target_cid = OBJ_CID(target);
+        if (target_cid < 0 || target_cid >= state->level.num_object_points) {
+            spawn_instant_miss_effect_no_target(state, plr, gun_idx, sin_val, cos_val);
+            return;
+        }
 
-            if (closest_idx >= 0) {
-                /* Miss if random doesn't beat distance (same for pistol and shotgun) */
-                if (rand_val * 2 <= scaled_dist_sq)
-                    continue; /* pellet missed */
+        {
+            const uint8_t *pt = state->level.object_points + (uint32_t)(uint16_t)target_cid * 8u;
+            int16_t tgt_ox = obj_w(pt + 0);
+            int16_t tgt_oz = obj_w(pt + 4);
+            int16_t plr_x = (int16_t)plr->p_xoff;
+            int16_t plr_z = (int16_t)plr->p_zoff;
+            int16_t adx = (int16_t)(tgt_ox - plr_x);
+            int16_t adz = (int16_t)(tgt_oz - plr_z);
+            int32_t scaled_dist_sq = (((int32_t)adx * adx) + ((int32_t)adz * adz)) >> 6;
 
-                GameObject *target = (GameObject*)(state->level.object_data +
-                                     closest_idx * OBJECT_SIZE);
-                /* Do not apply damage to dead enemies */
-                if (target->obj.number == (int8_t)OBJ_NBR_DEAD) continue;
-                if (NASTY_LIVES(*target) <= 0 && target->obj.number != (int8_t)OBJ_NBR_BARREL) continue;
+            for (int p = 0; p < num_pellets; p++) {
+                int32_t rand_val = (int32_t)(rand() & 0x7FFF);
+                bool hit = ((rand_val << 1) > scaled_dist_sq);
 
-                /* Hit the target */
-                NASTY_SET_DAMAGE(target, (int8_t)(NASTY_DAMAGE(*target) + gun->shot_power));
-
-                /* Amiga PLR*HITINSTANT:
-                 * ext.l tempxdir/tempzdir; asl.l #3; swap; move.w -> ImpactX/ImpactZ.
-                 * This yields a very small signed push (-4..3), and writes (not accumulates). */
-                int16_t impact_x = (int16_t)(((int32_t)(int16_t)dir_x << 3) >> 16);
-                int16_t impact_z = (int16_t)(((int32_t)(int16_t)dir_z << 3) >> 16);
-                NASTY_SET_IMPACTX(target, impact_x);
-                NASTY_SET_IMPACTZ(target, impact_z);
+                if (hit) {
+                    spawn_instant_hit_effect(state, plr, gun_idx, target,
+                                             gun->shot_power, (int16_t)dir_x, (int16_t)dir_z);
+                } else {
+                    spawn_instant_miss_effect_target(state, plr, gun_idx, target);
+                }
             }
         }
     } else {

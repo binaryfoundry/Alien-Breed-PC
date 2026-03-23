@@ -41,6 +41,7 @@ typedef struct {
     uint16_t wall_flags;           /* wall type flags */
     int8_t   hitwall;              /* result: did we hit something? */
     int8_t   pos_shift;            /* position scale: 0 = integer, 16 = 16.16 fp */
+    int32_t  wall_hit_y;           /* wallhitheight (Amiga MoveObject) */
 } MoveContext;
 
 /* -----------------------------------------------------------------------
