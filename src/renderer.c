@@ -2574,24 +2574,29 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             int16_t whichtile = rd16(ptr); ptr += 2;
             int16_t floor_bright_off = rd16(ptr); ptr += 2;
 
-            /* Polygon height in world coords (same scale as y_off: *256).
-             * Amiga itsafloordraw always uses entry ypos directly for floor/roof/water. */
+            /* Polygon height in world coords (same scale as y_off: *256). */
             int32_t poly_h_world = (int32_t)ypos << 6; /* ASM: asl.l #6,d7 */
+            /* Keep floor/roof tied to live zone values so moving lifts/doors update each frame. */
+            int32_t draw_h_world = poly_h_world;
+            if (entry_type == 1)
+                draw_h_world = zone_floor;
+            else if (entry_type == 2)
+                draw_h_world = zone_roof;
             /* AB3DI itsafloordraw early reject:
              *   if (ypos_world < TOPOFROOM) skip (water path uses checkforwater)
              *   if (ypos_world > BOTOFROOM) skip */
-            if (poly_h_world < zone_roof || poly_h_world > zone_floor) {
+            if (draw_h_world < zone_roof || draw_h_world > zone_floor) {
                 if (entry_type == 7 && !use_upper && zone_id == viewer_zone &&
                     poly_h_world < zone_roof) {
                     g_fill_screen_water = 0x0F;
                 }
                 continue;
             }
-            int32_t rel_h = poly_h_world - y_off; /* Relative to camera */
+            int32_t rel_h = draw_h_world - y_off; /* Relative to camera */
 
             /* Amiga fillscrnwater flag: mark underwater/half-submerged when drawing water in viewer zone. */
             if (entry_type == 7 && !use_upper && zone_id == viewer_zone) {
-                int32_t rel_water = poly_h_world - y_off;
+                int32_t rel_water = draw_h_world - y_off;
                 if (rel_water < 0) {
                     g_fill_screen_water = 0x0F; /* strong underwater tint */
                 } else if (rel_water <= (1 << WORLD_Y_FRAC_BITS) && g_fill_screen_water == 0) {
@@ -2600,7 +2605,9 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             }
 
             /* Sign decides which half of screen (floor vs ceiling). */
-            int32_t floor_y_dist = (int32_t)ypos - (int32_t)r->flooryoff;
+            int32_t floor_y_dist = (entry_type == 1 || entry_type == 2)
+                ? (draw_h_world - y_off)
+                : ((int32_t)ypos - (int32_t)r->flooryoff);
 
             if (floor_y_dist == 0) {
                 /* At eye level - skip */

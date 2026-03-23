@@ -106,7 +106,7 @@ target_compile_definitions(ab3d1 PRIVATE $<$<CONFIG:Release>:AB3D_RELEASE>)
 # Platform-specific settings
 if(WIN32)
     # Windows: link winmm for SDL2
-    target_link_libraries(ab3d1 PRIVATE winmm imm32 version setupapi dxgi dxguid)
+    target_link_libraries(ab3d1 PRIVATE winmm imm32 version setupapi)
 elseif(UNIX)
     target_link_libraries(ab3d1 PRIVATE m)
 endif()
