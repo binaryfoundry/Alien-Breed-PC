@@ -1055,11 +1055,27 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     int row_dist = y - center;
     if (row_dist == 0) row_dist = (y < center) ? -1 : 1;
     int abs_row_dist = (row_dist < 0) ? -row_dist : row_dist;
+    /* Amiga floor distance attenuation uses 80-line screen-space row offsets (d0 around center=40). */
+    int row80 = (int)(((int64_t)y * 80) / ((rs->height > 0) ? rs->height : 1));
+    int row_dist80 = row80 - 40;
+    if (row_dist80 == 0) row_dist80 = (y < center) ? -1 : 1;
 
     /* Fallback grayscale only (when no floor palette is loaded). */
     int zone_d6 = brightness * 2;
+    /* Amiga path for brightness falloff:
+     *   distaddr = ypos - flooryoff  (equivalent to rel_h >> 6 in our world scale)
+     *   dst = abs((distaddr * 64) / row_from_center) */
+    int32_t dist_bright;
+    {
+        int32_t distaddr = (floor_height >> 6);
+        int64_t numer = (int64_t)distaddr * 64;
+        int64_t q = numer / (int64_t)row_dist80;
+        if (q < 0) q = -q;
+        if (q > 32767) q = 32767;
+        dist_bright = (int32_t)q;
+    }
 
-    /* Match Amiga distaddr scale approximately:
+    /* UV distance path (kept separate from brightness falloff):
      * distaddr is a smaller-height-space value than raw world rel_h.
      * Use a half-step conversion here so floor/ceiling texel size lands between
      * the old over-zoomed and the recent under-zoomed result. */
@@ -1075,7 +1091,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     }
 
     /* Amiga formula: d6 = (dist >> 7) + zone_bright. Higher d6 = darker. */
-    int amiga_d6 = (dist >> 7) + zone_d6;
+    int amiga_d6 = (dist_bright >> 7) + zone_d6;
     if (amiga_d6 < 0) amiga_d6 = 0;
     if (amiga_d6 > 64) amiga_d6 = 64;
     int gray = (64 - amiga_d6) * 255 / 64;
@@ -1160,7 +1176,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     const uint8_t *pal_lut_src = floor_pal ? floor_pal : rs->floor_pal;
     int floor_pal_level = 0;
     if (pal_lut_src) {
-        int bright_idx = brightness + 5 + (dist >> 8);
+        int bright_idx = brightness + 5 + (dist_bright >> 8);
         if (bright_idx < 0) bright_idx = 0;
         if (bright_idx > 28) bright_idx = 28;
         floor_pal_level = floor_bright_level_table[bright_idx];
