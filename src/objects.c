@@ -68,7 +68,7 @@ enum {
     ENEMY_FOURTH_TIMER_OFF = 36  /* FourthTimer(raw+54) */
 };
 
-/* Explosion visual pacing in logic vblank units.
+/* Explosion visual pacing in logic-vblank units.
  * 2 means one animation frame every 2 logic-vblank units. */
 #define EXPLOSION_FRAME_STEP_VBLANKS 2
 

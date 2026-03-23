@@ -2002,18 +2002,15 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
             if (orp_z <= 0) continue;
 
             int scr_x = (int)(vx_fine * RENDER_SCALE / (int32_t)orp_z) + (r->width / 2);
-            int32_t floor_rel = state->explosions[ei].y_floor - y_off;
-            int32_t floor_rel_8 = floor_rel >> WORLD_Y_FRAC_BITS;
+            int32_t rel_y_8 = (state->explosions[ei].y_floor - y_off) >> WORLD_Y_FRAC_BITS;
             int center_y = r->height / 2;
-            int floor_screen_y = (int)((int64_t)floor_rel_8 * (int64_t)r->proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp_z) + center_y;
+            int scr_y = (int)((int64_t)rel_y_8 * (int64_t)r->proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp_z) + center_y;
             int z_for_size = orp_z;
             if (z_for_size < 1) z_for_size = 1;
             int sprite_w = (int)((int32_t)expl_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
             int sprite_h = (int)((int64_t)expl_h * (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
             if (sprite_w < 1) sprite_w = 1;
             if (sprite_h < 1) sprite_h = 1;
-            int half_h = sprite_h / 2;
-            int scr_y = floor_screen_y - half_h + 1;
 
             uint32_t ptr_off = 0;
             uint16_t down_strip = 0;
