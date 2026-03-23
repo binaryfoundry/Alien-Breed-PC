@@ -735,7 +735,8 @@ static void draw_wall_column(int x, int y_top, int y_bot,
                              int amiga_d6,
                              uint8_t valand, uint8_t valshift,
                              int16_t totalyoff, int32_t col_z,
-                             int16_t wall_height_world, int16_t tex_id)
+                             int16_t wall_height_world, int16_t tex_id,
+                             int16_t d6_max)
 {
     uint8_t *buf = g_renderer.buffer;
     uint32_t *rgb = g_renderer.rgb_buffer;
@@ -759,9 +760,12 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     int wall_height = cb - ct;
     if (wall_height <= 0) return;
 
-    /* Clamp d6 to SCALE table range (Amiga: 0..64) */
+    /* Clamp d6 to SCALE table range.
+     * See-through wall path in Amiga clamps to 0..32; normal walls clamp to 0..64. */
+    if (d6_max < 0) d6_max = 0;
+    if (d6_max > 64) d6_max = 64;
     if (amiga_d6 < 0) amiga_d6 = 0;
-    if (amiga_d6 > 64) amiga_d6 = 64;
+    if (amiga_d6 > d6_max) amiga_d6 = d6_max;
 
     /* Get the brightness block offset from the SCALE table */
     uint16_t lut_block_off = wall_scale_table[amiga_d6];
@@ -896,7 +900,8 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
                         int16_t tex_end, int16_t left_brightness, int16_t right_brightness,
                         uint8_t valand, uint8_t valshift, int16_t horand,
                         int16_t totalyoff, int16_t fromtile,
-                        int16_t tex_id, int16_t wall_height_for_tex)
+                        int16_t tex_id, int16_t wall_height_for_tex,
+                        int16_t d6_max)
 {
     RendererState *r = &g_renderer;
 
@@ -1012,7 +1017,7 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
 
         draw_wall_column(screen_x, y_top_draw, y_bot, y_top, tex_col, texture,
                          amiga_d6, valand, valshift, totalyoff, depth_z,
-                         wall_height_for_tex, tex_id);
+                         wall_height_for_tex, tex_id, d6_max);
     }
 }
 
@@ -1025,7 +1030,9 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
  * ----------------------------------------------------------------------- */
 void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                               int32_t floor_height, const uint8_t *texture, const uint8_t *floor_pal,
-                              int16_t brightness, int16_t scaleval, int is_water,
+                              int16_t brightness, int16_t left_brightness, int16_t right_brightness,
+                              int16_t use_gouraud,
+                              int16_t scaleval, int is_water,
                               int16_t water_rows_left)
 {
     /* Translated from AB3DI.s pastfloorbright (line 6657).
@@ -1055,6 +1062,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     int row_dist = y - center;
     if (row_dist == 0) row_dist = (y < center) ? -1 : 1;
     int abs_row_dist = (row_dist < 0) ? -row_dist : row_dist;
+    const int use_gour = (use_gouraud != 0 && !is_water);
     /* Amiga floor distance attenuation uses 80-line screen-space row offsets (d0 around center=40). */
     int row80 = (int)(((int64_t)y * 80) / ((rs->height > 0) ? rs->height : 1));
     int row_dist80 = row80 - 40;
@@ -1175,7 +1183,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
 
     const uint8_t *pal_lut_src = floor_pal ? floor_pal : rs->floor_pal;
     int floor_pal_level = 0;
-    if (pal_lut_src) {
+    if (pal_lut_src && !use_gour) {
         int bright_idx = brightness + 5 + (dist_bright >> 8);
         if (bright_idx < 0) bright_idx = 0;
         if (bright_idx > 28) bright_idx = 28;
@@ -1186,7 +1194,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
      * Only built for the common non-water textured path. */
     uint32_t span_argb[256];
     uint16_t span_cw[256];
-    const int use_span_lut = (texture != NULL && pal_lut_src != NULL && !is_water);
+    const int use_span_lut = (texture != NULL && pal_lut_src != NULL && !is_water && !use_gour);
     if (use_span_lut) {
         const uint8_t *lut = pal_lut_src + floor_pal_level * 512;
         for (int ti = 0; ti < 256; ti++) {
@@ -1246,11 +1254,50 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     uint32_t *row32 = rgb + (size_t)y * w;
     uint16_t *row16 = cwbuf + (size_t)y * w;
 
+    /* Gouraud floor path (Amiga GOURSEL floor/roof): interpolate brightness levels across the span. */
+    int64_t gour_level_fp = 0;
+    int64_t gour_level_step = 0;
+    int64_t gour_bright_fp = 0;
+    int64_t gour_bright_step = 0;
+    if (use_gour) {
+        int span_w = xr - xl;
+        int dist_add = (dist_bright >> 7);
+        int left_level = left_brightness + dist_add;
+        int right_level = right_brightness + dist_add;
+        if (left_level < 0) left_level = 0;
+        if (right_level < 0) right_level = 0;
+        left_level >>= 1;
+        right_level >>= 1;
+        if (left_level > 14) left_level = 14;
+        if (right_level > 14) right_level = 14;
+        gour_level_fp = (int64_t)left_level << 16;
+        gour_level_step = (span_w > 0) ? (((int64_t)(right_level - left_level) << 16) / span_w) : 0;
+        gour_bright_fp = (int64_t)left_brightness << 16;
+        gour_bright_step = (span_w > 0) ? (((int64_t)(right_brightness - left_brightness) << 16) / span_w) : 0;
+    }
+
     for (int x = xl; x <= xr; x++) {
         uint8_t u8 = (uint8_t)((u_fp >> 16) & 0xFFu);
         uint8_t v8 = (uint8_t)((v_fp >> 16) & 0xFFu);
         int tu = (int)(u8 & 63u);
         int tv = (int)(v8 & 63u);
+        int gour_level = 0;
+        int gour_bright = 0;
+        int gour_gray = gray;
+        if (use_gour) {
+            gour_level = (int)(gour_level_fp >> 16);
+            gour_level_fp += gour_level_step;
+            if (gour_level < 0) gour_level = 0;
+            if (gour_level > 14) gour_level = 14;
+            gour_bright = (int)(gour_bright_fp >> 16);
+            gour_bright_fp += gour_bright_step;
+            {
+                int d6 = (dist_bright >> 7) + (gour_bright * 2);
+                if (d6 < 0) d6 = 0;
+                if (d6 > 64) d6 = 64;
+                gour_gray = (64 - d6) * 255 / 64;
+            }
+        }
 
         u_fp += (uint32_t)u_step;
         v_fp += (uint32_t)v_step;
@@ -1350,15 +1397,17 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             int tex_idx = ((tv << 8) | tu) * 4;
             uint8_t texel = texture[tex_idx];
             if (pal_lut_src) {
-                const uint8_t *lut = pal_lut_src + floor_pal_level * 512;
+                const int level = use_gour ? gour_level : floor_pal_level;
+                const uint8_t *lut = pal_lut_src + level * 512;
                 uint16_t cw = (uint16_t)((lut[texel * 2] << 8) | lut[texel * 2 + 1]);
                 argb = amiga12_to_argb(cw);
             } else {
-                int lit = ((int)texel * gray) >> 8;
+                int lit = ((int)texel * (use_gour ? gour_gray : gray)) >> 8;
                 argb = 0xFF000000u | ((uint32_t)lit << 16) | ((uint32_t)lit << 8) | (uint32_t)lit;
             }
         } else {
-            argb = 0xFF000000u | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray;
+            int g = use_gour ? gour_gray : gray;
+            argb = 0xFF000000u | ((uint32_t)g << 16) | ((uint32_t)g << 8) | (uint32_t)g;
         }
 
         out_cw = argb_to_amiga12(argb);
@@ -2530,6 +2579,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     r->cur_wall_pal = r->wall_palettes[tex_id];
                 else
                     r->cur_wall_pal = NULL;
+                /* Amiga seethru path (type 13) clamps d6 to 32; normal walls clamp to 64. */
+                int16_t wall_d6_max = (entry_type == 13) ? 32 : 64;
                 if (!skip_this_wall)
                     renderer_draw_wall(rx1, rz1, rx2, rz2,
                                       wall_top, wall_bot,
@@ -2537,7 +2588,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                                       wall_bright_l, wall_bright_r,
                                       use_valand, use_valshift, horand,
                                       eff_totalyoff, eff_fromtile, tex_id,
-                                      wall_height_for_tex);
+                                      wall_height_for_tex, wall_d6_max);
             }
             ptr += 28;
             break;
@@ -2576,6 +2627,18 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             for (int s = 0; s < sides; s++) {
                 pt_indices[s] = rd16(ptr);
                 ptr += 2;
+            }
+            int use_gour_floor = ((entry_type == 1 || entry_type == 2) && level->point_brights != NULL);
+            int16_t pt_brights[100];
+            if (use_gour_floor) {
+                for (int s = 0; s < sides; s++) {
+                    int16_t pidx = pt_indices[s];
+                    if (pidx >= 0 && pidx < MAX_POINTS) {
+                        pt_brights[s] = level_get_point_brightness(level, pidx, use_upper ? 1 : 0);
+                    } else {
+                        pt_brights[s] = 0;
+                    }
+                }
             }
 
             /* Extra data after point indices (ASM: pastsides, line 5891):
@@ -2643,14 +2706,27 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             int center = h / 2;  /* Match wall projection center */
             int16_t *left_edge = (int16_t*)malloc((size_t)h * sizeof(int16_t));
             int16_t *right_edge_tab = (int16_t*)malloc((size_t)h * sizeof(int16_t));
-            if (!left_edge || !right_edge_tab) {
+            int16_t *left_bright_tab = NULL;
+            int16_t *right_bright_tab = NULL;
+            if (use_gour_floor) {
+                left_bright_tab = (int16_t*)malloc((size_t)h * sizeof(int16_t));
+                right_bright_tab = (int16_t*)malloc((size_t)h * sizeof(int16_t));
+            }
+            if (!left_edge || !right_edge_tab ||
+                (use_gour_floor && (!left_bright_tab || !right_bright_tab))) {
                 free(left_edge);
                 free(right_edge_tab);
+                free(left_bright_tab);
+                free(right_bright_tab);
                 break;
             }
             for (int i = 0; i < h; i++) {
                 left_edge[i] = (int16_t)g_renderer.width;
                 right_edge_tab[i] = -1;
+                if (use_gour_floor) {
+                    left_bright_tab[i] = 0;
+                    right_bright_tab[i] = 0;
+                }
             }
             int poly_top = h;
             int poly_bot = -1;
@@ -2700,13 +2776,22 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                  * Clipped (ex,ez) are used for projection so we never divide by z < FLOOR_NEAR. */
                 int32_t ez1 = z1, ez2 = z2;
                 int32_t ex1 = rx1, ex2 = rx2;
+                int32_t eb1 = 0, eb2 = 0;
+                if (use_gour_floor) {
+                    eb1 = pt_brights[s];
+                    eb2 = pt_brights[(s + 1) % sides];
+                }
                 if (ez1 < FLOOR_NEAR) {
                     int32_t dz = ez2 - ez1;
                     if (dz != 0) {
                         int32_t t = ((int32_t)(FLOOR_NEAR - ez1) << 16) / dz;
                         ex1 = rx1 + (int32_t)((int64_t)(rx2 - rx1) * t / 65536);
+                        if (use_gour_floor) {
+                            eb1 = eb1 + (int32_t)((int64_t)(eb2 - eb1) * t / 65536);
+                        }
                     } else {
                         ex1 = (rx1 + rx2) / 2;  /* degenerate edge: use midpoint */
+                        if (use_gour_floor) eb1 = (eb1 + eb2) / 2;
                     }
                     ez1 = FLOOR_NEAR;
                 }
@@ -2715,8 +2800,12 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     if (dz != 0) {
                         int32_t t = ((int32_t)(FLOOR_NEAR - ez2) << 16) / dz;
                         ex2 = rx2 + (int32_t)((int64_t)(rx1 - rx2) * t / 65536);
+                        if (use_gour_floor) {
+                            eb2 = eb2 + (int32_t)((int64_t)(eb1 - eb2) * t / 65536);
+                        }
                     } else {
                         ex2 = (rx1 + rx2) / 2;
+                        if (use_gour_floor) eb2 = (eb1 + eb2) / 2;
                     }
                     ez2 = FLOOR_NEAR;
                 }
@@ -2746,14 +2835,22 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     if (row >= y_min_clamp && row <= y_max_clamp) {
                         int lo = sx1 < sx2 ? sx1 : sx2;
                         int hi = sx1 > sx2 ? sx1 : sx2;
+                        int32_t lo_b = (sx1 <= sx2) ? eb1 : eb2;
+                        int32_t hi_b = (sx1 <= sx2) ? eb2 : eb1;
                         /* Floor: no edge extension (steps look bad). Ceiling: extend to close wall join. */
                         int he_extra = (floor_y_dist < 0) ? (full_screen_zone ? CEILING_EDGE_EXTRA : edge_extra_portal) : 0;
                         lo -= he_extra;
                         hi += he_extra;
                         if (lo < r->left_clip) lo = r->left_clip;
                         if (hi >= r->right_clip) hi = r->right_clip - 1;
-                        if (lo < left_edge[row]) left_edge[row] = (int16_t)lo;
-                        if (hi > right_edge_tab[row]) right_edge_tab[row] = (int16_t)hi;
+                        if (lo < left_edge[row]) {
+                            left_edge[row] = (int16_t)lo;
+                            if (use_gour_floor) left_bright_tab[row] = (int16_t)lo_b;
+                        }
+                        if (hi > right_edge_tab[row]) {
+                            right_edge_tab[row] = (int16_t)hi;
+                            if (use_gour_floor) right_bright_tab[row] = (int16_t)hi_b;
+                        }
                         if (row < poly_top) poly_top = row;
                         if (row > poly_bot) poly_bot = row;
                     }
@@ -2769,31 +2866,45 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 /* Use fixed-point for better precision */
                 int64_t x_fp = (int64_t)sx1 << 16;
                 int64_t dx_fp = ((int64_t)(sx2 - sx1) << 16) / dy_raw;
+                int64_t b_fp = (int64_t)eb1 << 16;
+                int64_t db_fp = ((int64_t)(eb2 - eb1) << 16) / dy_raw;
                 
                 /* Adjust starting position if row_start is clamped */
                 if (sy1_raw < sy2_raw) {
                     x_fp += dx_fp * (row_start - sy1_raw);
+                    b_fp += db_fp * (row_start - sy1_raw);
                 } else {
                     x_fp = (int64_t)sx2 << 16;
                     dx_fp = ((int64_t)(sx1 - sx2) << 16) / (-dy_raw);
                     x_fp += dx_fp * (row_start - sy2_raw);
+                    b_fp = (int64_t)eb2 << 16;
+                    db_fp = ((int64_t)(eb1 - eb2) << 16) / (-dy_raw);
+                    b_fp += db_fp * (row_start - sy2_raw);
                 }
                 
                 /* Floor: no edge extension (steps look bad). Ceiling: extend to close wall join. */
                 int edge_extra = (floor_y_dist < 0) ? (full_screen_zone ? CEILING_EDGE_EXTRA : edge_extra_portal) : 0;
                 for (int row = row_start; row <= row_end; row++) {
-                    if (row < 0 || row >= h) { x_fp += dx_fp; continue; }
+                    if (row < 0 || row >= h) { x_fp += dx_fp; b_fp += db_fp; continue; }
                     int x = (int)(x_fp >> 16);
+                    int32_t edge_bright = (int32_t)(b_fp >> 16);
                     /* Extend edges only when full screen (avoid drawing outside portal). */
                     int left_x = x - edge_extra;
                     int right_x = x + edge_extra;
                     if (left_x < r->left_clip) left_x = r->left_clip;
                     if (right_x >= r->right_clip) right_x = r->right_clip - 1;
-                    if (left_x < left_edge[row]) left_edge[row] = (int16_t)left_x;
-                    if (right_x > right_edge_tab[row]) right_edge_tab[row] = (int16_t)right_x;
+                    if (left_x < left_edge[row]) {
+                        left_edge[row] = (int16_t)left_x;
+                        if (use_gour_floor) left_bright_tab[row] = (int16_t)edge_bright;
+                    }
+                    if (right_x > right_edge_tab[row]) {
+                        right_edge_tab[row] = (int16_t)right_x;
+                        if (use_gour_floor) right_bright_tab[row] = (int16_t)edge_bright;
+                    }
                     if (row < poly_top) poly_top = row;
                     if (row > poly_bot) poly_bot = row;
                     x_fp += dx_fp;
+                    b_fp += db_fp;
                 }
             }
 
@@ -2863,12 +2974,24 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     if (rows_left > 32767) rows_left = 32767;
                     water_rows_left = (int16_t)rows_left;
                 }
+                int16_t row_bright_l = bright;
+                int16_t row_bright_r = bright;
+                int16_t row_use_gour = 0;
+                if (use_gour_floor) {
+                    row_bright_l = left_bright_tab[row];
+                    row_bright_r = right_bright_tab[row];
+                    row_use_gour = 1;
+                }
                 renderer_draw_floor_span((int16_t)row, le, re,
-                                         rel_h, floor_tex, floor_pal, bright, scaleval, (entry_type == 7) ? 1 : 0,
+                                         rel_h, floor_tex, floor_pal,
+                                         bright, row_bright_l, row_bright_r, row_use_gour,
+                                         scaleval, (entry_type == 7) ? 1 : 0,
                                          water_rows_left);
             }
             free(left_edge);
             free(right_edge_tab);
+            free(left_bright_tab);
+            free(right_bright_tab);
             break;
         }
 
@@ -2988,7 +3111,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                                           (int16_t)(topwall >> 8), (int16_t)(botwall >> 8),
                                           arc_tex, (int16_t)prev_t, (int16_t)new_t,
                                           base_bright, base_bright, 63, 6, 255,
-                                          0, 0, tex_id, wall_ht);
+                                          0, 0, tex_id, wall_ht, 64);
                     }
                     
                     prev_x = new_x;

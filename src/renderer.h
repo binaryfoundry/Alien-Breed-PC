@@ -287,10 +287,13 @@ void renderer_draw_wall(int16_t x1, int16_t z1, int16_t x2, int16_t z2,
                         int16_t tex_end, int16_t left_brightness, int16_t right_brightness,
                         uint8_t valand, uint8_t valshift, int16_t horand,
                         int16_t totalyoff, int16_t fromtile,
-                        int16_t tex_id, int16_t wall_height_for_tex);
+                        int16_t tex_id, int16_t wall_height_for_tex,
+                        int16_t d6_max);
 void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                               int32_t floor_height, const uint8_t *texture, const uint8_t *floor_pal,
-                              int16_t brightness, int16_t scaleval, int is_water,
+                              int16_t brightness, int16_t left_brightness, int16_t right_brightness,
+                              int16_t use_gouraud,
+                              int16_t scaleval, int is_water,
                               int16_t water_rows_left);
 void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
                           int16_t width, int16_t height, int16_t z,
