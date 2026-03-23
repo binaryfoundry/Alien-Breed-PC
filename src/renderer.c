@@ -1802,6 +1802,23 @@ static const struct {
     { NULL, 0 }, { NULL, 0 }
 };
 
+/* RockPop/Explosion world sizes are authored from Amiga BitMapObj tables where
+ * both axes use the same <<7 scale. This port projects billboard height with
+ * proj_y_scale, so convert Amiga-authored explosion height into the port's
+ * Y-scale domain before projection.
+ *
+ * This keeps explosion billboard sizing consistent across resize/aspect changes
+ * without relying on a fixed heuristic multiplier. */
+static inline int explosion_world_h_to_port(const RendererState *r, int world_h_amiga)
+{
+    int32_t py = r->proj_y_scale;
+    if (py < 1) py = 1;
+    int64_t corrected = ((int64_t)world_h_amiga * 128 + (py / 2)) / py;
+    if (corrected < 1) corrected = 1;
+    if (corrected > 32767) corrected = 32767;
+    return (int)corrected;
+}
+
 /* -----------------------------------------------------------------------
  * Draw objects in the current zone
  *
@@ -2007,8 +2024,9 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
             int scr_y = (int)((int64_t)rel_y_8 * (int64_t)r->proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp_z) + center_y;
             int z_for_size = orp_z;
             if (z_for_size < 1) z_for_size = 1;
+            int expl_h_port = explosion_world_h_to_port(r, expl_h);
             int sprite_w = (int)((int32_t)expl_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
-            int sprite_h = (int)((int64_t)expl_h * (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+            int sprite_h = (int)((int64_t)expl_h_port * (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
             sprite_w *= EXPLOSION_SIZE_CORRECTION;
             sprite_h *= EXPLOSION_SIZE_CORRECTION;
             if (sprite_w < 1) sprite_w = 1;
@@ -2144,9 +2162,23 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         if (world_h <= 0) world_h = 32;
 
         /* Screen size: width from Amiga (byte*128/z)*RENDER_SCALE; height uses proj_y_scale so billboard Y matches floor projection scale. */
-        int sprite_w = (int)((int32_t)world_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
-        int sprite_h = (int)((int64_t)world_h * (int64_t)g_renderer.proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+        int explosion_billboard = 0;
         if (vect_num == 8) {
+            if (obj_number == OBJ_NBR_BARREL) {
+                explosion_billboard = 1;
+            } else if (entry_src == DRAW_SRC_SHOT && (int8_t)obj[30] != 0) {
+                /* Popping shot using explosion sheet (e.g. RockPop/FlamePop). */
+                explosion_billboard = 1;
+            }
+        }
+
+        int sprite_w = (int)((int32_t)world_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+        int world_h_for_proj = world_h;
+        if (explosion_billboard) {
+            world_h_for_proj = explosion_world_h_to_port(&g_renderer, world_h);
+        }
+        int sprite_h = (int)((int64_t)world_h_for_proj * (int64_t)g_renderer.proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+        if (explosion_billboard) {
             sprite_w *= EXPLOSION_SIZE_CORRECTION;
             sprite_h *= EXPLOSION_SIZE_CORRECTION;
         }

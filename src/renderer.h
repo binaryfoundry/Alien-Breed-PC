@@ -59,8 +59,8 @@
  * Keep multiplier at 1 so billboard scale matches the existing projection path. */
 #define SPRITE_SIZE_SCALE      (128 * RENDER_SCALE)
 #define SPRITE_SIZE_MULTIPLIER 1
-/* Explosion frames (RockPop) come from Amiga pop tables and need a local correction
- * in this port's billboard projection path so their on-screen size matches gameplay. */
+/* Extra scalar on top of the Amiga->port explosion size conversion.
+ * Keep at 1 for exact conversion; >1 or <1 is an explicit gameplay/style tweak. */
 #define EXPLOSION_SIZE_CORRECTION 1
 
 /* -----------------------------------------------------------------------
