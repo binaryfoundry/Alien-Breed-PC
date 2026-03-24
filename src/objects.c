@@ -429,13 +429,25 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
            lives <= 0 ? " (killed)" : "");
 
     if (lives <= 0) {
-        /* Instant kill: most use damage >= threshold; FlyingScalyBall uses damage > 40 only. */
+        /* Instant-kill parity:
+         * - Flying/Eyeball compare raw blow directly (> 40).
+         * - NormalAlien + human marines + HalfWorm compare AFTER an extra asr #2
+         *   in their kill branches, so the effective threshold is much higher. */
         bool instant_kill = false;
         if (params->explode_threshold > 0) {
-            if (params->damage_audio_class == ENEMY_DMG_AUDIO_FLYING)
-                instant_kill = (damage > params->explode_threshold);
-            else
-                instant_kill = (damage >= params->explode_threshold);
+            int32_t instant_cmp = damage;
+
+            if (params->damage_audio_class == ENEMY_DMG_AUDIO_ALIEN ||
+                params->damage_audio_class == ENEMY_DMG_AUDIO_WORM ||
+                enemy_is_human_marine(obj->obj.number)) {
+                instant_cmp >>= 2;
+            }
+
+            if (params->damage_audio_class == ENEMY_DMG_AUDIO_FLYING) {
+                instant_kill = (instant_cmp > params->explode_threshold);
+            } else {
+                instant_kill = (instant_cmp >= params->explode_threshold);
+            }
         }
 
         /* Human marines: FlameMarine.s / ToughMarine.s / MutantMarine.s */
