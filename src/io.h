@@ -1,20 +1,13 @@
 /*
  * Alien Breed 3D I - PC Port
- * stub_io.h - Stubbed file I/O subsystem
+ * io.h - PC file I/O backend
  *
- * Replaces Amiga-specific I/O:
- *   - dos.library file operations (Open/Read/Close)
- *   - LoadFromDisk.s routines (LoadWalls, LoadFloor, LoadObjects, LoadSFX, LoadPanel)
- *   - LHA decompression (UnLHA)
- *   - Level loading
- *   - Prefs/password save/load
- *
- * Eventually these will use standard C file I/O to load
- * game data from the original Amiga data files.
+ * Implements Amiga-style level, asset, prefs, and password loading
+ * using standard C/SDL I/O primitives.
  */
 
-#ifndef STUB_IO_H
-#define STUB_IO_H
+#ifndef IO_H
+#define IO_H
 
 #include "game_state.h"
 
@@ -51,4 +44,4 @@ void io_save_passwords(void);
 /* Build full path for a file under the data directory (e.g. "debug_save.bin"). */
 void io_make_data_path(char *buf, size_t bufsize, const char *subpath);
 
-#endif /* STUB_IO_H */
+#endif /* IO_H */

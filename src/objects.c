@@ -17,7 +17,7 @@
 #include "level.h"
 #include "movement.h"
 #include "math_tables.h"
-#include "stub_audio.h"
+#include "audio.h"
 #include "visibility.h"
 #include <stdio.h>
 #include <string.h>

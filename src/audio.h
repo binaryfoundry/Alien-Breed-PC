@@ -1,16 +1,12 @@
 /*
  * Alien Breed 3D I - PC Port
- * stub_audio.h - Stubbed audio subsystem
+ * audio.h - SDL2 audio backend
  *
- * Replaces Amiga-specific audio:
- *   - Paula audio channels ($dff0a0-$dff0d8)
- *   - ProTracker music player (ProPlayer.s / MtPlayer.s)
- *   - Sound effects (SoundPlayer.s)
- *   - Module loading/playback (_InitPlayer, _PlayModule, etc.)
+ * Wraps SDL audio to replace the Amiga Paula + ProTracker-based system.
  */
 
-#ifndef STUB_AUDIO_H
-#define STUB_AUDIO_H
+#ifndef AUDIO_H
+#define AUDIO_H
 
 /* Lifecycle */
 void audio_init(void);
@@ -34,4 +30,4 @@ void audio_stop_all(void);
 void audio_mt_init(void);
 void audio_mt_end(void);
 
-#endif /* STUB_AUDIO_H */
+#endif /* AUDIO_H */

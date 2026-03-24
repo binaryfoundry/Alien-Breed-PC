@@ -1,19 +1,12 @@
 /*
  * Alien Breed 3D I - PC Port
- * stub_input.h - Stubbed input subsystem
+ * input.h - SDL2 input backend
  *
- * Replaces Amiga-specific input:
- *   - Keyboard interrupt handler (key_interrupt / KeyInt)
- *   - Mouse reading (ReadMouse / $dff00a)
- *   - Joystick reading (_ReadJoy1, _ReadJoy2, CD32Joy)
- *   - Hardware port polling ($bfe001)
- *
- * When a real input system is added (SDL2, etc.), these stubs
- * get replaced with actual implementations.
+ * Implements keyboard/mouse/joystick handling via SDL2 for the PC port.
  */
 
-#ifndef STUB_INPUT_H
-#define STUB_INPUT_H
+#ifndef INPUT_H
+#define INPUT_H
 
 #include "game_types.h"
 #include <stdint.h>
@@ -55,4 +48,4 @@ void input_clear_keyboard(uint8_t *key_map);
 /* Debug: F5 save position. Returns true once when F5 was pressed (caller should save). */
 bool input_f5_save_requested(void);
 
-#endif /* STUB_INPUT_H */
+#endif /* INPUT_H */

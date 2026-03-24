@@ -33,10 +33,10 @@
 #include "game_state.h"
 #include "math_tables.h"
 #include "control_loop.h"
-#include "stub_display.h"
-#include "stub_input.h"
-#include "stub_audio.h"
-#include "stub_io.h"
+#include "display.h"
+#include "input.h"
+#include "audio.h"
+#include "io.h"
 #include "renderer_3dobj.h"
 
 /*

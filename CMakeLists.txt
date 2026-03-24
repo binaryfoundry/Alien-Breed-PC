@@ -61,10 +61,10 @@ set(SOURCES
     src/player.c
     src/renderer.c
     src/renderer_3dobj.c
-    src/stub_display.c
-    src/stub_input.c
-    src/stub_audio.c
-    src/stub_io.c
+    src/display.c
+    src/input.c
+    src/audio.c
+    src/io.c
     src/sb_decompress.c
     src/sprite_palettes.c
 )
@@ -100,7 +100,7 @@ endif()
 # Link SDL2 (no SDL2main - we use CONSOLE subsystem for printf output)
 target_link_libraries(ab3d1 PRIVATE SDL2-static)
 
-# Release build: start exclusive fullscreen at 720p (see stub_display.c)
+# Release build: start fullscreen desktop with fixed renderer (see display.c)
 target_compile_definitions(ab3d1 PRIVATE $<$<CONFIG:Release>:AB3D_RELEASE>)
 
 # Platform-specific settings

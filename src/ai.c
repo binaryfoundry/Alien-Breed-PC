@@ -13,7 +13,7 @@
 #include "movement.h"
 #include "visibility.h"
 #include "math_tables.h"
-#include "stub_audio.h"
+#include "audio.h"
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>

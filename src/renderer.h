@@ -7,7 +7,7 @@
  *
  * The renderer draws into a chunky (8-bit indexed) pixel buffer.
  * Displaying that buffer to the actual screen is platform-specific
- * and handled by stub_display / a future SDL/OpenGL backend.
+ * and handled by the display backend (SDL/OpenGL, etc.).
  */
 
 #ifndef RENDERER_H
@@ -24,7 +24,7 @@
  * into a buffer that is 104 longwords wide (416 bytes).
  * Screen height is 80 lines.
  * -----------------------------------------------------------------------*/
-#define RENDER_SCALE     8     /* Resolution multiplier (1 = Amiga); halve stub_display WINDOW_SCALE when doubling so window size unchanged */
+#define RENDER_SCALE     8     /* Resolution multiplier (1 = Amiga); halve display window scale when doubling so window size unchanged */
 #define RENDER_SCALE_LOG2 3    /* log2(RENDER_SCALE); keep in sync when changing RENDER_SCALE (1->0, 2->1, 4->2, 8->3) */
 #define RENDER_WIDTH         (96  * RENDER_SCALE)   /* Visible game columns */
 #define RENDER_HEIGHT        (80  * RENDER_SCALE)   /* Visible game lines   */

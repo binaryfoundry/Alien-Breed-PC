@@ -32,7 +32,7 @@
 #include "game_data.h"
 #include "game_types.h"
 #include "visibility.h"
-#include "stub_audio.h"
+#include "audio.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -710,7 +710,7 @@ static void renderer_fill_wall_joins(void)
     }
 }
 
-/* Wall texture index for switches (stub_io wall_texture_table). Must be before draw_wall_column. */
+/* Wall texture index for switches (io.c wall_texture_table). Must be before draw_wall_column. */
 #define SWITCHES_WALL_TEX_ID  11
 
 /* -----------------------------------------------------------------------

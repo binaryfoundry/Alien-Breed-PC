@@ -1,13 +1,13 @@
 /*
  * Alien Breed 3D I - PC Port
- * stub_input.c - SDL2 input backend
+ * input.c - SDL2 input backend
  *
  * Maps SDL2 keyboard scancodes to Amiga raw keycodes that the
  * game's key_map[] array expects.
  */
 
-#include "stub_input.h"
-#include "stub_display.h"
+#include "input.h"
+#include "display.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>

@@ -30,7 +30,7 @@
  * ----------------------------------------------------------------------- */
 VecObject g_poly_objects[POLY_OBJECTS_COUNT];
 
-/* Shared polygon texture assets (provided by stub_io). */
+/* Shared polygon texture assets (provided by io.c). */
 static const uint8_t *g_poly_tex_maps = NULL;
 static size_t         g_poly_tex_maps_size = 0;
 static const uint8_t *g_poly_tex_pal = NULL;

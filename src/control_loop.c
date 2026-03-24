@@ -26,10 +26,10 @@
 #include "level.h"
 #include "objects.h"
 #include "player.h"
-#include "stub_display.h"
-#include "stub_input.h"
-#include "stub_audio.h"
-#include "stub_io.h"
+#include "display.h"
+#include "input.h"
+#include "audio.h"
+#include "io.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

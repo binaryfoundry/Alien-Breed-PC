@@ -55,7 +55,7 @@
 
 /*
  * Parsed vector object.
- * The raw data pointer is owned by stub_io (never freed here).
+ * The raw data pointer is owned by io.c (never freed here).
  */
 typedef struct {
     const uint8_t *data;       /* raw .vec bytes */

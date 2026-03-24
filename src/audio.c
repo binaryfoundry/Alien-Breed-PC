@@ -1,14 +1,14 @@
-/*
+#/*
  * Alien Breed 3D I - PC Port
- * stub_audio.c - SDL2 sound effects (load from data/sounds, play via SDL)
+ * audio.c - SDL2 sound effects/music backend
  *
  * Sample names and order from Amiga LoadFromDisk.s SFX_NAMES.
- * Prefers Amiga originals: sounds/<name> (no extension) or sounds/<name>.raw.
- * Falls back to sounds/<name>.wav if no raw file found.
+ * Prefers Amiga originals: sounds/<name> (no extension) or sounds/<name>.raw,
+ * falling back to WAV when needed.
  */
 
-#include "stub_audio.h"
-#include "stub_io.h"
+#include "audio.h"
+#include "io.h"
 #include <SDL.h>
 #include <ctype.h>
 #include <stdio.h>

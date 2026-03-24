@@ -12,9 +12,9 @@
 #include "movement.h"
 #include "objects.h"
 #include "math_tables.h"
-#include "stub_input.h"
-#include "stub_audio.h"
-#include "stub_io.h"
+#include "input.h"
+#include "audio.h"
+#include "io.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>

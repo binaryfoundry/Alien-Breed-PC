@@ -1,23 +1,14 @@
 /*
  * Alien Breed 3D I - PC Port
- * stub_display.h - Stubbed display/rendering subsystem
+ * display.h - SDL2 display frontend
  *
- * Replaces all Amiga-specific display code:
- *   - Copper list setup (BigFieldCop, TextCop, titlecop, etc.)
- *   - Screen allocation (AllocCopperScrnMemory, AllocTextScrn)
- *   - DMA/blitter operations
- *   - Chunky-to-planar conversion
- *   - DrawDisplay, wall/floor/object rendering
- *   - Sprite handling
- *   - Palette/color management
- *   - Panel (HUD) drawing
- *
- * All functions are no-ops for now. When a real renderer is added
- * (SDL2, OpenGL, etc.), these stubs get replaced.
+ * Provides the SDL2-backed replacement for the original Amiga display
+ * system: copper/list setup, chunky framebuffer management, texture
+ * uploads, HUD drawing, etc.
  */
 
-#ifndef STUB_DISPLAY_H
-#define STUB_DISPLAY_H
+#ifndef DISPLAY_H
+#define DISPLAY_H
 
 #include "game_state.h"
 
@@ -61,4 +52,4 @@ void display_ammo_bar(int16_t ammo);
 void display_draw_line_of_text(const char *text, int line);
 void display_clear_text_screen(void);
 
-#endif /* STUB_DISPLAY_H */
+#endif /* DISPLAY_H */

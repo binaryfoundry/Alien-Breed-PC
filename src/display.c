@@ -1,12 +1,12 @@
 /*
  * Alien Breed 3D I - PC Port
- * stub_display.c - SDL2 display backend
+ * display.c - SDL2 display backend
  *
  * Creates a window, takes the chunky buffer from the software renderer,
  * converts it through a palette to RGB, and presents it on screen.
  */
 
-#include "stub_display.h"
+#include "display.h"
 #include "renderer.h"
 #include <SDL.h>
 #include <stdio.h>

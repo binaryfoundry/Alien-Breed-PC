@@ -26,9 +26,9 @@
 #include "game_types.h"
 #include "visibility.h"
 #include "renderer.h"
-#include "stub_display.h"
-#include "stub_input.h"
-#include "stub_audio.h"
+#include "display.h"
+#include "input.h"
+#include "audio.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>

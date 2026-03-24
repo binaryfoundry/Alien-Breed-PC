@@ -1,13 +1,12 @@
-/*
+#/*
  * Alien Breed 3D I - PC Port
- * stub_io.c - File I/O with procedural test level fallback
+ * io.c - File I/O + level loading helpers
  *
- * Attempts to load original Amiga level data from disk.
- * If not found, generates a simple procedural test level
- * so the renderer and movement can be tested.
+ * Attempts to load original Amiga level data from disk or falls back to
+ * the procedural test level for development/testing.
  */
 
-#include "stub_io.h"
+#include "io.h"
 #include "sb_decompress.h"
 #include "renderer.h"
 #include "renderer_3dobj.h"
