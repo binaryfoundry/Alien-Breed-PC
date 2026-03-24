@@ -3624,6 +3624,14 @@ int pickup_distance_check(GameObject *obj, GameState *state, int player_num)
 {
     PlayerState *plr = (player_num == 1) ? &state->plr1 : &state->plr2;
 
+    int16_t obj_zone = OBJ_ZONE(obj);
+    if (obj_zone < 0 || plr->zone != obj_zone) {
+        return 0;
+    }
+    if (plr->stood_in_top != obj->obj.in_top) {
+        return 0;
+    }
+
     int idx = (int)(((uint8_t*)obj - state->level.object_data) / OBJECT_SIZE);
     int16_t ox, oz;
     get_object_pos(&state->level, idx, &ox, &oz);
