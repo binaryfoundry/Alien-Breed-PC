@@ -987,8 +987,8 @@ const EnemyParams enemy_params[] = {
     /* [10] Tree (Tree.s ItsATree) */
     {
         .thing_height   = 200 * 128,
-        .step_up        = 0,
-        .step_down      = 0,
+        .step_up        = 20 * 256,
+        .step_down      = 20 * 256,
         .extlen         = 80,
         .awayfromwall   = 1,
         .nas_height     = 64,

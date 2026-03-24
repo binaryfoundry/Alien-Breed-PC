@@ -476,11 +476,12 @@ static int check_wall_line_walls_asm(MoveContext *ctx, const uint8_t *fline,
                 hit_x = (int16_t)(sx + (int16_t)(((int32_t)h * (int32_t)d7) / (int32_t)total));
                 hit_z = (int16_t)(sz + (int16_t)(((int32_t)g * (int32_t)d7) / (int32_t)total));
             } else {
-                int16_t llen = (int16_t)line_len;
-                if (llen == 0) return 0;
+                /* Amiga checkwalls divides by (line_length + extlen) here too. */
+                int16_t hit_den = den;
+                if (hit_den == 0) return 0;
                 {
-                    int16_t off_x = (int16_t)(((int32_t)d7 * (int32_t)d5) / (int32_t)llen);
-                    int16_t off_z = (int16_t)(((int32_t)d7 * (int32_t)d2) / (int32_t)llen);
+                    int16_t off_x = (int16_t)(((int32_t)d7 * (int32_t)d5) / (int32_t)hit_den);
+                    int16_t off_z = (int16_t)(((int32_t)d7 * (int32_t)d2) / (int32_t)hit_den);
                     hit_x = (int16_t)(sx - off_x);
                     hit_z = (int16_t)(sz + off_z);
                 }
