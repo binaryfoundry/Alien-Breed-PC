@@ -29,7 +29,7 @@
 #define TURN_STEP           10
 #define MOUSE_CLAMP         50
 #define HEIGHT_STEP         1024
-#define BOBBLE_MASK         8190
+#define BOBBLE_MASK         ANGLE_MASK
 #define CLUMP_MASK          4095
 #define CLUMP_THRESHOLD     (-4096)  /* and.w #-4096,d1 checks bit 12+ */
 /* Amiga step-up: same scale as zone floor heights. game_data uses 40*256 for marines;
@@ -528,7 +528,7 @@ static void player_keyboard_control(PlayerState *plr, const uint8_t *key_map,
     }
 
     /* ---- Angle and sin/cos lookup ---- */
-    angpos &= 8191;
+    angpos &= ANGLE_MASK;
     plr->s_angpos = angpos;
     plr->s_sinval = sin_lookup(angpos);
     plr->s_cosval = cos_lookup(angpos);
@@ -619,7 +619,7 @@ static void player_mouse_control(PlayerState *plr, const uint8_t *key_map,
     int16_t move_mag = fwd_delta << 4;
 
     /* Angle and sin/cos */
-    angpos &= 8190;
+    angpos &= ANGLE_MASK;
     plr->s_angpos = angpos;
     plr->s_sinval = sin_lookup(angpos);
     plr->s_cosval = cos_lookup(angpos);

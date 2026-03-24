@@ -2,7 +2,11 @@
  * Alien Breed 3D I - PC Port
  * math_tables.c - Sine table generation
  *
- * Generates a 4096-entry sine table with values in the range ~[-16384, 16384].
+ * Generates:
+ *   - a 4096-entry legacy sine table (original parity values)
+ *   - an expanded 8192-entry table used by runtime lookups
+ *
+ * Values are in the range ~[-16384, 16384].
  * The original Amiga table is stored in data/math/bigsine as raw binary.
  * We generate it from scratch using the same scale factor.
  *
@@ -20,9 +24,11 @@
 #endif
 
 int16_t sine_table[ANGLE_TABLE_SIZE];
+int16_t sine_table_fine[ANGLE_FINE_TABLE_SIZE];
 
 void math_tables_init(void)
 {
+    /* Build original 4096-entry table. */
     for (int i = 0; i < ANGLE_TABLE_SIZE; i++) {
         double angle = (double)i * 2.0 * M_PI / (double)ANGLE_TABLE_SIZE;
         double val = sin(angle) * 16384.0;
@@ -31,5 +37,18 @@ void math_tables_init(void)
             sine_table[i] = (int16_t)(val + 0.5);
         else
             sine_table[i] = (int16_t)(val - 0.5);
+    }
+
+    /* Expand to 8192 by inserting midpoint samples between legacy entries.
+     * Even slots are exact legacy values, odd slots are rounded averages. */
+    for (int i = 0; i < ANGLE_TABLE_SIZE; i++) {
+        int16_t a = sine_table[i];
+        int16_t b = sine_table[(i + 1) & (ANGLE_TABLE_SIZE - 1)];
+        int32_t sum = (int32_t)a + (int32_t)b;
+        int16_t mid = (int16_t)((sum >= 0) ? ((sum + 1) >> 1) : ((sum - 1) >> 1));
+
+        int fine = i << 1;
+        sine_table_fine[fine] = a;
+        sine_table_fine[fine + 1] = mid;
     }
 }

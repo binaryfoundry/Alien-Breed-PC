@@ -355,10 +355,10 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
      * We read objVectFacing from offset 30 (a2-field before a0 advanced). */
     int16_t facing  = vec_rd16(obj + 30);  /* objVectFacing */
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
-    int viewer_ang  = (int)(plr->angpos & ANGLE_MASK); /* even, 0..8190 */
+    int viewer_ang  = (int)(plr->angpos & ANGLE_MASK); /* 0..8191 */
     /* Amiga subtracts 2048 (= ANGLE_90 bytes = 90 degrees) before viewer angle */
     int rel_ang = (int)facing - ANGLE_90 - viewer_ang;
-    rel_ang &= ANGLE_MASK;   /* keep even, 0..8190 */
+    rel_ang &= ANGLE_MASK;   /* wrap to 0..8191 */
 
     int16_t sin_v = sin_lookup(rel_ang);
     int16_t cos_v = cos_lookup(rel_ang);
