@@ -2438,11 +2438,25 @@ void object_handle_bullet(GameObject *obj, GameState *state)
 
     /* Wall bounce physics (Anims.s lines 3098-3140) */
     if (ctx.wallbounce && ctx.hitwall) {
-        /* Reflection: already handled by simple negation for now.
-         * Full reflection would use wallxsize/wallzsize/walllength
-         * but that requires MoveObject to output wall normal. */
-        SHOT_SET_XVEL(*obj, -xvel);
-        SHOT_SET_ZVEL(*obj, -zvel);
+        int16_t wall_len = ctx.wall_length;
+        if (wall_len != 0) {
+            int16_t vx = (int16_t)(xvel >> 16);
+            int16_t vz = (int16_t)(zvel >> 16);
+            int32_t d0 = (int32_t)vz * (int32_t)ctx.wall_xsize -
+                         (int32_t)vx * (int32_t)ctx.wall_zsize;
+            d0 /= wall_len;
+
+            vx = (int16_t)(vx + (int16_t)(((int32_t)(ctx.wall_zsize * 2) * d0) / wall_len));
+            vz = (int16_t)(vz - (int16_t)(((int32_t)(ctx.wall_xsize * 2) * d0) / wall_len));
+
+            xvel = (int32_t)vx << 16;
+            zvel = (int32_t)vz << 16;
+            SHOT_SET_XVEL(*obj, xvel);
+            SHOT_SET_ZVEL(*obj, zvel);
+        } else {
+            SHOT_SET_XVEL(*obj, -xvel);
+            SHOT_SET_ZVEL(*obj, -zvel);
+        }
         if (flags & 2) {
             /* Friction on bounce */
             SHOT_SET_XVEL(*obj, SHOT_XVEL(*obj) >> 1);

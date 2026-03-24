@@ -495,6 +495,9 @@ static int check_wall_line_walls_asm(MoveContext *ctx, const uint8_t *fline,
             mark_floorline_touch_flag(ctx, fline);
             ctx->hitwall = 1;
             ctx->wall_hit_y = hit_y;
+            ctx->wall_xsize = d2;
+            ctx->wall_zsize = d5;
+            ctx->wall_length = den;
             *xdiff = ctx->newx - ctx->oldx;
             *zdiff = ctx->newz - ctx->oldz;
             return ctx->exitfirst ? 3 : 2;
@@ -845,6 +848,9 @@ void move_context_init(MoveContext* ctx)
     ctx->step_up_val = 40 * 256;
     ctx->step_down_val = 0x1000000;
     ctx->coll_id = -1;
+    ctx->wall_xsize = 0;
+    ctx->wall_zsize = 0;
+    ctx->wall_length = 0;
 }
 
 /* -----------------------------------------------------------------------

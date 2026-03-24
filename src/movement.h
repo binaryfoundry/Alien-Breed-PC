@@ -42,6 +42,9 @@ typedef struct {
     int8_t   hitwall;              /* result: did we hit something? */
     int8_t   pos_shift;            /* position scale: 0 = integer, 16 = 16.16 fp */
     int32_t  wall_hit_y;           /* wallhitheight (Amiga MoveObject) */
+    int16_t  wall_xsize;           /* WALLXLEN for bounce reflection */
+    int16_t  wall_zsize;           /* WALLZLEN for bounce reflection */
+    int16_t  wall_length;          /* wall length divisor for reflection */
 } MoveContext;
 
 /* -----------------------------------------------------------------------
