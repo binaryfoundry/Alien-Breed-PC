@@ -122,16 +122,14 @@ void explode_into_bits(GameObject *obj, GameState *state)
 
         /* Amiga: random angle from SineTable, random 1..4 scale, plus half impact vector. */
         {
-            int16_t ang = (int16_t)(rand() & 8190);
-            int16_t s = sin_lookup(ang);
-            int16_t c = cos_lookup(ang);
-            int shift = (rand() & 3) + 1;
-            int16_t vx = (int16_t)(((int32_t)s << shift) >> 16);
-            int16_t vz = (int16_t)(((int32_t)c << shift) >> 16);
-            vx = (int16_t)(vx + (NASTY_IMPACTX(*obj) >> 1));
-            vz = (int16_t)(vz + (NASTY_IMPACTZ(*obj) >> 1));
-            SHOT_SET_XVEL(*bit, vx);
-            SHOT_SET_ZVEL(*bit, vz);
+        int16_t ang = (int16_t)(rand() & 8190);
+        int16_t s = sin_lookup(ang);
+        int16_t c = cos_lookup(ang);
+        int shift = (rand() & 3) + 1;
+        int32_t vx = (((int32_t)s << shift) >> 16) + (NASTY_IMPACTX(*obj) >> 1);
+        int32_t vz = (((int32_t)c << shift) >> 16) + (NASTY_IMPACTZ(*obj) >> 1);
+        SHOT_SET_XVEL(*bit, vx << 16);
+        SHOT_SET_ZVEL(*bit, vz << 16);
         }
         /* Y velocity: upward, Amiga range -(256 + rand & 1023) = -256 to -1279 */
         SHOT_SET_YVEL(*bit, (int16_t)(-(256 + (rand() & 1023))));
@@ -144,7 +142,7 @@ void explode_into_bits(GameObject *obj, GameState *state)
                 src_idx < state->level.num_object_points && dst_idx < state->level.num_object_points) {
                 uint8_t *sp = state->level.object_points + src_idx * 8;
                 uint8_t *dp = state->level.object_points + dst_idx * 8;
-                memcpy(dp, sp, 2); memcpy(dp + 4, sp + 4, 2);
+                memcpy(dp, sp, 8);
             }
         }
 

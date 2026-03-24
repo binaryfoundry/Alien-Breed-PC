@@ -1935,6 +1935,7 @@ void object_handle_gas_pipe(GameObject *obj, GameState *state)
     }
     if (!bullet) return;
 
+    SHOT_ANIM(*bullet) = 0;
     bullet->obj.number = OBJ_NBR_BULLET;
     OBJ_SET_ZONE(bullet, OBJ_ZONE(obj));
     int16_t src_y = (int16_t)((obj->raw[4] << 8) | obj->raw[5]);
@@ -1964,8 +1965,10 @@ void object_handle_gas_pipe(GameObject *obj, GameState *state)
     int16_t facing = NASTY_FACING(*obj);
     int16_t s = sin_lookup(facing);
     int16_t c = cos_lookup(facing);
-    SHOT_SET_XVEL(*bullet, (int16_t)(((int32_t)s << 4) >> 16));
-    SHOT_SET_ZVEL(*bullet, (int16_t)(((int32_t)c << 4) >> 16));
+    int32_t xvel = (((int32_t)s << 4) >> 16);
+    int32_t zvel = (((int32_t)c << 4) >> 16);
+    SHOT_SET_XVEL(*bullet, xvel << 16);
+    SHOT_SET_ZVEL(*bullet, zvel << 16);
     NASTY_SET_EFLAGS(*bullet, 0x00100020);
     bullet->obj.worry = 127;
 }
@@ -2189,8 +2192,8 @@ void object_handle_big_gun(GameObject *obj, GameState *state)
  * ----------------------------------------------------------------------- */
 void object_handle_bullet(GameObject *obj, GameState *state)
 {
-    int16_t xvel = SHOT_XVEL(*obj);
-    int16_t zvel = SHOT_ZVEL(*obj);
+    int32_t xvel = SHOT_XVEL(*obj);
+    int32_t zvel = SHOT_ZVEL(*obj);
     int16_t yvel = SHOT_YVEL(*obj);
     int16_t grav = SHOT_GRAV(*obj);
     int16_t life = SHOT_LIFE(*obj);
@@ -2297,17 +2300,6 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         SHOT_ANIM(*obj) = anim_idx + 1;
     }
 
-    /* Apply gravity to Y velocity */
-    if (grav != 0) {
-        int32_t grav_delta = (int32_t)grav * state->temp_frames;
-        int32_t new_yvel = yvel + (int16_t)grav_delta;
-        /* Clamp to ±10*256 */
-        if (new_yvel > 10 * 256) new_yvel = 10 * 256;
-        if (new_yvel < -10 * 256) new_yvel = -10 * 256;
-        yvel = (int16_t)new_yvel;
-        SHOT_SET_YVEL(*obj, yvel);
-    }
-
     /* Position is in object_points at OBJ_CID (works for both object_data and nasty_shot_data bullets). */
     int idx = (int)OBJ_CID(obj);
     if (idx < 0 || (state->level.object_points && idx >= state->level.num_object_points)) {
@@ -2318,17 +2310,12 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         OBJ_SET_ZONE(obj, -1);
         return;
     }
-    int16_t bx, bz;
-    get_object_pos(&state->level, idx, &bx, &bz);
-
-    int16_t new_bx = bx + xvel * state->temp_frames;
-    int16_t new_bz = bz + zvel * state->temp_frames;
-
-    /* Update Y position */
+    uint8_t *bullet_pts = state->level.object_points + (uint32_t)idx * 8u;
+    int32_t bx_fp = obj_l(bullet_pts);
+    int32_t bz_fp = obj_l(bullet_pts + 4);
+    int16_t bx = (int16_t)(bx_fp >> 16);
+    int16_t bz = (int16_t)(bz_fp >> 16);
     int32_t accypos = SHOT_ACCYPOS(*obj);
-    int32_t y_delta = (int32_t)yvel * state->temp_frames;
-    accypos += y_delta;
-    SHOT_SET_ACCYPOS(*obj, accypos);
 
     int bullet_zone_idx = -1;
     if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data) {
@@ -2354,12 +2341,15 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             if (shot_size >= 50) printf("[GIB-ROOF] roof=%d accypos=%d diff=%d\n",(int)roof,(int)accypos,(int)(roof-accypos));
             if (flags & 1) {
                 /* Bounce off roof */
-                SHOT_SET_YVEL(*obj, (int16_t)(-yvel));
+                yvel = (int16_t)(-yvel);
+                SHOT_SET_YVEL(*obj, yvel);
                 accypos = roof + 10 * 128;
                 SHOT_SET_ACCYPOS(*obj, accypos);
                 if (flags & 2) {
-                    SHOT_SET_XVEL(*obj, xvel >> 1);
-                    SHOT_SET_ZVEL(*obj, zvel >> 1);
+                    xvel >>= 1;
+                    zvel >>= 1;
+                    SHOT_SET_XVEL(*obj, xvel);
+                    SHOT_SET_ZVEL(*obj, zvel);
                 }
             } else {
                 timed_out = true; /* Impact on roof */
@@ -2374,12 +2364,15 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             if (flags & 1) {
                 /* Bounce off floor */
                 if (yvel > 0) {
-                    SHOT_SET_YVEL(*obj, (int16_t)(-(yvel >> 1)));
+                    yvel = (int16_t)(-(yvel >> 1));
+                    SHOT_SET_YVEL(*obj, yvel);
                     accypos = floor_h - 10 * 128;
                     SHOT_SET_ACCYPOS(*obj, accypos);
                     if (flags & 2) {
-                        SHOT_SET_XVEL(*obj, xvel >> 1);
-                        SHOT_SET_ZVEL(*obj, zvel >> 1);
+                        xvel >>= 1;
+                        zvel >>= 1;
+                        SHOT_SET_XVEL(*obj, xvel);
+                        SHOT_SET_ZVEL(*obj, zvel);
                     }
                 }
             } else {
@@ -2387,6 +2380,25 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             }
         }
     }
+    int32_t new_bx_fp = bx_fp + xvel * state->temp_frames;
+    int32_t new_bz_fp = bz_fp + zvel * state->temp_frames;
+    int16_t new_bx = (int16_t)(new_bx_fp >> 16);
+    int16_t new_bz = (int16_t)(new_bz_fp >> 16);
+
+    /* Y integration order matches Amiga ItsABullet: oldy=accypos, then apply yvel and gravity. */
+    int32_t old_accypos = accypos;
+    int32_t y_delta = (int32_t)yvel * state->temp_frames;
+    if (grav != 0) {
+        int32_t grav_delta = (int32_t)grav * state->temp_frames;
+        y_delta += grav_delta;
+        int32_t new_yvel = (int32_t)yvel + grav_delta;
+        if (new_yvel > 10 * 256) new_yvel = 10 * 256;
+        if (new_yvel < -10 * 256) new_yvel = -10 * 256;
+        yvel = (int16_t)new_yvel;
+        SHOT_SET_YVEL(*obj, yvel);
+    }
+    accypos += y_delta;
+    SHOT_SET_ACCYPOS(*obj, accypos);
 
     /* MoveObject for wall collision */
     MoveContext ctx;
@@ -2395,6 +2407,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     ctx.oldz = bz;
     ctx.newx = new_bx;
     ctx.newz = new_bz;
+    ctx.oldy = old_accypos;
     ctx.newy = accypos - 5 * 128;
     ctx.thing_height = 10 * 128;
     ctx.step_up_val = 0;
@@ -2413,8 +2426,13 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     }
 
     if (new_bx != bx || new_bz != bz) {
-        move_object(&ctx, &state->level);
+        move_object_substepped(&ctx, &state->level);
     }
+
+    int32_t final_bx_fp = new_bx_fp;
+    int32_t final_bz_fp = new_bz_fp;
+    if (ctx.newx != new_bx) final_bx_fp = ((int32_t)ctx.newx << 16);
+    if (ctx.newz != new_bz) final_bz_fp = ((int32_t)ctx.newz << 16);
 
     obj->obj.in_top = ctx.stood_in_top;
 
@@ -2423,8 +2441,8 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         /* Reflection: already handled by simple negation for now.
          * Full reflection would use wallxsize/wallzsize/walllength
          * but that requires MoveObject to output wall normal. */
-        SHOT_SET_XVEL(*obj, (int16_t)(-xvel));
-        SHOT_SET_ZVEL(*obj, (int16_t)(-zvel));
+        SHOT_SET_XVEL(*obj, -xvel);
+        SHOT_SET_ZVEL(*obj, -zvel);
         if (flags & 2) {
             /* Friction on bounce */
             SHOT_SET_XVEL(*obj, SHOT_XVEL(*obj) >> 1);
@@ -2460,21 +2478,15 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         }
 
         /* Pop in place at impact position. */
-        if (state->level.object_points) {
-            uint8_t *pts = state->level.object_points + idx * 8;
-            obj_sw(pts, (int16_t)ctx.newx);
-            obj_sw(pts + 4, (int16_t)ctx.newz);
-        }
+        obj_sl(bullet_pts, (int32_t)ctx.newx << 16);
+        obj_sl(bullet_pts + 4, (int32_t)ctx.newz << 16);
         obj_sw(obj->raw + 4, (int16_t)(accypos >> 7));
         return;
     }
 
     /* Update position in ObjectPoints */
-    if (state->level.object_points) {
-        uint8_t *pts = state->level.object_points + idx * 8;
-        obj_sw(pts, (int16_t)ctx.newx);
-        obj_sw(pts + 4, (int16_t)ctx.newz);
-    }
+    obj_sl(bullet_pts, final_bx_fp);
+    obj_sl(bullet_pts + 4, final_bz_fp);
 
     /* Amiga ItsABullet: move.w (accypos>>7),4(a0). */
     obj_sw(obj->raw + 4, (int16_t)(accypos >> 7));
@@ -2496,10 +2508,18 @@ void object_handle_bullet(GameObject *obj, GameState *state)
 
     if (!state->level.object_data) return;
 
-    /* Bullet's collision box (Amiga: a3 = ColBoxTable + bullet_type*8) */
-    int bullet_type = (int)obj->obj.number;
-    if (bullet_type < 0 || bullet_type > 20) bullet_type = OBJ_NBR_BULLET;
-    int bullet_width = col_box_table[bullet_type].width;
+    int16_t xdiff = (int16_t)(ctx.newx - bx);
+    int16_t zdiff = (int16_t)(ctx.newz - bz);
+    int32_t diff_sq = (int32_t)xdiff * xdiff + (int32_t)zdiff * zdiff;
+    int16_t range = 1;
+    if (diff_sq > 0) {
+        int32_t r = calc_dist_euclidean((int32_t)xdiff, (int32_t)zdiff);
+        if (r < 1) r = 1;
+        if (r > 32767) r = 32767;
+        range = (int16_t)r;
+    }
+    int32_t sqr_edge = (int32_t)range + 40;
+    int64_t sqrnum = (int64_t)sqr_edge * (int64_t)sqr_edge;
 
     int check_idx = 0;
     while (1) {
@@ -2530,19 +2550,9 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             continue;
         }
 
-        /* Same floor (Amiga: objInTop(a0) eor StoodInTop; bne checkcol) */
-        if (obj->obj.in_top != target->obj.in_top) {
-            check_idx++;
-            continue;
-        }
-
-        /* Height check using collision box.
-         * raw[4] is (floor>>7)-world_h (sprite top); Amiga uses center, so use center = top + half_height. */
+        /* Height check (Anims.s: abs(target_y - bullet_y) <= half_height). */
         const CollisionBox *box = &col_box_table[tgt_type];
-        int16_t obj_y = (int16_t)(accypos >> 7);
-        int16_t tgt_top = obj_w(target->raw + 4);
-        int16_t tgt_center_y = (int16_t)((int32_t)tgt_top + box->half_height);
-        int16_t ydiff = obj_y - tgt_center_y;
+        int16_t ydiff = (int16_t)(obj_w(obj->raw + 4) - obj_w(target->raw + 4));
         if (ydiff < 0) ydiff = (int16_t)(-ydiff);
         if (ydiff > box->half_height) {
             check_idx++;
@@ -2553,31 +2563,34 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         int16_t tx, tz;
         get_object_pos(&state->level, OBJ_CID(target), &tx, &tz);
 
-        /* Amiga horizontal: at new position, max(|dx|,|dz|) - bullet_width <= target width */
-        int32_t adx = (int32_t)tx - (int32_t)ctx.newx;
-        int32_t adz = (int32_t)tz - (int32_t)ctx.newz;
-        if (adx < 0) adx = -adx;
-        if (adz < 0) adz = -adz;
-        int32_t max_d = (adx > adz) ? adx : adz;
-        if (max_d - (int32_t)bullet_width > (int32_t)box->width) {
+        int32_t old_dx = (int32_t)tx - (int32_t)bx;
+        int32_t old_dz = (int32_t)tz - (int32_t)bz;
+        int32_t new_dx = (int32_t)tx - (int32_t)ctx.newx;
+        int32_t new_dz = (int32_t)tz - (int32_t)ctx.newz;
+
+        int64_t cross = (int64_t)old_dx * (int64_t)zdiff - (int64_t)old_dz * (int64_t)xdiff;
+        if (cross < 0) cross = -cross;
+        int32_t perp_dist = (int32_t)(cross / range);
+        if (perp_dist > box->width) {
             check_idx++;
             continue;
         }
 
-        /* Amiga: bullet must have got closer (dist_new_sq <= dist_old_sq) */
-        int32_t dx_old = (int32_t)tx - (int32_t)bx;
-        int32_t dz_old = (int32_t)tz - (int32_t)bz;
-        int32_t dist_old_sq = dx_old * dx_old + dz_old * dz_old;
-        int32_t dist_new_sq = adx * adx + adz * adz;
-        if (dist_new_sq > dist_old_sq) {
+        int64_t dist_old_sq = (int64_t)old_dx * old_dx + (int64_t)old_dz * old_dz;
+        if (dist_old_sq > sqrnum) {
+            check_idx++;
+            continue;
+        }
+        int64_t dist_new_sq = (int64_t)new_dx * new_dx + (int64_t)new_dz * new_dz;
+        if (dist_new_sq > sqrnum) {
             check_idx++;
             continue;
         }
 
         /* HIT! Apply damage */
         NASTY_SET_DAMAGE(target, (int8_t)(NASTY_DAMAGE(*target) + SHOT_POWER(*obj)));
-        NASTY_SET_IMPACTX(target, SHOT_XVEL(*obj));
-        NASTY_SET_IMPACTZ(target, SHOT_ZVEL(*obj));
+        NASTY_SET_IMPACTX(target, SHOT_XVEL(*obj) >> 16);
+        NASTY_SET_IMPACTZ(target, SHOT_ZVEL(*obj) >> 16);
 
         /* Set bullet to popping */
         SHOT_STATUS(*obj) = 1;
@@ -3245,8 +3258,10 @@ void enemy_fire_at_player(GameObject *obj, GameState *state,
         plr_z += lead_z;
     }
 
-    /* Set up bullet */
+    /* Set up bullet (preserve slot CID, which indexes ObjectPoints). */
+    int16_t saved_cid = OBJ_CID(bullet);
     memset(bullet, 0, OBJECT_SIZE);
+    OBJ_SET_CID(bullet, saved_cid);
     OBJ_SET_ZONE(bullet, OBJ_ZONE(obj));
     bullet->obj.number = OBJ_NBR_BULLET;
 
@@ -3257,19 +3272,19 @@ void enemy_fire_at_player(GameObject *obj, GameState *state,
     hctx.oldz = obj_z;
     head_towards(&hctx, (int32_t)plr_x, (int32_t)plr_z, (int16_t)shot_speed);
 
-    int16_t xvel = (int16_t)(hctx.newx - obj_x);
-    int16_t zvel = (int16_t)(hctx.newz - obj_z);
+    int32_t xvel = hctx.newx - obj_x;
+    int32_t zvel = hctx.newz - obj_z;
 
     /* Copy bullet position to ObjectPoints */
     int bul_idx = (int)OBJ_CID(bullet);
     if (state->level.object_points && bul_idx >= 0) {
         uint8_t *pts = state->level.object_points + bul_idx * 8;
-        obj_sw(pts, (int16_t)hctx.newx);
-        obj_sw(pts + 4, (int16_t)hctx.newz);
+        obj_sl(pts, (int32_t)hctx.newx << 16);
+        obj_sl(pts + 4, (int32_t)hctx.newz << 16);
     }
 
-    SHOT_SET_XVEL(*bullet, xvel);
-    SHOT_SET_ZVEL(*bullet, zvel);
+    SHOT_SET_XVEL(*bullet, xvel << 16);
+    SHOT_SET_ZVEL(*bullet, zvel << 16);
     SHOT_POWER(*bullet) = (int8_t)shot_power;
     SHOT_SIZE(*bullet) = (int8_t)shot_type;
     SHOT_SET_LIFE(*bullet, 0);
@@ -3433,8 +3448,8 @@ static void spawn_blast_particles(GameState *state, int32_t x, int32_t z, int32_
             if (saved_cid >= 0 && state->level.object_points &&
                 saved_cid < state->level.num_object_points) {
                 uint8_t *pt = state->level.object_points + (uint32_t)saved_cid * 8u;
-                obj_sw(pt,     (int16_t)ctx.newx);
-                obj_sw(pt + 4, (int16_t)ctx.newz);
+                obj_sl(pt,     (int32_t)ctx.newx << 16);
+                obj_sl(pt + 4, (int32_t)ctx.newz << 16);
             }
         }
     }
@@ -3956,3 +3971,4 @@ void calc_plr2_in_line(GameState *state)
         plr2_obj_dists[i] = fwd;
     }
 }
+

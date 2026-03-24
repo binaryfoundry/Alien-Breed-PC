@@ -172,8 +172,8 @@ static inline void obj_sl(uint8_t *p, int32_t v) {
  * READ: SHOT_XVEL(o) where o is a GameObject value/ref
  * WRITE: SHOT_SET_XVEL(o, v)
  * ----------------------------------------------------------------------- */
-#define SHOT_XVEL(o)      obj_w((o).raw + 18)   /* td[0]  abs 18 */
-#define SHOT_ZVEL(o)      obj_w((o).raw + 22)   /* td[4]  abs 22 */
+#define SHOT_XVEL(o)      obj_l((o).raw + 18)   /* td[0]  abs 18 */
+#define SHOT_ZVEL(o)      obj_l((o).raw + 22)   /* td[4]  abs 22 */
 #define SHOT_POWER(o)     (*(int8_t*)&(o).raw[28])  /* td[10] byte - OK */
 #define SHOT_ANIM(o)      (*(uint8_t*)&(o).raw[52]) /* td[34] byte: shotanim counter (Defs.i shotanim) */
 #define SHOT_STATUS(o)    (*(int8_t*)&(o).raw[30])  /* td[12] byte - OK */
@@ -184,8 +184,8 @@ static inline void obj_sl(uint8_t *p, int32_t v) {
 #define SHOT_LIFE(o)      obj_w((o).raw + 58)   /* td[40] abs 58 */
 #define SHOT_FLAGS(o)     obj_w((o).raw + 60)   /* td[42] abs 60 */
 
-#define SHOT_SET_XVEL(o, v)    obj_sw((o).raw + 18, (int16_t)(v))
-#define SHOT_SET_ZVEL(o, v)    obj_sw((o).raw + 22, (int16_t)(v))
+#define SHOT_SET_XVEL(o, v)    obj_sl((o).raw + 18, (int32_t)(v))
+#define SHOT_SET_ZVEL(o, v)    obj_sl((o).raw + 22, (int32_t)(v))
 #define SHOT_SET_YVEL(o, v)    obj_sw((o).raw + 42, (int16_t)(v))
 #define SHOT_SET_ACCYPOS(o, v) obj_sl((o).raw + 44, (int32_t)(v))
 #define SHOT_SET_GRAV(o, v)    obj_sw((o).raw + 54, (int16_t)(v))

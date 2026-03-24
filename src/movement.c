@@ -990,8 +990,8 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
         return check_wall_line_otherpass_asm(ctx, fline, lx, lz, lxlen, lzlen, a4, a6, xdiff, zdiff);
     }
 
-    /* Amiga checkwalls also uses integer wall math; keep extlen pass on that path too. */
-    if (pass_is_walls && ctx->extlen != 0) {
+    /* Amiga checkwalls uses integer wall math for all movers, including extlen==0 bullets. */
+    if (pass_is_walls) {
         return check_wall_line_walls_asm(ctx, fline, lx, lz, lxlen, lzlen, line_len,
             a4, a6, has_target_zone ? target_zone : NULL, xdiff, zdiff);
     }
@@ -1260,6 +1260,13 @@ void move_object_substepped(MoveContext* ctx, LevelState* level)
         if (step.hitwall) {
             any_hit = 1;
             hit_y = step.wall_hit_y;
+            if (step.exitfirst) {
+                cur_x = step.newx;
+                cur_z = step.newz;
+                cur_room = step.objroom;
+                cur_top = step.stood_in_top;
+                break;
+            }
         }
         cur_x = step.newx;
         cur_z = step.newz;

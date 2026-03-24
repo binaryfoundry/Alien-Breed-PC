@@ -1620,7 +1620,9 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
                           closest_idx * OBJECT_SIZE);
         int16_t target_y = (int16_t)((tgt->raw[4] << 8) | tgt->raw[5]);
         int16_t player_y = (int16_t)(plr->p_yoff >> 7);
-        int32_t target_ydiff = target_y - player_y + 18 * 256;
+        int32_t target_ydiff = (int32_t)target_y - player_y;
+        target_ydiff -= plr->p_height;
+        target_ydiff += 18 * 256;
 
         int shift = gun->bullet_speed;
         if (shift < 0) shift = 0;
@@ -1704,8 +1706,8 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
         obj_sw(bullet->raw, saved_cid);
         if (saved_cid >= 0 && state->level.object_points) {
             uint8_t *pt = state->level.object_points + (int)saved_cid * 8;
-            obj_sw(pt,     spawn_x);
-            obj_sw(pt + 4, spawn_z);
+            obj_sl(pt,     (int32_t)spawn_x << 16);
+            obj_sl(pt + 4, (int32_t)spawn_z << 16);
         }
 
         OBJ_SET_ZONE(bullet, plr->zone);
@@ -1727,10 +1729,18 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
         bullet->raw[15] = bullet_fly_src_rows[gun_idx]; /* src rows */
         SHOT_ANIM(*bullet) = 0;
 
-        int16_t bspd = gun->bullet_speed;
-        SHOT_SET_XVEL(*bullet, (int16_t)((sin_val * bspd) >> 14));
-        SHOT_SET_ZVEL(*bullet, (int16_t)((cos_val * bspd) >> 14));
-        SHOT_SET_YVEL(*bullet, bulyspd + gun->bullet_y_offset);
+        int shift = gun->bullet_speed;
+        if (shift < 0) shift = 0;
+        if (shift > 15) shift = 15;
+        int32_t xvel = ((int32_t)sin_val) << shift;
+        int32_t zvel = ((int32_t)cos_val) << shift;
+        SHOT_SET_XVEL(*bullet, xvel);
+        SHOT_SET_ZVEL(*bullet, zvel);
+        int16_t final_yvel = bulyspd;
+        if (final_yvel > 20) final_yvel = 20;
+        if (final_yvel < -20) final_yvel = -20;
+        final_yvel = (int16_t)(final_yvel + gun->bullet_y_offset);
+        SHOT_SET_YVEL(*bullet, final_yvel);
         SHOT_POWER(*bullet) = gun->shot_power;
         SHOT_STATUS(*bullet) = 0;
         SHOT_SET_LIFE(*bullet, 0);
