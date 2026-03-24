@@ -3552,8 +3552,7 @@ static void spawn_blast_particles(GameState *state, int32_t x, int32_t z, int32_
     if (!state) return;
 
     uint8_t *shot_pool = state->level.player_shot_data;
-    if (!shot_pool) shot_pool = state->level.nasty_shot_data;
-    if (!shot_pool) return;
+    if (!shot_pool) return; /* blast particles only use player_shot_data; nasty_shot_data is reserved for gibs */
 
     int zone_slots = level_zone_slot_count(&state->level);
     int src_zone = level_connect_to_zone_index(&state->level, zone);
