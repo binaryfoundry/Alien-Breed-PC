@@ -755,88 +755,101 @@ static void find_room(MoveContext* ctx, LevelState* level,
 
     {
         int ps = ctx->pos_shift;
-        int restart_count = 0;
+        int16_t list_off = read_be16(zone_data + ZONE_EXIT_LIST);
+        const uint8_t* list_ptr = zone_data + list_off;
 
-    find_room_restart:
-        if (restart_count++ > 16) return;
+        for (int i = 0; i < 128; i++) {
+            int16_t entry = read_be16(list_ptr + i * 2);
+            if (entry < 0) break; /* -1 ends exit portion */
+            if (entry >= level->num_floor_lines) continue;
 
-        {
-            int16_t list_off = read_be16(zone_data + ZONE_EXIT_LIST);
-            const uint8_t* list_ptr = zone_data + list_off;
+            {
+                const uint8_t* fline = level->floor_lines + entry * FLINE_SIZE;
+                int16_t connect = (int16_t)read_be16(fline + FLINE_CONNECT);
+                int connect_index = level_connect_to_zone_index(level, connect);
+                if (connect_index < 0) continue;
+                if (connect_index >= zone_slots) continue;
 
-            for (int i = 0; i < 128; i++) {
-                int16_t entry = read_be16(list_ptr + i * 2);
-                if (entry < 0) break; /* -1 ends exit portion */
-                if (entry >= level->num_floor_lines) continue;
+                int32_t lx = (int32_t)(int16_t)read_be16(fline + FLINE_X) << ps;
+                int32_t lz = (int32_t)(int16_t)read_be16(fline + FLINE_Z) << ps;
+                int16_t lxlen = (int16_t)read_be16(fline + FLINE_XLEN);
+                int16_t lzlen = (int16_t)read_be16(fline + FLINE_ZLEN);
+
+                int64_t new_cross = (int64_t)(ctx->newx - lx) * lzlen -
+                    (int64_t)(ctx->newz - lz) * lxlen;
+                if (new_cross >= 0) continue;
 
                 {
-                    const uint8_t* fline = level->floor_lines + entry * FLINE_SIZE;
-                    int16_t connect = (int16_t)read_be16(fline + FLINE_CONNECT);
-                    int connect_index = level_connect_to_zone_index(level, connect);
-                    if (connect_index < 0) continue;
-                    if (connect_index >= zone_slots) continue;
+                    int32_t wx = (int32_t)lxlen << ps;
+                    int32_t wz = (int32_t)lzlen << ps;
+                    if (!path_hits_segment(ctx->oldx, ctx->oldz, ctx->newx, ctx->newz, lx, lz, wx, wz)) {
+                        continue;
+                    }
+                }
 
-                    int32_t lx = (int32_t)(int16_t)read_be16(fline + FLINE_X) << ps;
-                    int32_t lz = (int32_t)(int16_t)read_be16(fline + FLINE_Z) << ps;
-                    int16_t lxlen = (int16_t)read_be16(fline + FLINE_XLEN);
-                    int16_t lzlen = (int16_t)read_be16(fline + FLINE_ZLEN);
-
-                    int64_t new_cross = (int64_t)(ctx->newx - lx) * lzlen -
-                        (int64_t)(ctx->newz - lz) * lxlen;
-                    if (new_cross >= 0) continue;
-
+                {
+                    int32_t target_zone_off = read_be32(level->zone_adds + (size_t)connect_index * 4);
+                    const uint8_t* target_zone = level->data + target_zone_off;
+                    int8_t target_in_top = 0;
                     {
-                        int32_t wx = (int32_t)lxlen << ps;
-                        int32_t wz = (int32_t)lzlen << ps;
-                        if (!path_hits_segment(ctx->oldx, ctx->oldz, ctx->newx, ctx->newz, lx, lz, wx, wz)) {
-                            continue;
+                        /* Amiga find_room computes crossing height and sets StoodInTop
+                         * from target lower-roof compare:
+                         *   cmp.l ToZoneRoof(a4),d4 ; slt StoodInTop */
+                        int32_t line_len = (int32_t)(int16_t)read_be16(fline + FLINE_LENGTH);
+                        int32_t cross_y = ctx->newy;
+                        if (line_len != 0) {
+                            int64_t old_cross = (int64_t)(ctx->oldx - lx) * lzlen -
+                                                (int64_t)(ctx->oldz - lz) * lxlen;
+                            int64_t new_d = (int64_t)new_cross / (int64_t)line_len;
+                            int64_t old_d = old_cross / (int64_t)line_len;
+                            int64_t denom = old_d - new_d;
+                            if (denom <= 0) denom = 1;
+
+                            {
+                                int64_t dy = (int64_t)ctx->newy - (int64_t)ctx->oldy;
+                                int64_t cy = (int64_t)ctx->newy + (dy * new_d) / denom;
+                                if (cy < (int64_t)INT32_MIN) cy = (int64_t)INT32_MIN;
+                                if (cy > (int64_t)INT32_MAX) cy = (int64_t)INT32_MAX;
+                                cross_y = (int32_t)cy;
+                            }
+                        }
+
+                        {
+                            int32_t target_roof = read_be32(target_zone + ZONE_ROOF_HEIGHT);
+                            target_in_top = (cross_y < target_roof) ? 1 : 0;
                         }
                     }
 
                     {
-                        int32_t target_zone_off = read_be32(level->zone_adds + (size_t)connect_index * 4);
-                        const uint8_t* target_zone = level->data + target_zone_off;
-
-                        int8_t target_in_top = 0;
-                        /* Amiga find_room path does not reject transitions by step/height.
-                         * Keep in_top classification when possible, but do not gate crossing. */
-                        (void)transition_height_ok_zone(ctx, ctx->newy, target_zone, &target_in_top);
-
-                        {
-                            uint8_t* target_room = (uint8_t*)(level->data + target_zone_off);
-                            if (ctx->no_transition_back && target_room == ctx->no_transition_back) {
-                                if (move_debug_enabled()) {
-                                    int dbg_type = -1;
-                                    if (move_debug_should_log(ctx, level, &dbg_type)) {
-                                        int cur_zone = level_zone_index_from_room_ptr(level, zone_data);
-                                        printf("[MOVEDBG] transition_rejected_no_back cid=%d type=%d line=%d zone=%d->%d pos=(%d,%d) y=%d\n",
-                                               (int)ctx->coll_id, dbg_type, (int)entry, cur_zone, connect_index,
-                                               (int)ctx->newx, (int)ctx->newz, (int)ctx->newy);
-                                    }
-                                }
-                                continue;
-                            }
-
+                        uint8_t* target_room = (uint8_t*)(level->data + target_zone_off);
+                        if (ctx->no_transition_back && target_room == ctx->no_transition_back) {
                             if (move_debug_enabled()) {
                                 int dbg_type = -1;
                                 if (move_debug_should_log(ctx, level, &dbg_type)) {
                                     int cur_zone = level_zone_index_from_room_ptr(level, zone_data);
-                                    printf("[MOVEDBG] transition cid=%d type=%d line=%d zone=%d->%d pos=(%d,%d) y=%d in_top=%d\n",
+                                    printf("[MOVEDBG] transition_rejected_no_back cid=%d type=%d line=%d zone=%d->%d pos=(%d,%d) y=%d\n",
                                            (int)ctx->coll_id, dbg_type, (int)entry, cur_zone, connect_index,
-                                           (int)ctx->newx, (int)ctx->newz, (int)ctx->newy,
-                                           (int)target_in_top);
+                                           (int)ctx->newx, (int)ctx->newz, (int)ctx->newy);
                                 }
                             }
-
-                            ctx->objroom = target_room;
-                            ctx->stood_in_top = target_in_top;
-                            zone_data = target_zone;
-                            *zone_data_ptr = target_zone;
-
-                            ctx->oldx = ctx->newx;
-                            ctx->oldz = ctx->newz;
-                            goto find_room_restart;
+                            continue;
                         }
+
+                        if (move_debug_enabled()) {
+                            int dbg_type = -1;
+                            if (move_debug_should_log(ctx, level, &dbg_type)) {
+                                int cur_zone = level_zone_index_from_room_ptr(level, zone_data);
+                                printf("[MOVEDBG] transition cid=%d type=%d line=%d zone=%d->%d pos=(%d,%d) y=%d in_top=%d\n",
+                                       (int)ctx->coll_id, dbg_type, (int)entry, cur_zone, connect_index,
+                                       (int)ctx->newx, (int)ctx->newz, (int)ctx->newy,
+                                       (int)target_in_top);
+                            }
+                        }
+
+                        ctx->objroom = target_room;
+                        ctx->stood_in_top = target_in_top;
+                        *zone_data_ptr = target_zone;
+                        return;
                     }
                 }
             }
@@ -938,8 +951,7 @@ void move_object(MoveContext* ctx, LevelState* level)
                     if (total_iterations >= max_total) goto phase3;
 
                     int16_t entry = read_be16(list_ptr + i * 2);
-                    if (entry == -2) break;
-                    if (entry < 0) continue; /* -1 separator */
+                    if (entry < 0) break; /* Amiga checkwalls: stop at first negative */
                     if (entry >= level->num_floor_lines) continue;
 
                     {
@@ -948,6 +960,35 @@ void move_object(MoveContext* ctx, LevelState* level)
 
                         if (result == 2) goto restart_walls;
                         if (result == 3) goto phase3;
+                    }
+                }
+            }
+
+            if (ctx->extlen != 0) {
+            restart_other_walls:
+                if (total_iterations >= max_total) goto phase3;
+
+                {
+                    int16_t list_off = read_be16(zone_data + ZONE_EXIT_LIST);
+                    const uint8_t* list_ptr = zone_data + list_off;
+
+                    for (int i = 0; i < 128; i++, total_iterations++) {
+                        if (total_iterations >= max_total) goto phase3;
+
+                        int16_t entry = read_be16(list_ptr + i * 2);
+                        if (entry < 0) {
+                            if (entry == -2) break; /* Amiga checkotherwalls terminator */
+                            continue;               /* -1 separator */
+                        }
+                        if (entry >= level->num_floor_lines) continue;
+
+                        {
+                            const uint8_t* fline = level->floor_lines + entry * FLINE_SIZE;
+                            int result = check_wall_line(ctx, level, fline, zone_data, &xdiff, &zdiff);
+
+                            if (result == 2) goto restart_other_walls;
+                            if (result == 3) goto phase3;
+                        }
                     }
                 }
             }
