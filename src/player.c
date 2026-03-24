@@ -40,8 +40,9 @@
 #define STEP_DOWN_DEFAULT   0x1000000    /* AB3DI.s step-down */
 #define INSTANT_TRACE_MAX_ITERS 1024
 
-/* Gun selection key -> gun index mapping (from GUNVALS in Plr1Control.s) */
-static const int8_t gun_key_map[6] = { 0, 7, 1, 2, 3, 4 };
+/* Gun selection key -> gun index mapping (from GUNVALS in Plr1Control.s):
+ * key1 pistol, key2 shotgun, key3 plasma, key4 grenade, key5 rocket. */
+static const int8_t gun_key_map[5] = { 0, 7, 1, 4, 2 };
 
 static GameObject *find_free_player_shot_slot(uint8_t *shots, int16_t *saved_cid)
 {
