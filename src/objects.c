@@ -315,6 +315,57 @@ static void enemy_apply_death_outcome(GameObject *obj, const EnemyParams *params
     }
 }
 
+/* Eyeball soft death: keep the corpse in-world and settle it toward floor height.
+ * This follows the Amiga floating-enemy soft-kill pattern (frame 18+ instead of
+ * immediate object removal). */
+static void enemy_update_eyeball_soft_dead(GameObject *obj,
+                                           const EnemyParams *params,
+                                           GameState *state)
+{
+    if (!obj || !params || !state) return;
+    if (OBJ_ZONE(obj) < 0) return;
+
+    NASTY_LIVES(*obj) = 0;
+    NASTY_DAMAGE(*obj) = 0;
+
+    int zone_slots = level_zone_slot_count(&state->level);
+    int zone_idx = level_connect_to_zone_index(&state->level, OBJ_ZONE(obj));
+    if (zone_idx < 0 && OBJ_ZONE(obj) >= 0 && OBJ_ZONE(obj) < zone_slots)
+        zone_idx = OBJ_ZONE(obj);
+    if (zone_idx < 0 || zone_idx >= zone_slots ||
+        !state->level.zone_adds || !state->level.data) {
+        return;
+    }
+
+    int32_t zoff = (int32_t)be32(state->level.zone_adds + (uint32_t)zone_idx * 4u);
+    const uint8_t *zd = state->level.data + zoff;
+    int32_t floor_h = be32(zd + (obj->obj.in_top ? ZONE_OFF_UPPER_FLOOR : ZONE_OFF_FLOOR));
+    int16_t floor_y = (int16_t)((floor_h >> 7) - params->nas_height);
+
+    int16_t y = obj_w(obj->raw + 4);
+    if (y < floor_y) {
+        int16_t dy = (int16_t)(state->temp_frames << 4);
+        y = (int16_t)(y + dy);
+        if (y > floor_y) y = floor_y;
+        obj_sw(obj->raw + 4, y);
+
+        int16_t fourth = OBJ_TD_W(obj, ENEMY_FOURTH_TIMER_OFF);
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, (int16_t)(fourth + dy));
+
+        int16_t third = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
+        third = (int16_t)(third - state->temp_frames);
+        if (third < 0) {
+            third = 20;
+            int16_t frame = OBJ_DEADL(obj);
+            if (frame < 19) OBJ_SET_DEADL(obj, (int16_t)(frame + 1));
+        }
+        OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, third);
+    } else {
+        obj_sw(obj->raw + 4, floor_y);
+        if (OBJ_DEADL(obj) < 20) OBJ_SET_DEADL(obj, 20);
+    }
+}
+
 /* NormalAlien.s / FlameMarine.s: splat #14@400 if damage>1, scream if death anim, instant if huge hit. */
 static void enemy_death_marine_like(GameObject *obj, const EnemyParams *params,
                                     GameState *state, int8_t damage,
@@ -426,7 +477,15 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
             } else {
                 if (params->scream_sound >= 0)
                     audio_play_sample(params->scream_sound, amiga_noisevol_to_pc(200));
-                enemy_apply_death_outcome(obj, params, false);
+                if (obj->obj.number == OBJ_NBR_EYEBALL) {
+                    /* Eyeball soft kill: keep corpse and hand over to dead-state update. */
+                    NASTY_LIVES(*obj) = 0;
+                    OBJ_SET_DEADL(obj, 18);
+                    OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 30);
+                    OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 0);
+                } else {
+                    enemy_apply_death_outcome(obj, params, false);
+                }
             }
             return true;
 
@@ -1762,7 +1821,12 @@ void object_handle_flying_nasty(GameObject *obj, GameState *state)
     if (enemy_check_damage(obj, params, state)) return;
 
     int8_t lives = NASTY_LIVES(*obj);
-    if (lives <= 0) return;
+    if (lives <= 0) {
+        if (obj->obj.number == OBJ_NBR_EYEBALL) {
+            enemy_update_eyeball_soft_dead(obj, params, state);
+        }
+        return;
+    }
 
     /* Vertical movement (bounce between floor and ceiling) */
     /* Reusing type_data fields for Y velocity */
