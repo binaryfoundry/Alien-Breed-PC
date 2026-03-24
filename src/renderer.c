@@ -228,6 +228,7 @@ static const uint16_t obj_scale_cols[] = {
 #define GUN_COLS 96
 #define GUN_STRIDE (GUN_COLS * 4)
 #define GUN_LINES 58
+#define ROCKET_LAUNCHER_GUN_IDX 2
 static const uint32_t gun_ptr_frame_offsets[32] = {
     GUN_STRIDE * 20, GUN_STRIDE * 21, GUN_STRIDE * 22, GUN_STRIDE * 23, /* gun 0 */
     GUN_STRIDE * 4,  GUN_STRIDE * 5,  GUN_STRIDE * 6,  GUN_STRIDE * 7,  /* gun 1 */
@@ -1647,6 +1648,10 @@ void renderer_draw_gun(GameState *state)
     int gy = rh - gun_h_draw;
     if (gy < 0) gy = 0;
     int gx = (rw - gun_w_draw) / 2;
+    if (gun_type == ROCKET_LAUNCHER_GUN_IDX) {
+        /* Port quirk: rocket launcher overlay is anchored to the right edge. */
+        gx = rw - gun_w_draw;
+    }
 
     /* Draw from loaded gun data (newgunsinhand.wad + .ptr + .pal) if present */
     const uint8_t *gun_wad = g_renderer.gun_wad;
