@@ -10,6 +10,7 @@
 #include "renderer.h"
 #include <SDL.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* -----------------------------------------------------------------------
@@ -18,19 +19,58 @@
 static SDL_Window   *g_window   = NULL;
 static SDL_Renderer *g_sdl_ren  = NULL;
 static SDL_Texture  *g_texture  = NULL;
+static int g_present_width = 0;
+static int g_present_height = 0;
+static int g_render_target_w = RENDER_WIDTH;
+static int g_render_target_h = RENDER_HEIGHT;
+static int g_use_fixed_renderer_size = 0;
 
 /* Window size = framebuffer size for 1:1 pixels (no scaling). */
 #define WINDOW_W  RENDER_WIDTH
 #define WINDOW_H  RENDER_HEIGHT
 
 #ifdef AB3D_RELEASE
-/* Release: exclusive fullscreen at 720p (not desktop / borderless resolution). */
-#define AB3D_RELEASE_FS_W 1280
-#define AB3D_RELEASE_FS_H 720
+/* Release: default renderer target (configurable via AB3D_RENDER_RES). */
+#define AB3D_RELEASE_DEFAULT_W 1280
+#define AB3D_RELEASE_DEFAULT_H 720
+static int s_release_render_w = AB3D_RELEASE_DEFAULT_W;
+static int s_release_render_h = AB3D_RELEASE_DEFAULT_H;
+static int read_release_resolution(void)
+{
+    const char *env = getenv("AB3D_RENDER_RES");
+    if (!env) return 0;
+    int w = 0, h = 0;
+    if (sscanf(env, "%dx%d", &w, &h) == 2) {
+        if (w >= 96 && h >= 80) {
+            s_release_render_w = w;
+            s_release_render_h = h;
+            return 1;
+        }
+    }
+    return 0;
+}
 #endif
 
 /* Legacy palette no longer needed - colors come from the .wad LUT data
  * and are written directly to the rgb_buffer as ARGB8888 pixels. */
+
+/* -----------------------------------------------------------------------
+ * Renderer scaling helper
+ * ----------------------------------------------------------------------- */
+static void display_set_renderer_target_size(int w, int h)
+{
+    if (w < 1 || h < 1) return;
+    printf("[DISPLAY] renderer target: %dx%d\n", w, h);
+    renderer_resize(w, h);
+    renderer_set_present_size(w, h);
+    g_render_target_w = w;
+    g_render_target_h = h;
+    if (g_texture) SDL_DestroyTexture(g_texture);
+    g_texture = SDL_CreateTexture(g_sdl_ren,
+        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+        g_render_target_w, g_render_target_h);
+    if (g_texture) SDL_SetTextureScaleMode(g_texture, SDL_ScaleModeNearest);
+}
 
 /* -----------------------------------------------------------------------
  * Lifecycle
@@ -38,9 +78,8 @@ static SDL_Texture  *g_texture  = NULL;
 void display_init(void)
 {
 #ifdef AB3D_RELEASE
-    /* Actual fullscreen mode dimensions (renderer buffer must match). */
-    int release_fs_w = AB3D_RELEASE_FS_W;
-    int release_fs_h = AB3D_RELEASE_FS_H;
+    read_release_resolution();
+    g_use_fixed_renderer_size = 1;
 #endif
     printf("[DISPLAY] SDL2 init\n");
 
@@ -52,17 +91,18 @@ void display_init(void)
     renderer_init();
     int init_w = renderer_get_width();
     int init_h = renderer_get_height();
+    int window_w = init_w;
+    int window_h = init_h;
 
 #ifdef AB3D_RELEASE
-    /* Release: 720p window, then exclusive fullscreen at that resolution */
-    init_w = AB3D_RELEASE_FS_W;
-    init_h = AB3D_RELEASE_FS_H;
+    window_w = s_release_render_w;
+    window_h = s_release_render_h;
 #endif
 
     g_window = SDL_CreateWindow(
         "Alien Breed 3D I",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        init_w, init_h,
+        window_w, window_h,
         SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
     );
     if (!g_window) {
@@ -70,27 +110,13 @@ void display_init(void)
         return;
     }
 
+    g_present_width = window_w;
+    g_present_height = window_h;
+
 #ifdef AB3D_RELEASE
-    {
-        SDL_DisplayMode want;
-        SDL_zero(want);
-        want.w = AB3D_RELEASE_FS_W;
-        want.h = AB3D_RELEASE_FS_H;
-        /* Pick nearest supported mode (e.g. exact 1280x720 or closest refresh). */
-        SDL_DisplayMode closest;
-        const SDL_DisplayMode *picked = SDL_GetClosestDisplayMode(0, &want, &closest);
-        if (picked) {
-            release_fs_w = picked->w;
-            release_fs_h = picked->h;
-            if (SDL_SetWindowDisplayMode(g_window, picked) != 0) {
-                printf("[DISPLAY] SDL_SetWindowDisplayMode failed: %s\n", SDL_GetError());
-            }
-        }
+    if (SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP) != 0) {
+        printf("[DISPLAY] SDL_SetWindowFullscreenDesktop failed: %s\n", SDL_GetError());
     }
-    if (SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN) != 0) {
-        printf("[DISPLAY] SDL_SetWindowFullscreen failed: %s\n", SDL_GetError());
-    }
-    /* Let the window complete fullscreen transition before querying size */
     SDL_PumpEvents();
 #endif
 
@@ -101,51 +127,46 @@ void display_init(void)
         return;
     }
 
-    /* Size the software renderer to match the drawable.
-     * In Release exclusive fullscreen, SDL_GetRendererOutputSize right after
-     * SDL_CreateRenderer often still reports the old windowed framebuffer size
-     * (e.g. 768x640); use the display mode we selected instead. */
-#ifdef AB3D_RELEASE
-    int out_w = release_fs_w;
-    int out_h = release_fs_h;
-    if (out_w < 96 || out_h < 80) {
-        out_w = AB3D_RELEASE_FS_W;
-        out_h = AB3D_RELEASE_FS_H;
+    if (g_use_fixed_renderer_size) {
+        display_set_renderer_target_size(s_release_render_w, s_release_render_h);
+    } else {
+        int out_w = init_w;
+        int out_h = init_h;
+        if (SDL_GetRendererOutputSize(g_sdl_ren, &out_w, &out_h) != 0) {
+            out_w = init_w;
+            out_h = init_h;
+        }
+        if (out_w < 96) out_w = 96;
+        if (out_h < 80) out_h = 80;
+        display_set_renderer_target_size(out_w, out_h);
     }
-#else
-    int out_w = init_w, out_h = init_h;
-    if (SDL_GetRendererOutputSize(g_sdl_ren, &out_w, &out_h) != 0) {
-        out_w = init_w;
-        out_h = init_h;
-    }
-#endif
-    if (out_w < 96) out_w = 96;
-    if (out_h < 80) out_h = 80;
-    display_on_resize(out_w, out_h);
 
-    printf("[DISPLAY] SDL2 ready: %dx%d (resizable)\n", out_w, out_h);
+    printf("[DISPLAY] SDL2 ready: %dx%d (resizable)\n", window_w, window_h);
 }
 
 void display_on_resize(int w, int h)
 {
     if (w < 1 || h < 1) return;
     printf("[DISPLAY] resize: %dx%d\n", w, h);
-    renderer_resize(w, h);
-    renderer_set_present_size(w, h);
-    if (g_texture) SDL_DestroyTexture(g_texture);
-    g_texture = SDL_CreateTexture(g_sdl_ren,
-        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-        renderer_get_width(), renderer_get_height());
-    if (g_texture) SDL_SetTextureScaleMode(g_texture, SDL_ScaleModeNearest);
+    if (g_use_fixed_renderer_size) {
+        renderer_set_present_size(w, h);
+        g_present_width = w;
+        g_present_height = h;
+        return;
+    }
+    display_set_renderer_target_size(w, h);
+    g_present_width = w;
+    g_present_height = h;
 }
 
 void display_handle_resize(void)
 {
     if (!g_sdl_ren) return;
+    if (g_use_fixed_renderer_size) return;
     int out_w = 0, out_h = 0;
 #ifdef AB3D_RELEASE
-    /* Same as display_init: output size query can be wrong in exclusive fullscreen. */
-    if (g_window && (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0) {
+    /* Same as display_init: output size query can be wrong in fullscreen desktop. */
+    if (g_window && (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0) {
         SDL_DisplayMode dm;
         if (SDL_GetWindowDisplayMode(g_window, &dm) == 0 && dm.w >= 96 && dm.h >= 80) {
             out_w = dm.w;
