@@ -53,6 +53,12 @@
 #define ZONE_EXIT_LIST          32
 #define ZONE_WALL_LIST          28
 
+enum {
+    MOVE_PASS_WALLS = 1,  /* Amiga checkwalls */
+    MOVE_PASS_OTHER = 2,  /* Amiga checkotherwalls */
+    MOVE_PASS_BRUTE = 3
+};
+
 /* -----------------------------------------------------------------------
  * Helper: read big-endian int16/int32 from level data
  * ----------------------------------------------------------------------- */
@@ -214,6 +220,286 @@ static bool transition_height_ok_zone(const MoveContext *ctx, int32_t mover_y,
     }
 
     return false;
+}
+
+static void mark_floorline_touch_flag(const MoveContext *ctx, const uint8_t *fline);
+
+static void get_floorline_shift_offsets(const MoveContext *ctx, const uint8_t *fline,
+    int32_t *out_a4, int32_t *out_a6)
+{
+    int32_t a4 = 0;
+    int32_t a6 = 0;
+
+    if (ctx && fline) {
+        int8_t shift = (int8_t)ctx->awayfromwall;
+        if (shift >= 0) {
+            a4 = (int32_t)(int8_t)fline[FLINE_NORMAL + 0];
+            a6 = (int32_t)(int8_t)fline[FLINE_NORMAL + 1];
+            if (shift > 0) {
+                if (shift > 15) shift = 15;
+                a4 <<= shift;
+                a6 <<= shift;
+            }
+        }
+    }
+
+    if (out_a4) *out_a4 = a4;
+    if (out_a6) *out_a6 = a6;
+}
+
+static int32_t compute_crossing_height_asm(const MoveContext *ctx,
+    int64_t cross_new, int64_t cross_old, int32_t line_len_plus_ext)
+{
+    int64_t hit_y = (int64_t)ctx->newy;
+
+    if (line_len_plus_ext != 0) {
+        int64_t new_d = cross_new / (int64_t)line_len_plus_ext;
+        int64_t old_d = cross_old / (int64_t)line_len_plus_ext;
+        int64_t denom = old_d - new_d;
+        if (denom <= 0) denom = 1;
+
+        {
+            int64_t dy = (int64_t)ctx->newy - (int64_t)ctx->oldy;
+            if (dy != 0) {
+                hit_y = (int64_t)ctx->newy + (dy / denom) * new_d;
+            }
+        }
+    }
+
+    if (hit_y < (int64_t)INT32_MIN) hit_y = (int64_t)INT32_MIN;
+    if (hit_y > (int64_t)INT32_MAX) hit_y = (int64_t)INT32_MAX;
+    return (int32_t)hit_y;
+}
+
+static bool pass1_vertical_hit_asm(const MoveContext *ctx, const uint8_t *target_zone, int32_t hit_y)
+{
+    int32_t lower_floor = read_be32(target_zone + ZONE_FLOOR_HEIGHT);
+    int32_t lower_roof = read_be32(target_zone + ZONE_ROOF_HEIGHT);
+    int32_t upper_floor = read_be32(target_zone + ZONE_UPPER_FLOOR);
+    int32_t upper_roof = read_be32(target_zone + ZONE_UPPER_ROOF);
+
+    int64_t d6 = (int64_t)hit_y + (int64_t)ctx->thing_height - (int64_t)ctx->step_up_val;
+
+    if (d6 >= (int64_t)lower_floor) return true;
+    if ((int64_t)hit_y > (int64_t)lower_roof) return false;
+    if ((int64_t)hit_y < (int64_t)upper_roof) return true;
+    if (d6 < (int64_t)upper_floor) return false;
+    return true;
+}
+
+static bool pass1_exit_is_nonblocking(const MoveContext *ctx, const uint8_t *target_zone,
+    int32_t lx, int32_t lz, int16_t lxlen, int16_t lzlen, int32_t a4, int32_t a6,
+    int32_t orig_newx, int32_t orig_newz, int32_t line_len)
+{
+    int64_t dx = (int64_t)lxlen - (int64_t)a4 - (int64_t)a6;
+    int64_t dz = (int64_t)lzlen + (int64_t)a4 - (int64_t)a6;
+
+    int64_t new_rel_x = (int64_t)orig_newx - (int64_t)lx - (int64_t)a4;
+    int64_t new_rel_z = (int64_t)orig_newz - (int64_t)lz - (int64_t)a6;
+    int64_t old_rel_x = (int64_t)ctx->oldx - (int64_t)lx - (int64_t)a4;
+    int64_t old_rel_z = (int64_t)ctx->oldz - (int64_t)lz - (int64_t)a6;
+
+    int64_t cross_new = new_rel_x * dz - new_rel_z * dx;
+    int64_t cross_old = old_rel_x * dz - old_rel_z * dx;
+
+    /* Same side as Amiga checkwalls -> not a blocking crossing. */
+    if (cross_new > 0) return true;
+
+    {
+        int32_t hit_y = compute_crossing_height_asm(ctx, cross_new, cross_old, line_len + ctx->extlen);
+        return !pass1_vertical_hit_asm(ctx, target_zone, hit_y);
+    }
+}
+
+static int check_wall_line_otherpass_asm(MoveContext *ctx, const uint8_t *fline,
+    int32_t lx, int32_t lz, int16_t lxlen, int16_t lzlen, int32_t a4, int32_t a6,
+    int32_t *xdiff, int32_t *zdiff)
+{
+    int16_t sx = (int16_t)ctx->newx;
+    int16_t sz = (int16_t)ctx->newz;
+    int16_t ox = (int16_t)ctx->oldx;
+    int16_t oz = (int16_t)ctx->oldz;
+    int16_t lxw = (int16_t)lx;
+    int16_t lzw = (int16_t)lz;
+    int16_t a4w = (int16_t)a4;
+    int16_t a6w = (int16_t)a6;
+
+    int16_t dx = (int16_t)((int16_t)lxlen - a4w - a6w);
+    int16_t dz = (int16_t)((int16_t)lzlen + a4w - a6w);
+
+    int16_t rel_nx = (int16_t)(sx - lxw - a4w);
+    int16_t rel_nz = (int16_t)(sz - lzw - a6w);
+    int32_t cross_new = (int32_t)dz * (int32_t)rel_nx - (int32_t)dx * (int32_t)rel_nz;
+    if (cross_new >= 0) return 0;
+
+    {
+        int16_t h = (int16_t)(sx - ox);
+        int16_t g = (int16_t)(sz - oz);
+        int16_t ea = (int16_t)(ox - lxw - a4w);
+        int16_t bf = (int16_t)(lzw + a6w - oz);
+
+        int32_t d1 = (int32_t)g * (int32_t)ea + (int32_t)h * (int32_t)bf;
+        int32_t d4 = (int32_t)g * (int32_t)dx - (int32_t)h * (int32_t)dz;
+
+        if (d4 == 0) return 0;
+
+        if (d4 < 0) {
+            if (d1 > 0) return 0;
+            if (d4 > d1) return 0;
+        } else {
+            if (d1 < 0) return 0;
+            if (d4 < d1) return 0;
+        }
+    }
+
+    {
+        int16_t den = (int16_t)((int16_t)read_be16(fline + FLINE_LENGTH) + (int16_t)ctx->extlen);
+        if (den == 0) return 0;
+
+        int16_t d7 = (int16_t)(cross_new / (int32_t)den);
+        d7 = (int16_t)(d7 - 3);
+
+        {
+            int32_t t6 = (int32_t)(int16_t)d7 * (int32_t)dz;
+            int32_t t7 = (int32_t)(int16_t)d7 * (int32_t)dx;
+            int16_t d6q = (int16_t)(t6 / (int32_t)den);
+            int16_t d7q = (int16_t)(t7 / (int32_t)den);
+            int16_t hit_x = (int16_t)(sx - d6q);
+            int16_t hit_z = (int16_t)(sz + d7q);
+
+            int16_t rel_ox = (int16_t)(ox - lxw - a4w);
+            int16_t rel_oz = (int16_t)(oz - lzw - a6w);
+            int32_t cross_old = (int32_t)dz * (int32_t)rel_ox - (int32_t)dx * (int32_t)rel_oz;
+
+            if (cross_old < 0) return 0;
+
+            ctx->newx = (int32_t)hit_x;
+            ctx->newz = (int32_t)hit_z;
+            mark_floorline_touch_flag(ctx, fline);
+            ctx->hitwall = 1;
+            ctx->wall_hit_y = ctx->newy;
+            *xdiff = ctx->newx - ctx->oldx;
+            *zdiff = ctx->newz - ctx->oldz;
+            return 2;
+        }
+    }
+}
+
+static int firstpass_othercheck_hit(int16_t hit_x, int16_t hit_z,
+    int16_t lx, int16_t lz, int16_t a4, int16_t a6, int16_t d2, int16_t d5)
+{
+    int16_t d6 = (int16_t)(hit_x - lx - a4);
+    int16_t d7 = (int16_t)(hit_z - lz - a6);
+    int16_t ad2 = (d2 < 0) ? (int16_t)-d2 : d2;
+    int16_t ad5 = (d5 < 0) ? (int16_t)-d5 : d5;
+
+    if (ad5 > ad2) {
+        /* Use Z coord (ObjectMove.s UseZ path). */
+        if (d7 <= 0) {
+            int16_t t = d5;
+            if (t > 4) return 0;
+            t = (int16_t)(t - 4);
+            if (d7 < t) return 0;
+            return 1;
+        } else {
+            int16_t t = d5;
+            if (t < -4) return 0;
+            t = (int16_t)(t + 4);
+            if (d7 > t) return 0;
+            return 1;
+        }
+    }
+
+    /* Use X coord. */
+    if (d6 <= 0) {
+        int16_t t = d2;
+        if (t > 4) return 0;
+        t = (int16_t)(t - 4);
+        if (d6 < t) return 0;
+        return 1;
+    } else {
+        int16_t t = d2;
+        if (t < -4) return 0;
+        t = (int16_t)(t + 4);
+        if (d6 > t) return 0;
+        return 1;
+    }
+}
+
+static int check_wall_line_walls_asm(MoveContext *ctx, const uint8_t *fline,
+    int32_t lx, int32_t lz, int16_t lxlen, int16_t lzlen, int32_t line_len,
+    int32_t a4, int32_t a6, const uint8_t *target_zone,
+    int32_t *xdiff, int32_t *zdiff)
+{
+    int16_t sx = (int16_t)ctx->newx;
+    int16_t sz = (int16_t)ctx->newz;
+    int16_t ox = (int16_t)ctx->oldx;
+    int16_t oz = (int16_t)ctx->oldz;
+    int16_t lxw = (int16_t)lx;
+    int16_t lzw = (int16_t)lz;
+    int16_t a4w = (int16_t)a4;
+    int16_t a6w = (int16_t)a6;
+
+    int16_t d2 = (int16_t)((int16_t)lxlen - a4w - a6w);
+    int16_t d5 = (int16_t)((int16_t)lzlen + a4w - a6w);
+
+    int16_t rel_nx = (int16_t)(sx - lxw - a4w);
+    int16_t rel_nz = (int16_t)(sz - lzw - a6w);
+    int32_t cross_new = (int32_t)d5 * (int32_t)rel_nx - (int32_t)d2 * (int32_t)rel_nz;
+
+    if (cross_new > 0) return 0;
+
+    {
+        int16_t den = (int16_t)((int16_t)line_len + (int16_t)ctx->extlen);
+        if (den == 0) den = 1;
+
+        int16_t d7 = (int16_t)(cross_new / (int32_t)den);
+        int16_t rel_ox = (int16_t)(ox - lxw - a4w);
+        int16_t rel_oz = (int16_t)(oz - lzw - a6w);
+        int32_t cross_old = (int32_t)d5 * (int32_t)rel_ox - (int32_t)d2 * (int32_t)rel_oz;
+        int32_t hit_y = compute_crossing_height_asm(ctx, cross_new, cross_old, den);
+
+        if (target_zone && !pass1_vertical_hit_asm(ctx, target_zone, hit_y)) {
+            return 0;
+        }
+
+        {
+            int16_t hit_x = sx;
+            int16_t hit_z = sz;
+
+            if (ctx->wallbounce || ctx->exitfirst) {
+                int16_t h = (int16_t)(sx - ox);
+                int16_t g = (int16_t)(sz - oz);
+                int16_t otherd = (int16_t)(cross_old / (int32_t)den);
+                int16_t total = (int16_t)(otherd - d7);
+                if (total <= 0) total = 1;
+                hit_x = (int16_t)(sx + (int16_t)(((int32_t)h * (int32_t)d7) / (int32_t)total));
+                hit_z = (int16_t)(sz + (int16_t)(((int32_t)g * (int32_t)d7) / (int32_t)total));
+            } else {
+                int16_t llen = (int16_t)line_len;
+                if (llen == 0) return 0;
+                {
+                    int16_t off_x = (int16_t)(((int32_t)d7 * (int32_t)d5) / (int32_t)llen);
+                    int16_t off_z = (int16_t)(((int32_t)d7 * (int32_t)d2) / (int32_t)llen);
+                    hit_x = (int16_t)(sx - off_x);
+                    hit_z = (int16_t)(sz + off_z);
+                }
+            }
+
+            if (!firstpass_othercheck_hit(hit_x, hit_z, lxw, lzw, a4w, a6w, d2, d5)) {
+                return 0;
+            }
+
+            ctx->newx = (int32_t)hit_x;
+            ctx->newz = (int32_t)hit_z;
+            mark_floorline_touch_flag(ctx, fline);
+            ctx->hitwall = 1;
+            ctx->wall_hit_y = hit_y;
+            *xdiff = ctx->newx - ctx->oldx;
+            *zdiff = ctx->newz - ctx->oldz;
+            return ctx->exitfirst ? 3 : 2;
+        }
+    }
 }
 
 /* Amiga MoveObject ORs wallflags into floorline word 14(a2) when the mover
@@ -473,6 +759,55 @@ static int path_hits_segment(int32_t oldx, int32_t oldz, int32_t newx, int32_t n
     }
 }
 
+/* Amiga find_room checkifcrossed gate:
+ *  - new position must be on "left" side of line (cross < 0)
+ *  - both line endpoints must straddle the old->new movement vector
+ * Uses 16-bit coordinate arithmetic like ObjectMove.s. */
+static int find_room_crosses_exit_asm(const MoveContext *ctx,
+    int32_t lx, int32_t lz, int16_t lxlen, int16_t lzlen,
+    int32_t *out_cross_new, int32_t *out_cross_old)
+{
+    int16_t sx = (int16_t)ctx->newx;
+    int16_t sz = (int16_t)ctx->newz;
+    int16_t ox = (int16_t)ctx->oldx;
+    int16_t oz = (int16_t)ctx->oldz;
+    int16_t lxw = (int16_t)lx;
+    int16_t lzw = (int16_t)lz;
+
+    int16_t rel_nx = (int16_t)(sx - lxw);
+    int16_t rel_nz = (int16_t)(sz - lzw);
+    int32_t cross_new = (int32_t)rel_nx * (int32_t)lzlen - (int32_t)rel_nz * (int32_t)lxlen;
+    if (out_cross_new) *out_cross_new = cross_new;
+    if (cross_new >= 0) return 0;
+
+    {
+        int16_t dx = (int16_t)(sx - ox);
+        int16_t dz = (int16_t)(sz - oz);
+
+        int16_t e0x = (int16_t)(lxw - ox);
+        int16_t e0z = (int16_t)(lzw - oz);
+        int32_t side0 = (int32_t)dz * (int32_t)e0x - (int32_t)dx * (int32_t)e0z;
+        if (side0 > 0) return 0;
+
+        {
+            int16_t ex1 = (int16_t)(lxw + lxlen);
+            int16_t ez1 = (int16_t)(lzw + lzlen);
+            int16_t e1x = (int16_t)(ex1 - ox);
+            int16_t e1z = (int16_t)(ez1 - oz);
+            int32_t side1 = (int32_t)dz * (int32_t)e1x - (int32_t)dx * (int32_t)e1z;
+            if (side1 < 0) return 0;
+        }
+    }
+
+    if (out_cross_old) {
+        int16_t rel_ox = (int16_t)(ox - lxw);
+        int16_t rel_oz = (int16_t)(oz - lzw);
+        *out_cross_old = (int32_t)rel_ox * (int32_t)lzlen - (int32_t)rel_oz * (int32_t)lxlen;
+    }
+
+    return 1;
+}
+
 /* -----------------------------------------------------------------------
  * Helper: Newton-Raphson square root (from ObjectMove.s CalcDist)
  * ----------------------------------------------------------------------- */
@@ -565,9 +900,11 @@ void player_fall(int32_t* yoff, int32_t* yvel, int32_t tyoff,
  * ----------------------------------------------------------------------- */
 static int check_wall_line(MoveContext* ctx, LevelState* level,
     const uint8_t* fline, const uint8_t* zone_data,
-    int32_t* xdiff, int32_t* zdiff)
+    int32_t* xdiff, int32_t* zdiff, int pass_kind)
 {
     int ps = ctx->pos_shift;
+    int pass_is_walls = (pass_kind == MOVE_PASS_WALLS || pass_kind == MOVE_PASS_BRUTE) ? 1 : 0;
+    int pass_is_other = (pass_kind == MOVE_PASS_OTHER) ? 1 : 0;
 
     int16_t connect = (int16_t)read_be16(fline + FLINE_CONNECT);
     int connect_index = level_connect_to_zone_index(level, connect);
@@ -576,27 +913,37 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
     int32_t lz = (int32_t)(int16_t)read_be16(fline + FLINE_Z) << ps;
     int16_t lxlen = (int16_t)read_be16(fline + FLINE_XLEN);
     int16_t lzlen = (int16_t)read_be16(fline + FLINE_ZLEN);
+    int32_t line_len = (int32_t)(int16_t)read_be16(fline + FLINE_LENGTH);
+    int32_t a4 = 0;
+    int32_t a6 = 0;
+    int32_t orig_newx = ctx->newx;
+    int32_t orig_newz = ctx->newz;
 
     int32_t wx = (int32_t)lxlen << ps;
     int32_t wz = (int32_t)lzlen << ps;
+    const uint8_t *target_zone = NULL;
+    uint8_t *target_room = NULL;
+    int has_target_zone = 0;
+
+    get_floorline_shift_offsets(ctx, fline, &a4, &a6);
 
     /* Amiga tags touch flags before deciding whether an exit is passable. */
     mark_floorline_touch_if_near(ctx, fline, lx, lz, lxlen, lzlen, ps);
 
-    /* ---- Exit line: if passable, skip (transition handled later in find_room). ---- */
+    /* ---- Exit line handling. ---- */
     if (zone_data && level->zone_adds && connect_index >= 0 && connect_index < zone_slots) {
         int32_t target_zone_off = read_be32(level->zone_adds + (size_t)connect_index * 4);
-        const uint8_t* target_zone = level->data + target_zone_off;
-
-        uint8_t* target_room = (uint8_t*)(level->data + target_zone_off);
+        target_zone = level->data + target_zone_off;
+        target_room = (uint8_t*)(level->data + target_zone_off);
+        has_target_zone = 1;
         int dbg_type = -1;
         int is_enemy = move_ctx_is_enemy(ctx, level, &dbg_type) ? 1 : 0;
 
-        {
+        if (pass_is_other) {
             int8_t target_in_top = 0;
             if (transition_height_ok_zone(ctx, ctx->newy, target_zone, &target_in_top)) {
                 if (!(ctx->no_transition_back && target_room == ctx->no_transition_back)) {
-                    /* Passable exit: do not treat as wall. */
+                    /* checkotherwalls: passable exit -> skip wall collision. */
                     return 0;
                 }
                 if (move_debug_enabled()) {
@@ -636,7 +983,17 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
                 }
             }
         }
-        /* Exit blocked by step/clearance/roof constraints: treat as wall. */
+    }
+
+    /* Amiga checkotherwalls uses its own integer hit test (no radius slide). */
+    if (pass_is_other && ctx->extlen != 0) {
+        return check_wall_line_otherpass_asm(ctx, fline, lx, lz, lxlen, lzlen, a4, a6, xdiff, zdiff);
+    }
+
+    /* Amiga checkwalls also uses integer wall math; keep extlen pass on that path too. */
+    if (pass_is_walls && ctx->extlen != 0) {
+        return check_wall_line_walls_asm(ctx, fline, lx, lz, lxlen, lzlen, line_len,
+            a4, a6, has_target_zone ? target_zone : NULL, xdiff, zdiff);
     }
 
     /* ---- Wall collision with extents ----
@@ -682,6 +1039,15 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
             }
             mark_floorline_touch_flag(ctx, fline);
             ctx->hitwall = 1;
+            if (pass_is_walls && has_target_zone &&
+                pass1_exit_is_nonblocking(ctx, target_zone, lx, lz, lxlen, lzlen, a4, a6,
+                    orig_newx, orig_newz, line_len)) {
+                ctx->newx = orig_newx;
+                ctx->newz = orig_newz;
+                ctx->hitwall = 0;
+                ctx->wall_hit_y = ctx->newy;
+                return 0;
+            }
             return 3;
         }
 
@@ -720,6 +1086,15 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
                 mark_floorline_touch_flag(ctx, fline);
                 ctx->hitwall = 1;
                 ctx->wall_hit_y = ctx->newy;
+                if (pass_is_walls && has_target_zone &&
+                    pass1_exit_is_nonblocking(ctx, target_zone, lx, lz, lxlen, lzlen, a4, a6,
+                        orig_newx, orig_newz, line_len)) {
+                    ctx->newx = orig_newx;
+                    ctx->newz = orig_newz;
+                    ctx->hitwall = 0;
+                    ctx->wall_hit_y = ctx->newy;
+                    return 0;
+                }
                 if (crossed_blocked_side && slide_cross < 0) {
                     /* Keep solid/blocked lines one-sided: never accept a result
                      * that leaves us on the far side of this segment. */
@@ -737,6 +1112,15 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
             ctx->newz = ctx->oldz;
             ctx->hitwall = 1;
             ctx->wall_hit_y = ctx->newy;
+            if (pass_is_walls && has_target_zone &&
+                pass1_exit_is_nonblocking(ctx, target_zone, lx, lz, lxlen, lzlen, a4, a6,
+                    orig_newx, orig_newz, line_len)) {
+                ctx->newx = orig_newx;
+                ctx->newz = orig_newz;
+                ctx->hitwall = 0;
+                ctx->wall_hit_y = ctx->newy;
+                return 0;
+            }
             return 3;
         }
     }
@@ -774,18 +1158,10 @@ static void find_room(MoveContext* ctx, LevelState* level,
                 int32_t lz = (int32_t)(int16_t)read_be16(fline + FLINE_Z) << ps;
                 int16_t lxlen = (int16_t)read_be16(fline + FLINE_XLEN);
                 int16_t lzlen = (int16_t)read_be16(fline + FLINE_ZLEN);
-
-                int64_t new_cross = (int64_t)(ctx->newx - lx) * lzlen -
-                    (int64_t)(ctx->newz - lz) * lxlen;
-                if (new_cross >= 0) continue;
-
-                {
-                    int32_t wx = (int32_t)lxlen << ps;
-                    int32_t wz = (int32_t)lzlen << ps;
-                    if (!path_hits_segment(ctx->oldx, ctx->oldz, ctx->newx, ctx->newz, lx, lz, wx, wz)) {
-                        continue;
-                    }
-                }
+                int32_t cross_new = 0;
+                int32_t cross_old = 0;
+                if (!find_room_crosses_exit_asm(ctx, lx, lz, lxlen, lzlen, &cross_new, &cross_old))
+                    continue;
 
                 {
                     int32_t target_zone_off = read_be32(level->zone_adds + (size_t)connect_index * 4);
@@ -798,20 +1174,7 @@ static void find_room(MoveContext* ctx, LevelState* level,
                         int32_t line_len = (int32_t)(int16_t)read_be16(fline + FLINE_LENGTH);
                         int32_t cross_y = ctx->newy;
                         if (line_len != 0) {
-                            int64_t old_cross = (int64_t)(ctx->oldx - lx) * lzlen -
-                                                (int64_t)(ctx->oldz - lz) * lxlen;
-                            int64_t new_d = (int64_t)new_cross / (int64_t)line_len;
-                            int64_t old_d = old_cross / (int64_t)line_len;
-                            int64_t denom = old_d - new_d;
-                            if (denom <= 0) denom = 1;
-
-                            {
-                                int64_t dy = (int64_t)ctx->newy - (int64_t)ctx->oldy;
-                                int64_t cy = (int64_t)ctx->newy + (dy * new_d) / denom;
-                                if (cy < (int64_t)INT32_MIN) cy = (int64_t)INT32_MIN;
-                                if (cy > (int64_t)INT32_MAX) cy = (int64_t)INT32_MAX;
-                                cross_y = (int32_t)cy;
-                            }
+                            cross_y = compute_crossing_height_asm(ctx, (int64_t)cross_new, (int64_t)cross_old, line_len);
                         }
 
                         {
@@ -956,9 +1319,12 @@ void move_object(MoveContext* ctx, LevelState* level)
 
                     {
                         const uint8_t* fline = level->floor_lines + entry * FLINE_SIZE;
-                        int result = check_wall_line(ctx, level, fline, zone_data, &xdiff, &zdiff);
+                        int result = check_wall_line(ctx, level, fline, zone_data, &xdiff, &zdiff, MOVE_PASS_WALLS);
 
-                        if (result == 2) goto restart_walls;
+                        /* Amiga MoveObject continues scanning after a slide-adjusted hit
+                         * (hitthewall -> checkwalls/checkotherwalls), it does not restart
+                         * the pass from the beginning. */
+                        if (result == 2) continue;
                         if (result == 3) goto phase3;
                     }
                 }
@@ -984,9 +1350,9 @@ void move_object(MoveContext* ctx, LevelState* level)
 
                         {
                             const uint8_t* fline = level->floor_lines + entry * FLINE_SIZE;
-                            int result = check_wall_line(ctx, level, fline, zone_data, &xdiff, &zdiff);
+                            int result = check_wall_line(ctx, level, fline, zone_data, &xdiff, &zdiff, MOVE_PASS_OTHER);
 
-                            if (result == 2) goto restart_other_walls;
+                            if (result == 2) continue;
                             if (result == 3) goto phase3;
                         }
                     }
@@ -1015,9 +1381,9 @@ void move_object(MoveContext* ctx, LevelState* level)
 
                 {
                     const uint8_t* fline = level->floor_lines + i * FLINE_SIZE;
-                    int result = check_wall_line(ctx, level, fline, zone_data, &xdiff, &zdiff);
+                    int result = check_wall_line(ctx, level, fline, zone_data, &xdiff, &zdiff, MOVE_PASS_BRUTE);
 
-                    if (result == 2) goto restart_brute;
+                    if (result == 2) continue;
                     if (result == 3) return;
                 }
             }
