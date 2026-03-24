@@ -127,9 +127,13 @@ void display_init(void)
         return;
     }
 
+    // Release build can fix the renderer target size ahead of time.
+#ifdef AB3D_RELEASE
     if (g_use_fixed_renderer_size) {
         display_set_renderer_target_size(s_release_render_w, s_release_render_h);
-    } else {
+    } else
+#endif
+    {
         int out_w = init_w;
         int out_h = init_h;
         if (SDL_GetRendererOutputSize(g_sdl_ren, &out_w, &out_h) != 0) {
