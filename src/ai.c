@@ -68,12 +68,13 @@ void explode_into_bits(GameObject *obj, GameState *state)
 
     int num_bits = 7 + (rand() & 3); /* 7-9 pieces */
 
+    int nasty_slots = level_nasty_shot_slot_count(&state->level);
     for (int i = 0; i < num_bits; i++) {
         /* Find free slot in NastyShotData */
         uint8_t *shots = state->level.nasty_shot_data;
         GameObject *bit = NULL;
         int slot_j = -1;
-        for (int j = 0; j < 20; j++) {
+        for (int j = 0; j < nasty_slots; j++) {
             GameObject *candidate = (GameObject*)(shots + j * OBJECT_SIZE);
             if (OBJ_ZONE(candidate) < 0) {
                 bit = candidate;
