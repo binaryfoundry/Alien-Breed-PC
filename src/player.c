@@ -1618,6 +1618,7 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
     int closest_idx = -1;
     int32_t closest_dist = 32767;
     int32_t closest_target_ydiff = 0;
+    bool has_target = false;
 
     if (state->level.object_data) {
         for (int i = 0; i < MAX_OBJECTS; i++) {
@@ -1655,9 +1656,9 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             }
         }
     }
+    has_target = (closest_idx >= 0 && closest_dist > 0 && state->level.object_data);
     /* Calculate vertical aim toward target (PlayerShoot.s lines 99-139). */
     {
-        bool has_target = (closest_idx >= 0 && closest_dist > 0 && state->level.object_data);
         if (has_target) {
             int32_t target_ydiff = closest_target_ydiff;
             int32_t aim_dist = closest_dist;
@@ -1718,6 +1719,10 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
     } else {
         /* Projectile weapon: Amiga uses PlayerShotData for player projectiles. */
         if (!state->level.player_shot_data) return;
+        /* PlayerShoot.s nothingtoshoot path zeros bulyspd before PLR1FIREBULLET.
+         * This applies to rockets/grenades/plasma equally; grenade behavior differs
+         * via gun data (bullet_y_offset, gravity, flags). */
+        if (!has_target) bulyspd = 0;
 
         /* Find free slot in player_shot_data */
         uint8_t *shots = state->level.player_shot_data;
