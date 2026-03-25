@@ -174,6 +174,11 @@ void renderer_step_water_anim_ms(uint32_t elapsed_ms)
  * in renderer_init() and reduce every call site to a single array read.
  * ----------------------------------------------------------------------- */
 static uint32_t amiga12_lut[4096];
+/* Rounded 8-bit channel -> 4-bit nibble: exactly matches (v+8)/17 clamp. */
+static uint8_t byte_to_nibble_lut[256];
+/* Exact floor(x/255) for x in [0, 130050] used by blend_argb. */
+#define DIV255_LUT_MAX 130050u
+static uint16_t div255_lut[DIV255_LUT_MAX + 1u];
 
 static void build_amiga12_lut(void)
 {
@@ -182,6 +187,14 @@ static void build_amiga12_lut(void)
         uint32_t g4 = ((unsigned)i >> 4) & 0xFu;
         uint32_t b4 =  (unsigned)i       & 0xFu;
         amiga12_lut[i] = 0xFF000000u | (r4 * 0x11u << 16) | (g4 * 0x11u << 8) | (b4 * 0x11u);
+    }
+    for (int i = 0; i < 256; i++) {
+        unsigned n = (unsigned)(i + 8) / 17u;
+        if (n > 15u) n = 15u;
+        byte_to_nibble_lut[i] = (uint8_t)n;
+    }
+    for (unsigned i = 0; i <= DIV255_LUT_MAX; i++) {
+        div255_lut[i] = (uint16_t)(i / 255u);
     }
 }
 
@@ -192,15 +205,9 @@ static inline uint32_t amiga12_to_argb(uint16_t w)
 
 static inline uint16_t argb_to_amiga12(uint32_t c)
 {
-    uint32_t r = (c >> 16) & 0xFFu;
-    uint32_t g = (c >> 8) & 0xFFu;
-    uint32_t b = c & 0xFFu;
-    uint32_t r4 = (r + 8u) / 17u;
-    uint32_t g4 = (g + 8u) / 17u;
-    uint32_t b4 = (b + 8u) / 17u;
-    if (r4 > 15u) r4 = 15u;
-    if (g4 > 15u) g4 = 15u;
-    if (b4 > 15u) b4 = 15u;
+    uint32_t r4 = (uint32_t)byte_to_nibble_lut[(c >> 16) & 0xFFu];
+    uint32_t g4 = (uint32_t)byte_to_nibble_lut[(c >> 8) & 0xFFu];
+    uint32_t b4 = (uint32_t)byte_to_nibble_lut[c & 0xFFu];
     return (uint16_t)((r4 << 8) | (g4 << 4) | b4);
 }
 
@@ -215,10 +222,45 @@ static inline uint32_t blend_argb(uint32_t bg, uint32_t fg, uint32_t alpha_fg)
     uint32_t fr = (fg >> 16) & 0xFFu;
     uint32_t fg_g = (fg >> 8) & 0xFFu;
     uint32_t fb = fg & 0xFFu;
-    uint32_t r = (br * inv + fr * alpha_fg) / 255u;
-    uint32_t g = (bg_g * inv + fg_g * alpha_fg) / 255u;
-    uint32_t b = (bb * inv + fb * alpha_fg) / 255u;
+    uint32_t r = (uint32_t)div255_lut[br * inv + fr * alpha_fg];
+    uint32_t g = (uint32_t)div255_lut[bg_g * inv + fg_g * alpha_fg];
+    uint32_t b = (uint32_t)div255_lut[bb * inv + fb * alpha_fg];
     return 0xFF000000u | (r << 16) | (g << 8) | b;
+}
+
+#define FLOOR_PAL_LEVEL_COUNT 15
+static const uint8_t *g_floor_span_pal_cache_src = NULL;
+static uint8_t  g_floor_span_pal_cache_valid[FLOOR_PAL_LEVEL_COUNT];
+static uint32_t g_floor_span_argb_cache[FLOOR_PAL_LEVEL_COUNT][256];
+static uint16_t g_floor_span_cw_cache[FLOOR_PAL_LEVEL_COUNT][256];
+
+static void floor_span_prepare_pal_cache(const uint8_t *pal_lut_src, int level,
+                                         const uint32_t **argb_out,
+                                         const uint16_t **cw_out)
+{
+    if (!pal_lut_src || level < 0 || level >= FLOOR_PAL_LEVEL_COUNT) {
+        *argb_out = NULL;
+        *cw_out = NULL;
+        return;
+    }
+
+    if (g_floor_span_pal_cache_src != pal_lut_src) {
+        g_floor_span_pal_cache_src = pal_lut_src;
+        memset(g_floor_span_pal_cache_valid, 0, sizeof(g_floor_span_pal_cache_valid));
+    }
+
+    if (!g_floor_span_pal_cache_valid[level]) {
+        const uint8_t *lut = pal_lut_src + level * 512;
+        for (int ti = 0; ti < 256; ti++) {
+            uint16_t cw = (uint16_t)((lut[ti * 2] << 8) | lut[ti * 2 + 1]);
+            g_floor_span_argb_cache[level][ti] = amiga12_to_argb(cw);
+            g_floor_span_cw_cache[level][ti] = cw;
+        }
+        g_floor_span_pal_cache_valid[level] = 1;
+    }
+
+    *argb_out = g_floor_span_argb_cache[level];
+    *cw_out = g_floor_span_cw_cache[level];
 }
 
 void renderer_set_water_assets(const uint8_t *water_file, size_t water_file_size,
@@ -853,30 +895,36 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     int32_t yoff = (int32_t)((unsigned)totalyoff & (unsigned)valand);
     int32_t tex_y = (ct - y_top_tex) * tex_step + ((int32_t)yoff << 16);
 
-    /* Pre-bake per-column ARGB for all 32 texel values from the Amiga wall LUT. */
-    uint32_t col_argb[32];
-    uint16_t col_cw[32];
-    {
-        int gray = (64 - amiga_d6) * 255 / 64;
-        if (gray < 0)   gray = 0;
-        if (gray > 255) gray = 255;
-        uint32_t fallback = 0xFF000000u | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray;
-        uint16_t fallback_cw = argb_to_amiga12(fallback);
-        if (texture && pal) {
+    /* Cache 32-entry wall shade table by (palette pointer, LUT block). */
+    static const uint8_t *cache_pal = NULL;
+    static uint16_t cache_block_off = 0xFFFFu;
+    static uint32_t cache_argb[32];
+    static uint16_t cache_cw[32];
+    static int cache_valid = 0;
+
+    uint32_t fallback = 0;
+    uint16_t fallback_cw = 0;
+    if (texture && pal) {
+        if (!cache_valid || cache_pal != pal || cache_block_off != lut_block_off) {
             for (int ti = 0; ti < 32; ti++) {
                 int lut_off = lut_block_off + ti * 2;
                 uint16_t c12 = ((uint16_t)pal[lut_off] << 8) | pal[lut_off + 1];
-                col_argb[ti] = amiga12_to_argb(c12);
-                col_cw[ti] = c12;
+                cache_argb[ti] = amiga12_to_argb(c12);
+                cache_cw[ti] = c12;
             }
-        } else {
-            for (int ti = 0; ti < 32; ti++) {
-                col_argb[ti] = fallback;
-                col_cw[ti] = fallback_cw;
-            }
+            cache_pal = pal;
+            cache_block_off = lut_block_off;
+            cache_valid = 1;
         }
+    } else {
+        int gray = (64 - amiga_d6) * 255 / 64;
+        if (gray < 0)   gray = 0;
+        if (gray > 255) gray = 255;
+        fallback = 0xFF000000u | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray;
+        fallback_cw = argb_to_amiga12(fallback);
     }
 
+    size_t pix = (size_t)ct * (size_t)width + (size_t)x;
     for (int y = ct; y <= cb; y++) {
         int ty = (int)(tex_y >> 16) & valand;
         uint32_t argb;
@@ -893,20 +941,21 @@ static void draw_wall_column(int x, int y_top, int y_bot,
                 case 1:  texel5 = (uint8_t)((word >>  5) & 31u); break;
                 default: texel5 = (uint8_t)((word >> 10) & 31u); break;
                 }
-                argb = col_argb[texel5];
-                out_cw = col_cw[texel5];
+                argb = cache_argb[texel5];
+                out_cw = cache_cw[texel5];
             } else {
-                argb = col_argb[0];
-                out_cw = col_cw[0];
+                argb = cache_argb[0];
+                out_cw = cache_cw[0];
             }
         } else {
-            argb = col_argb[0];
-            out_cw = col_cw[0];
+            argb = fallback;
+            out_cw = fallback_cw;
         }
 
-        buf[y * width + x] = 2; /* tag: wall */
-        rgb[y * width + x] = argb;
-        cw[y * width + x] = out_cw;
+        buf[pix] = 2; /* tag: wall */
+        rgb[pix] = argb;
+        cw[pix] = out_cw;
+        pix += (size_t)width;
         tex_y += tex_step;
     }
 
@@ -1218,18 +1267,11 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
         floor_pal_level = floor_bright_level_table[bright_idx];
     }
 
-    /* Pre-bake per-span ARGB for all 256 texel values.
-     * Only built for the common non-water textured path. */
-    uint32_t span_argb[256];
-    uint16_t span_cw[256];
+    const uint32_t *span_argb = NULL;
+    const uint16_t *span_cw = NULL;
     const int use_span_lut = (texture != NULL && pal_lut_src != NULL && !is_water && !use_gour);
     if (use_span_lut) {
-        const uint8_t *lut = pal_lut_src + floor_pal_level * 512;
-        for (int ti = 0; ti < 256; ti++) {
-            uint16_t cw = (uint16_t)((lut[ti * 2] << 8) | lut[ti * 2 + 1]);
-            span_argb[ti] = amiga12_to_argb(cw);
-            span_cw[ti] = cw;
-        }
+        floor_span_prepare_pal_cache(pal_lut_src, floor_pal_level, &span_argb, &span_cw);
     }
 
     /* UV accumulators: 32-bit wrapping is sufficient - we only need (fp>>16)&63 for tile coords.
@@ -1286,6 +1328,40 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     uint8_t *row8 = buf + (size_t)y * w;
     uint32_t *row32 = rgb + (size_t)y * w;
     uint16_t *row16 = cwbuf + (size_t)y * w;
+    size_t water_refr_base0 = 0;
+    size_t water_refr_base1 = 0;
+    int water_refr_frac = 0;
+    int water_has_next_refr = 0;
+    const int water_has_back_buffers = (rs->rgb_back_buffer && rs->cw_back_buffer);
+    if (is_water) {
+        int32_t refr_y_fp = ((int32_t)y << 8) + water_refr_y_off_fp;
+        int refr_y = (int)(refr_y_fp >> 8);
+        water_refr_frac = (int)(refr_y_fp & 0xFF);
+        int refr_y_next = refr_y + 1;
+        if (refr_y < 0) refr_y = 0;
+        if (refr_y >= rs->height) refr_y = rs->height - 1;
+        if (refr_y_next < 0) refr_y_next = 0;
+        if (refr_y_next >= rs->height) refr_y_next = rs->height - 1;
+        water_has_next_refr = (water_refr_frac > 0 && refr_y_next != refr_y);
+        water_refr_base0 = (size_t)refr_y * (size_t)rs->width;
+        water_refr_base1 = (size_t)refr_y_next * (size_t)rs->width;
+    }
+
+    /* Fast non-water textured path: no per-pixel branching. */
+    if (use_span_lut && span_argb && span_cw) {
+        for (int x = xl; x <= xr; x++) {
+            uint8_t u8 = (uint8_t)((u_fp >> 16) & 0xFFu);
+            uint8_t v8 = (uint8_t)((v_fp >> 16) & 0xFFu);
+            uint8_t texel = texture[(((int)(v8 & 63u) << 8) | (int)(u8 & 63u)) * 4];
+            u_fp += (uint32_t)u_step;
+            v_fp += (uint32_t)v_step;
+
+            row8[x] = 1;
+            row32[x] = span_argb[texel];
+            row16[x] = span_cw[texel];
+        }
+        return;
+    }
 
     /* Gouraud floor path (Amiga GOURSEL floor/roof): interpolate brightness levels across the span. */
     int64_t gour_level_fp = 0;
@@ -1335,16 +1411,6 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
         u_fp += (uint32_t)u_step;
         v_fp += (uint32_t)v_step;
 
-        /* Fast path: non-water textured span with palette: all per-pixel work is a
-         * single texture read + span_argb table lookup. */
-        if (use_span_lut) {
-            uint8_t texel = texture[((tv << 8) | tu) * 4];
-            row8[x]  = 1;
-            row32[x] = span_argb[texel];
-            row16[x] = span_cw[texel];
-            continue;
-        }
-
         if (is_water) {
             /* Amiga-style textured water: refract existing pixels instead of drawing a solid color. */
             uint16_t d5_word = (uint16_t)(((uint16_t)v8 << 8) | (uint16_t)u8);
@@ -1364,22 +1430,10 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 water_level = (uint8_t)(t >> 4);
             }
 
-            int refr_x = x;
-            int32_t refr_y_fp = ((int32_t)y << 8) + water_refr_y_off_fp;
-            int refr_y = (int)(refr_y_fp >> 8);
-            int refr_frac = (int)(refr_y_fp & 0xFF);
-            int refr_y_next = refr_y + 1;
-            if (refr_x < 0) refr_x = 0;
-            if (refr_x >= rs->width) refr_x = rs->width - 1;
-            if (refr_y < 0) refr_y = 0;
-            if (refr_y >= rs->height) refr_y = rs->height - 1;
-            if (refr_y_next < 0) refr_y_next = 0;
-            if (refr_y_next >= rs->height) refr_y_next = rs->height - 1;
-
-            size_t bg_i = (size_t)refr_y * (size_t)rs->width + (size_t)refr_x;
+            size_t bg_i = water_refr_base0 + (size_t)x;
             uint32_t bg0 = rgb[bg_i];
             uint16_t bg_cw0 = cwbuf[bg_i];
-            if (buf[bg_i] == 0 && rs->rgb_back_buffer && rs->cw_back_buffer) {
+            if (buf[bg_i] == 0 && water_has_back_buffers) {
                 /* AB3DI texturedwater samples from display memory while floor lines are streamed.
                  * When refraction points at rows not written yet this frame, those pixels still
                  * contain prior-frame values; mirror that by sampling back-buffer content. */
@@ -1388,15 +1442,14 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             }
             uint8_t bg_sample0 = (uint8_t)(bg_cw0 & 0xFFu);
 
-            int has_next_refr = (refr_frac > 0 && refr_y_next != refr_y);
             uint32_t bg1 = bg0;
             uint16_t bg_cw1 = bg_cw0;
             uint8_t bg_sample1 = bg_sample0;
-            if (has_next_refr) {
-                size_t bg_i_next = (size_t)refr_y_next * (size_t)rs->width + (size_t)refr_x;
+            if (water_has_next_refr) {
+                size_t bg_i_next = water_refr_base1 + (size_t)x;
                 bg1 = rgb[bg_i_next];
                 bg_cw1 = cwbuf[bg_i_next];
-                if (buf[bg_i_next] == 0 && rs->rgb_back_buffer && rs->cw_back_buffer) {
+                if (buf[bg_i_next] == 0 && water_has_back_buffers) {
                     bg1 = rs->rgb_back_buffer[bg_i_next];
                     bg_cw1 = rs->cw_back_buffer[bg_i_next];
                 }
@@ -1422,7 +1475,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                     out0 = bg0;
                 }
 
-                if (has_next_refr) {
+                if (water_has_next_refr) {
                     size_t bi1 = (size_t)dist_off + ((size_t)water_level << 9) + (size_t)bg_sample1 * 2u;
                     uint32_t out1;
                     uint16_t out_cw1;
@@ -1433,7 +1486,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                         out_cw1 = bg_cw1;
                         out1 = bg1;
                     }
-                    out = blend_argb(out0, out1, (uint32_t)refr_frac);
+                    out = blend_argb(out0, out1, (uint32_t)water_refr_frac);
                     out_cw = argb_to_amiga12(out);
                 } else {
                     out = out0;
@@ -1441,7 +1494,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 }
             } else {
                 /* Fallback when brighten table is missing: keep prior blended behavior. */
-                uint32_t bg = has_next_refr ? blend_argb(bg0, bg1, (uint32_t)refr_frac) : bg0;
+                uint32_t bg = water_has_next_refr ? blend_argb(bg0, bg1, (uint32_t)water_refr_frac) : bg0;
                 uint32_t br = (bg >> 16) & 0xFFu;
                 uint32_t bg_g = (bg >> 8) & 0xFFu;
                 uint32_t bb = bg & 0xFFu;
