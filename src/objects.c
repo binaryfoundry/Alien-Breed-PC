@@ -2539,10 +2539,6 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     /* Position is in object_points at OBJ_CID (works for both object_data and nasty_shot_data bullets). */
     int idx = (int)OBJ_CID(obj);
     if (idx < 0 || (state->level.object_points && idx >= state->level.num_object_points)) {
-        if (shot_size >= 50) {
-            printf("[GIB-KILL] CID=%d out of range (num_pts=%d) size=%d\n",
-                   idx, state->level.num_object_points, (int)shot_size);
-        }
         OBJ_SET_ZONE(obj, -1);
         return;
     }
@@ -2574,7 +2570,6 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         int32_t roof = (int32_t)((zd[6+zd_off]<<24)|(zd[7+zd_off]<<16)|
                        (zd[8+zd_off]<<8)|zd[9+zd_off]);
         if (roof - accypos >= 10 * 128) {
-            if (shot_size >= 50) printf("[GIB-ROOF] roof=%d accypos=%d diff=%d\n",(int)roof,(int)accypos,(int)(roof-accypos));
             if (flags & 1) {
                 /* Bounce off roof */
                 yvel = (int16_t)(-yvel);
@@ -2596,7 +2591,6 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         int32_t floor_h = (int32_t)((zd[2+zd_off]<<24)|(zd[3+zd_off]<<16)|
                           (zd[4+zd_off]<<8)|zd[5+zd_off]);
         if (floor_h - accypos <= 10 * 128) {
-            if (shot_size >= 50) printf("[GIB-FLOOR] floor=%d accypos=%d diff=%d\n",(int)floor_h,(int)accypos,(int)(floor_h-accypos));
             if (flags & 1) {
                 /* Bounce off floor */
                 if (yvel > 0) {

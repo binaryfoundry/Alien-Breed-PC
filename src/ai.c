@@ -52,17 +52,6 @@ void go_in_direction(int32_t *newx, int32_t *newz,
     *newz = oldz + (int16_t)(dz >> 16);
 }
 
-static int count_used_shot_slots(const uint8_t *shots, int shot_slots)
-{
-    int used = 0;
-    if (!shots || shot_slots <= 0) return 0;
-    for (int i = 0; i < shot_slots; i++) {
-        const GameObject *candidate = (const GameObject *)(shots + (size_t)i * OBJECT_SIZE);
-        if (OBJ_ZONE(candidate) >= 0) used++;
-    }
-    return used;
-}
-
 static inline int16_t clamp_gib_vel_component(int32_t v)
 {
     if (v > 96) return 96;
@@ -93,25 +82,18 @@ void explode_into_bits(GameObject *obj, GameState *state, bool explosion_kill, i
     (void)rand();
 
     int nasty_slots = NASTY_SHOT_SLOT_COUNT;
-    int spawned = 0;
     for (int i = 0; i < num_bits; i++) {
         /* Find free slot in NastyShotData */
         uint8_t *shots = state->level.nasty_shot_data;
         GameObject *bit = NULL;
-        int slot_j = -1;
         for (int j = 0; j < nasty_slots; j++) {
             GameObject *candidate = (GameObject*)(shots + j * OBJECT_SIZE);
             if (OBJ_ZONE(candidate) < 0) {
                 bit = candidate;
-                slot_j = j;
                 break;
             }
         }
-        if (!bit || slot_j < 0) {
-            int used = count_used_shot_slots(state->level.nasty_shot_data, nasty_slots);
-            printf("[GIB-POOL] no free nasty slot: used=%d/%d requested=%d spawned=%d dropped=%d obj_type=%d zone=%d\n",
-                   used, nasty_slots, num_bits, spawned, num_bits - spawned,
-                   (int)obj->obj.number, (int)OBJ_ZONE(obj));
+        if (!bit) {
             break;
         }
 
@@ -197,11 +179,6 @@ void explode_into_bits(GameObject *obj, GameState *state, bool explosion_kill, i
 
         bit->obj.worry = 127;
 
-        printf("[GIB] slot=%d saved_cid=%d zone=%d gib_type=%d num_pts=%d yvel=%d accypos=%d\n",
-               slot_j, (int)saved_cid, (int)OBJ_ZONE(bit), (int)gib_type,
-               state->level.num_object_points,
-               (int)SHOT_YVEL(*bit), (int)SHOT_ACCYPOS(*bit));
-        spawned++;
     }
 }
 
