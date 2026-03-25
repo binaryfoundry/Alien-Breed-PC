@@ -1628,11 +1628,13 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
 
             int obj_type = obj->obj.number;
             if (!obs_in_line[i]) continue;
-            if ((((uint8_t)obj->obj.can_see) & player_can_see_bit) == 0u) continue;
+            if ((((uint8_t)obj->obj.can_see) & player_can_see_bit) == 0u &&
+                obj_type != OBJ_NBR_BARREL) continue;
             if (OBJ_ZONE(obj) < 0) continue;
             if ((uint8_t)obj_type > 31u) continue;
             if (!(enemy_flags & (1u << (obj_type & 31)))) continue;
-            if (NASTY_LIVES(*obj) == 0) continue;
+            /* Keep barrels targetable even when numlives is zero in level data. */
+            if (NASTY_LIVES(*obj) == 0 && obj_type != OBJ_NBR_BARREL) continue;
             if (obj_cid < 0 || obj_cid >= MAX_OBJECTS) continue;
 
             int32_t dist = obj_dists[obj_cid];

@@ -2173,6 +2173,9 @@ void object_handle_gas_pipe(GameObject *obj, GameState *state)
 void object_handle_barrel(GameObject *obj, GameState *state)
 {
     obj->obj.worry = 0;
+    /* Keep visibility bits updated so PlayerShoot's can_see gate can
+     * treat barrels consistently with other targetable objects. */
+    enemy_update_can_see(obj, state);
 
     /* Anims.s ItsABarrel: exploding state is vect=8, frame increments 0..7 then remove. */
     if (obj_w(obj->raw + 8) == 8) {
