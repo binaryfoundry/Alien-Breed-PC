@@ -1384,9 +1384,10 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
         water_refr_y_off_fp = refr_y_off_fp;
     }
 
-    uint8_t *row8 = buf + (size_t)y * w;
-    uint32_t *row32 = rgb + (size_t)y * w;
-    uint16_t *row16 = cwbuf + (size_t)y * w;
+    const int span_len = xr - xl + 1;
+    uint8_t *row8 = buf + (size_t)y * w + (size_t)xl;
+    uint32_t *row32 = rgb + (size_t)y * w + (size_t)xl;
+    uint16_t *row16 = cwbuf + (size_t)y * w + (size_t)xl;
     size_t water_refr_base0 = 0;
     size_t water_refr_base1 = 0;
     int water_refr_frac = 0;
@@ -1408,96 +1409,62 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
 
     /* Fast non-water textured path: no per-pixel branching. */
     if (use_span_lut && span_argb && span_cw) {
-        for (int x = xl; x <= xr; x++) {
-            uint8_t u8 = (uint8_t)((u_fp >> 16) & 0xFFu);
-            uint8_t v8 = (uint8_t)((v_fp >> 16) & 0xFFu);
-            uint8_t texel = texture[(((int)(v8 & 63u) << 8) | (int)(u8 & 63u)) * 4];
+        uint8_t *p8 = row8;
+        uint32_t *p32 = row32;
+        uint16_t *p16 = row16;
+        for (int i = 0; i < span_len; i++) {
+            uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
             u_fp += (uint32_t)u_step;
             v_fp += (uint32_t)v_step;
 
-            row8[x] = 1;
-            row32[x] = span_argb[texel];
-            row16[x] = span_cw[texel];
+            *p8++ = 1;
+            *p32++ = span_argb[texel];
+            *p16++ = span_cw[texel];
         }
         return;
     }
 
-    /* Gouraud floor path (Amiga GOURSEL floor/roof): interpolate brightness levels across the span. */
-    int64_t gour_level_fp = 0;
-    int64_t gour_level_step = 0;
-    int64_t gour_bright_fp = 0;
-    int64_t gour_bright_step = 0;
-    if (use_gour) {
-        int span_w = xr - xl;
-        int dist_add = (dist >> 7);
-        int left_level = left_brightness + dist_add;
-        int right_level = right_brightness + dist_add;
-        if (left_level < 0) left_level = 0;
-        if (right_level < 0) right_level = 0;
-        left_level >>= 1;
-        right_level >>= 1;
-        if (left_level > 14) left_level = 14;
-        if (right_level > 14) right_level = 14;
-        gour_level_fp = (int64_t)left_level << 16;
-        gour_level_step = (span_w > 0) ? (((int64_t)(right_level - left_level) << 16) / span_w) : 0;
-        gour_bright_fp = (int64_t)left_brightness << 16;
-        gour_bright_step = (span_w > 0) ? (((int64_t)(right_brightness - left_brightness) << 16) / span_w) : 0;
-    }
+    if (is_water) {
+        uint8_t *p8 = row8;
+        uint32_t *p32 = row32;
+        uint16_t *p16 = row16;
+        size_t bg_i0 = water_refr_base0 + (size_t)xl;
+        size_t bg_i1 = water_refr_base1 + (size_t)xl;
+        const int water_has_file = (g_water_file && g_water_file_size >= 65536u);
+        const int water_has_brighten = (g_water_brighten && g_water_brighten_size >= 512u);
+        uint32_t dist_off = (((uint32_t)dist) & 0xFF00u) << 1;
+        if (dist_off > (uint32_t)(12 * 512)) dist_off = (uint32_t)(12 * 512);
 
-    for (int x = xl; x <= xr; x++) {
-        uint8_t u8 = (uint8_t)((u_fp >> 16) & 0xFFu);
-        uint8_t v8 = (uint8_t)((v_fp >> 16) & 0xFFu);
-        int tu = (int)(u8 & 63u);
-        int tv = (int)(v8 & 63u);
-        int gour_level = 0;
-        int gour_bright = 0;
-        int gour_gray = gray;
-        if (use_gour) {
-            gour_level = (int)(gour_level_fp >> 16);
-            gour_level_fp += gour_level_step;
-            if (gour_level < 0) gour_level = 0;
-            if (gour_level > 14) gour_level = 14;
-            gour_bright = (int)(gour_bright_fp >> 16);
-            gour_bright_fp += gour_bright_step;
-            {
-                int d6 = (dist >> 7) + (gour_bright * 2);
-                if (d6 < 0) d6 = 0;
-                if (d6 > 64) d6 = 64;
-                gour_gray = (64 - d6) * 255 / 64;
-            }
-        }
+        for (int i = 0; i < span_len; i++, bg_i0++, bg_i1++) {
+            uint8_t u8 = (uint8_t)((u_fp >> 16) & 0xFFu);
+            uint8_t v8 = (uint8_t)((v_fp >> 16) & 0xFFu);
+            u_fp += (uint32_t)u_step;
+            v_fp += (uint32_t)v_step;
 
-        u_fp += (uint32_t)u_step;
-        v_fp += (uint32_t)v_step;
-
-        if (is_water) {
             /* Amiga-style textured water: refract existing pixels instead of drawing a solid color. */
             uint16_t d5_word = (uint16_t)(((uint16_t)v8 << 8) | (uint16_t)u8);
             uint16_t water_d5 = (uint16_t)(d5_word + (uint16_t)g_water_off);
             water_d5 &= 0x3F3Fu;
             uint8_t water_level = 0;
 
-            if (g_water_file && g_water_file_size >= 65536u) {
+            if (water_has_file) {
                 size_t wi = ((size_t)water_d5 << 2) + (size_t)g_water_src_off;
                 if (wi < g_water_file_size) {
                     water_level = g_water_file[wi];
                 }
             } else if (texture) {
-                int water_u = (int)(water_d5 & 63u);
-                int tex_idx = ((tv << 8) | water_u) * 4;
-                uint8_t t = texture[tex_idx];
-                water_level = (uint8_t)(t >> 4);
+                uint32_t tex_idx = (((uint32_t)v8 & 63u) << 10) | (((uint32_t)water_d5 & 63u) << 2);
+                water_level = (uint8_t)(texture[tex_idx] >> 4);
             }
 
-            size_t bg_i = water_refr_base0 + (size_t)x;
-            uint32_t bg0 = rgb[bg_i];
-            uint16_t bg_cw0 = cwbuf[bg_i];
-            if (buf[bg_i] == 0 && water_has_back_buffers) {
+            uint32_t bg0 = rgb[bg_i0];
+            uint16_t bg_cw0 = cwbuf[bg_i0];
+            if (buf[bg_i0] == 0 && water_has_back_buffers) {
                 /* AB3DI texturedwater samples from display memory while floor lines are streamed.
                  * When refraction points at rows not written yet this frame, those pixels still
                  * contain prior-frame values; mirror that by sampling back-buffer content. */
-                bg0 = rs->rgb_back_buffer[bg_i];
-                bg_cw0 = rs->cw_back_buffer[bg_i];
+                bg0 = rs->rgb_back_buffer[bg_i0];
+                bg_cw0 = rs->cw_back_buffer[bg_i0];
             }
             uint8_t bg_sample0 = (uint8_t)(bg_cw0 & 0xFFu);
 
@@ -1505,24 +1472,21 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             uint16_t bg_cw1 = bg_cw0;
             uint8_t bg_sample1 = bg_sample0;
             if (water_has_next_refr) {
-                size_t bg_i_next = water_refr_base1 + (size_t)x;
-                bg1 = rgb[bg_i_next];
-                bg_cw1 = cwbuf[bg_i_next];
-                if (buf[bg_i_next] == 0 && water_has_back_buffers) {
-                    bg1 = rs->rgb_back_buffer[bg_i_next];
-                    bg_cw1 = rs->cw_back_buffer[bg_i_next];
+                bg1 = rgb[bg_i1];
+                bg_cw1 = cwbuf[bg_i1];
+                if (buf[bg_i1] == 0 && water_has_back_buffers) {
+                    bg1 = rs->rgb_back_buffer[bg_i1];
+                    bg_cw1 = rs->cw_back_buffer[bg_i1];
                 }
                 bg_sample1 = (uint8_t)(bg_cw1 & 0xFFu);
             }
 
             uint32_t out;
             uint16_t out_cw;
-            if (g_water_brighten && g_water_brighten_size >= 512u) {
+            if (water_has_brighten) {
                 /* Amiga texturedwater:
                  *   d0 = WaterFile word, then move.b sampled_pixel_lowbyte,d0,
                  *   output = brightentab[d0]. */
-                uint32_t dist_off = (((uint32_t)dist) & 0xFF00u) << 1;
-                if (dist_off > (uint32_t)(12 * 512)) dist_off = (uint32_t)(12 * 512);
                 size_t bi0 = (size_t)dist_off + ((size_t)water_level << 9) + (size_t)bg_sample0 * 2u;
                 uint32_t out0;
                 uint16_t out_cw0;
@@ -1569,36 +1533,143 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 out_cw = argb_to_amiga12(out);
             }
 
-            row8[x] = 4; /* water tag: avoid wall-join fill smearing */
-            row32[x] = out;
-            row16[x] = out_cw;
-            continue;
+            *p8++ = 4; /* water tag: avoid wall-join fill smearing */
+            *p32++ = out;
+            *p16++ = out_cw;
         }
+        return;
+    }
 
-        uint32_t argb;
-        uint16_t out_cw;
-        if (texture) {
-            int tex_idx = ((tv << 8) | tu) * 4;
-            uint8_t texel = texture[tex_idx];
-            if (pal_lut_src) {
-                const int level = use_gour ? gour_level : floor_pal_level;
-                const uint8_t *lut = pal_lut_src + level * 512;
-                uint16_t cw = (uint16_t)((lut[texel * 2] << 8) | lut[texel * 2 + 1]);
-                argb = amiga12_to_argb(cw);
-            } else {
-                int lit = ((int)texel * (use_gour ? gour_gray : gray)) >> 8;
-                argb = 0xFF000000u | ((uint32_t)lit << 16) | ((uint32_t)lit << 8) | (uint32_t)lit;
+    /* Gouraud floor path (Amiga GOURSEL floor/roof): interpolate brightness levels across the span. */
+    int64_t gour_level_fp = 0;
+    int64_t gour_level_step = 0;
+    int64_t gour_bright_fp = 0;
+    int64_t gour_bright_step = 0;
+    const int dist_add = (dist >> 7);
+    if (use_gour) {
+        int span_w = xr - xl;
+        int left_level = left_brightness + dist_add;
+        int right_level = right_brightness + dist_add;
+        if (left_level < 0) left_level = 0;
+        if (right_level < 0) right_level = 0;
+        left_level >>= 1;
+        right_level >>= 1;
+        if (left_level > 14) left_level = 14;
+        if (right_level > 14) right_level = 14;
+        gour_level_fp = (int64_t)left_level << 16;
+        gour_level_step = (span_w > 0) ? (((int64_t)(right_level - left_level) << 16) / span_w) : 0;
+        gour_bright_fp = (int64_t)left_brightness << 16;
+        gour_bright_step = (span_w > 0) ? (((int64_t)(right_brightness - left_brightness) << 16) / span_w) : 0;
+    }
+
+    if (texture && pal_lut_src) {
+        uint8_t *p8 = row8;
+        uint32_t *p32 = row32;
+        uint16_t *p16 = row16;
+
+        if (use_gour) {
+            const uint32_t *gour_argb_levels[FLOOR_PAL_LEVEL_COUNT];
+            const uint16_t *gour_cw_levels[FLOOR_PAL_LEVEL_COUNT];
+            for (int level = 0; level < FLOOR_PAL_LEVEL_COUNT; level++) {
+                floor_span_prepare_pal_cache(pal_lut_src, level,
+                                             &gour_argb_levels[level],
+                                             &gour_cw_levels[level]);
             }
-        } else {
-            int g = use_gour ? gour_gray : gray;
-            argb = 0xFF000000u | ((uint32_t)g << 16) | ((uint32_t)g << 8) | (uint32_t)g;
+
+            for (int i = 0; i < span_len; i++) {
+                int gour_level = (int)(gour_level_fp >> 16);
+                gour_level_fp += gour_level_step;
+                if (gour_level < 0) gour_level = 0;
+                if (gour_level > 14) gour_level = 14;
+
+                uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
+                u_fp += (uint32_t)u_step;
+                v_fp += (uint32_t)v_step;
+
+                *p8++ = 1;
+                *p32++ = gour_argb_levels[gour_level][texel];
+                *p16++ = gour_cw_levels[gour_level][texel];
+            }
+            return;
         }
 
-        out_cw = argb_to_amiga12(argb);
+        {
+            const uint8_t *lut = pal_lut_src + floor_pal_level * 512;
+            for (int i = 0; i < span_len; i++) {
+                uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
+                u_fp += (uint32_t)u_step;
+                v_fp += (uint32_t)v_step;
+                uint16_t out_cw = (uint16_t)((lut[texel * 2] << 8) | lut[texel * 2 + 1]);
 
-        row8[x]  = 1;
-        row32[x] = argb;
-        row16[x] = out_cw;
+                *p8++ = 1;
+                *p32++ = amiga12_to_argb(out_cw);
+                *p16++ = out_cw;
+            }
+            return;
+        }
+    }
+
+    if (texture) {
+        uint8_t *p8 = row8;
+        uint32_t *p32 = row32;
+        uint16_t *p16 = row16;
+
+        if (use_gour) {
+            for (int i = 0; i < span_len; i++) {
+                int gour_bright = (int)(gour_bright_fp >> 16);
+                gour_bright_fp += gour_bright_step;
+                int d6 = dist_add + (gour_bright * 2);
+                if (d6 < 0) d6 = 0;
+                if (d6 > 64) d6 = 64;
+                int gour_gray = (64 - d6) * 255 / 64;
+
+                uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
+                u_fp += (uint32_t)u_step;
+                v_fp += (uint32_t)v_step;
+
+                int lit = ((int)texel * gour_gray) >> 8;
+                uint32_t argb = 0xFF000000u | ((uint32_t)lit << 16) | ((uint32_t)lit << 8) | (uint32_t)lit;
+                *p8++ = 1;
+                *p32++ = argb;
+                *p16++ = argb_to_amiga12(argb);
+            }
+            return;
+        }
+
+        for (int i = 0; i < span_len; i++) {
+            uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
+            u_fp += (uint32_t)u_step;
+            v_fp += (uint32_t)v_step;
+            int lit = ((int)texel * gray) >> 8;
+            uint32_t argb = 0xFF000000u | ((uint32_t)lit << 16) | ((uint32_t)lit << 8) | (uint32_t)lit;
+            *row8++ = 1;
+            *row32++ = argb;
+            *row16++ = argb_to_amiga12(argb);
+        }
+        return;
+    }
+
+    if (use_gour) {
+        for (int i = 0; i < span_len; i++) {
+            int gour_bright = (int)(gour_bright_fp >> 16);
+            gour_bright_fp += gour_bright_step;
+            int d6 = dist_add + (gour_bright * 2);
+            if (d6 < 0) d6 = 0;
+            if (d6 > 64) d6 = 64;
+            int g = (64 - d6) * 255 / 64;
+            uint32_t argb = 0xFF000000u | ((uint32_t)g << 16) | ((uint32_t)g << 8) | (uint32_t)g;
+            *row8++ = 1;
+            *row32++ = argb;
+            *row16++ = argb_to_amiga12(argb);
+        }
+    } else {
+        uint32_t argb = 0xFF000000u | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray;
+        uint16_t out_cw = argb_to_amiga12(argb);
+        for (int i = 0; i < span_len; i++) {
+            *row8++ = 1;
+            *row32++ = argb;
+            *row16++ = out_cw;
+        }
     }
 }
 
