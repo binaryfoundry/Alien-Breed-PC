@@ -77,7 +77,7 @@ static inline int16_t clamp_gib_vel_component(int32_t v)
  * Creates visual debris objects. The rendering of debris is platform-
  * specific but the logic to spawn them is game logic.
  * ----------------------------------------------------------------------- */
-void explode_into_bits(GameObject *obj, GameState *state)
+void explode_into_bits(GameObject *obj, GameState *state, bool explosion_kill)
 {
     /* Translated from Anims.s ExplodeIntoBits (line ~75-196).
      * Creates 7-9 debris fragments (gibs) in NastyShotData with random velocities.
@@ -146,19 +146,29 @@ void explode_into_bits(GameObject *obj, GameState *state)
             bit->raw[15] = 8;
         }
 
-        /* Gib spread: keep directional push from impact, but add wider random scatter
-         * so explosion deaths do not launch pieces in overly uniform directions. */
+        /* Regular gibs use the original directional scatter.
+         * Explosion kills use the boosted spread/energy tuning. */
         {
         int16_t ang = (int16_t)(rand() & 8190);
         int16_t s = sin_lookup(ang);
         int16_t c = cos_lookup(ang);
-        int32_t radial = 6 + (rand() & 15); /* 6..21 */
-        int32_t rand_vx = ((int32_t)s * radial) >> 15;
-        int32_t rand_vz = ((int32_t)c * radial) >> 15;
-        int32_t jitter_x = (int32_t)((rand() & 31) - 15);
-        int32_t jitter_z = (int32_t)((rand() & 31) - 15);
-        int32_t vx = (NASTY_IMPACTX(*obj) >> 1) + rand_vx + jitter_x;
-        int32_t vz = (NASTY_IMPACTZ(*obj) >> 1) + rand_vz + jitter_z;
+        int32_t vx;
+        int32_t vz;
+
+        if (explosion_kill) {
+            int32_t radial = 6 + (rand() & 15); /* 6..21 */
+            int32_t rand_vx = ((int32_t)s * radial) >> 15;
+            int32_t rand_vz = ((int32_t)c * radial) >> 15;
+            int32_t jitter_x = (int32_t)((rand() & 31) - 15);
+            int32_t jitter_z = (int32_t)((rand() & 31) - 15);
+            vx = (NASTY_IMPACTX(*obj) >> 1) + rand_vx + jitter_x;
+            vz = (NASTY_IMPACTZ(*obj) >> 1) + rand_vz + jitter_z;
+        } else {
+            int shift = (rand() & 3) + 1;
+            vx = (((int32_t)s << shift) >> 16) + (NASTY_IMPACTX(*obj) >> 1);
+            vz = (((int32_t)c << shift) >> 16) + (NASTY_IMPACTZ(*obj) >> 1);
+        }
+
         vx = clamp_gib_vel_component(vx);
         vz = clamp_gib_vel_component(vz);
         SHOT_SET_XVEL(*bit, vx << 16);

@@ -381,7 +381,7 @@ static void enemy_update_flying_soft_dead(GameObject *obj,
         if (OBJ_DEADL(obj) < 20) {
             int splatv = (params->gib_splat_noisevol > 0) ? params->gib_splat_noisevol : 400;
             audio_play_sample(14, amiga_noisevol_to_pc(splatv));
-            explode_into_bits(obj, state);
+            explode_into_bits(obj, state, false);
             OBJ_SET_DEADL(obj, 20);
         }
     }
@@ -395,7 +395,7 @@ static void enemy_death_marine_like(GameObject *obj, const EnemyParams *params,
 {
     if (damage > 1 || explosion_damage) {
         audio_play_sample(14, amiga_noisevol_to_pc(400));
-        explode_into_bits(obj, state);
+        explode_into_bits(obj, state, explosion_damage);
     }
     if ((!instant_kill || explosion_damage) && params->death_frames[0] >= 0) {
         audio_play_sample(scream_sample, amiga_noisevol_to_pc(200));
@@ -483,7 +483,7 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
         case ENEMY_DMG_AUDIO_BIG_GIB:
             /* BigRedThing.s / BigClaws.s / Tree.s: #14@400 + gibs, no screamsound on kill */
             audio_play_sample(14, amiga_noisevol_to_pc(400));
-            explode_into_bits(obj, state);
+            explode_into_bits(obj, state, explosion_damage);
             enemy_apply_death_outcome(obj, params, instant_kill);
             return true;
 
@@ -492,7 +492,7 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
             int splatv = (params->gib_splat_noisevol > 0) ? params->gib_splat_noisevol : 400;
             if (damage > 1 || explosion_damage) {
                 audio_play_sample(14, amiga_noisevol_to_pc(splatv));
-                explode_into_bits(obj, state);
+                explode_into_bits(obj, state, explosion_damage);
             }
             if ((!instant_kill || explosion_damage) && params->death_frames[0] >= 0) {
                 audio_play_sample(params->scream_sound, amiga_noisevol_to_pc(200));
@@ -505,7 +505,7 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
             /* FlyingScalyBall.s / EyeBall.s: killing blow >40 → #14@400+gib; else #8@200 */
             if (instant_kill) {
                 audio_play_sample(14, amiga_noisevol_to_pc(400));
-                explode_into_bits(obj, state);
+                explode_into_bits(obj, state, explosion_damage);
                 if (explosion_damage && params->scream_sound >= 0)
                     audio_play_sample(params->scream_sound, amiga_noisevol_to_pc(200));
                 OBJ_SET_ZONE(obj, -1);
@@ -538,7 +538,7 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
                 audio_play_sample(params->death_sound, amiga_noisevol_to_pc(200));
             }
             if (damage > 1 || explosion_damage) {
-                explode_into_bits(obj, state);
+                explode_into_bits(obj, state, explosion_damage);
             }
             enemy_apply_death_outcome(obj, params, instant_kill);
             return true;
@@ -2798,10 +2798,18 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             continue;
         }
 
+        bool explosive_projectile_hit = (shot_size >= 0 && shot_size < 8 &&
+                                         bullet_types[shot_size].explosive_force > 0);
+
         /* HIT! Apply damage */
         target->raw[19] = (uint8_t)(target->raw[19] + (uint8_t)SHOT_POWER(*obj));
         NASTY_SET_IMPACTX(target, SHOT_XVEL(*obj) >> 16);
         NASTY_SET_IMPACTZ(target, SHOT_ZVEL(*obj) >> 16);
+        if (explosive_projectile_hit && check_idx >= 0 && check_idx < MAX_OBJECTS) {
+            /* Direct rocket/grenade impacts should always count as explosion kills
+             * even if the subsequent splash visibility test excludes the target. */
+            explosion_damage_flag[check_idx] = 1;
+        }
 
         /* Set bullet to popping */
         SHOT_STATUS(*obj) = 1;
@@ -2814,8 +2822,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             audio_play_sample(bullet_types[shot_size].hit_noise,
                               bullet_types[shot_size].hit_volume);
         }
-        if (shot_size >= 0 && shot_size < 8 &&
-            bullet_types[shot_size].explosive_force > 0) {
+        if (explosive_projectile_hit) {
             compute_blast(state, ctx.newx, ctx.newz, accypos,
                           bullet_types[shot_size].explosive_force,
                           OBJ_ZONE(obj), obj->obj.in_top);

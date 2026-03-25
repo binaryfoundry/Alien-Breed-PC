@@ -43,8 +43,8 @@ void go_in_direction(int32_t *newx, int32_t *newz,
                      int16_t angle, int16_t speed);
 
 /* ExplodeIntoBits - enemy death explosion into fragments.
- * Creates visual debris (rendering side is stubbed). */
-void explode_into_bits(GameObject *obj, GameState *state);
+ * explosion_kill enables stronger blast-style gib velocity/spread. */
+void explode_into_bits(GameObject *obj, GameState *state, bool explosion_kill);
 
 /* ViewpointToDraw - determine which sprite frame to draw for an
  * enemy based on the viewer's angle relative to the enemy facing.
