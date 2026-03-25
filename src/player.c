@@ -1551,9 +1551,16 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
 
     const GunDataEntry *gun = &guns[gun_idx];
 
-    /* 1. Decrement fire rate timer */
-    plr->time_to_shoot -= state->temp_frames;
-    if (plr->time_to_shoot > 0) return;
+    /* 1. Decrement fire rate timer (exact PlayerShoot.s cadence).
+     * Amiga only enters fire path when timer is already zero at function start.
+     * If timer is non-zero, it is decremented and this tick exits regardless,
+     * even when the decrement reaches/passes zero. */
+    if (plr->time_to_shoot != 0) {
+        plr->time_to_shoot -= state->temp_frames;
+        if (plr->time_to_shoot >= 0) return;
+        plr->time_to_shoot = 0;
+        return;
+    }
 
     /* 2. Check fire state */
     bool fire = false;
