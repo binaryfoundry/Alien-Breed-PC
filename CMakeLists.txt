@@ -15,6 +15,18 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal")
   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
 endif()
 
+# Sky backdrop (Amiga data/gfx/backfile); also copy next to includes/ for io_load_sky search path
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/includes")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backfile")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backfile" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backfile" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/includes")
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backpal")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backpal" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backpal" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/includes")
+endif()
+
 # -----------------------------------------------------------------------
 # Data: ensure data/sounds exists (use Amiga raw files or .wav; no build-time conversion)
 # -----------------------------------------------------------------------

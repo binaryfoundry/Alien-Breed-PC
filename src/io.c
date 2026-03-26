@@ -603,6 +603,7 @@ static uint8_t *g_bump_tile_data;
 static uint8_t *g_smooth_bump_tile_data;
 static uint8_t *g_bump_pal_data;
 static uint8_t *g_smooth_bump_pal_data;
+static uint8_t *g_sky_file_data;
 /* Actual loaded size per wall (total file size) so dump can use correct pixel dimensions */
 static size_t g_wall_loaded_size[MAX_WALL_TILES];
 
@@ -628,6 +629,7 @@ void io_init(void)
     g_smooth_bump_tile_data = NULL;
     g_bump_pal_data = NULL;
     g_smooth_bump_pal_data = NULL;
+    g_sky_file_data = NULL;
     poly_obj_set_texture_assets(NULL, 0, NULL, 0);
 }
 
@@ -668,6 +670,9 @@ void io_shutdown(void)
     g_bump_pal_data = NULL;
     free(g_smooth_bump_pal_data);
     g_smooth_bump_pal_data = NULL;
+    free(g_sky_file_data);
+    g_sky_file_data = NULL;
+    renderer_set_sky_assets(NULL, 0, 0, 0, NULL);
     g_renderer.floor_tile = NULL;
     g_renderer.floor_pal = NULL;
     g_renderer.bump_tile = NULL;
@@ -1268,6 +1273,109 @@ void io_load_floor(void)
 
     renderer_set_water_assets(g_water_file_data, g_water_file_size,
                               g_water_brighten_data, g_water_brighten_size);
+}
+
+/* Amiga AB3DI.s BackPicture: incbin "data/gfx/backfile" — 16-bit BE color words, 432x38, column-major
+ * (32832 bytes). Palette is in the pixels; copper chunky uses the same 0x0RGB words (no backpal file). */
+void io_load_sky(void)
+{
+    printf("[IO] Loading sky backdrop...\n");
+    free(g_sky_file_data);
+    g_sky_file_data = NULL;
+
+    char path[512];
+    FILE *f = NULL;
+    static const char *sky_rel[] = {
+        "amiga/data/gfx/backfile",
+        "../amiga/data/gfx/backfile",
+        "../../amiga/data/gfx/backfile",
+        NULL
+    };
+    static const char *sky_data[] = {
+        "includes/backfile",
+        "gfx/backfile",
+        NULL
+    };
+    for (int i = 0; sky_data[i] && !f; i++) {
+        make_data_path(path, sizeof(path), sky_data[i]);
+        f = fopen(path, "rb");
+    }
+    for (int i = 0; !f && sky_rel[i]; i++) {
+        f = fopen(sky_rel[i], "rb");
+    }
+
+    static uint8_t sky_pal[768];
+    const uint8_t *pal_ptr = NULL;
+    {
+        FILE *pf = NULL;
+        static const char *pal_data[] = { "includes/backpal", "gfx/backpal", NULL };
+        for (int i = 0; pal_data[i] && !pf; i++) {
+            make_data_path(path, sizeof(path), pal_data[i]);
+            pf = fopen(path, "rb");
+        }
+        static const char *pal_rel[] = {
+            "amiga/data/gfx/backpal",
+            "../amiga/data/gfx/backpal",
+            NULL
+        };
+        for (int i = 0; !pf && pal_rel[i]; i++)
+            pf = fopen(pal_rel[i], "rb");
+        if (pf) {
+            if (fread(sky_pal, 1, 768, pf) == 768)
+                pal_ptr = sky_pal;
+            fclose(pf);
+        }
+    }
+
+    if (!f) {
+        printf("[IO] Sky: backfile not found (procedural cylindrical sky)\n");
+        renderer_set_sky_assets(NULL, 0, 0, 0, pal_ptr);
+        return;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0) {
+        fclose(f);
+        renderer_set_sky_assets(NULL, 0, 0, 0, pal_ptr);
+        return;
+    }
+
+    g_sky_file_data = (uint8_t *)malloc((size_t)len);
+    if (!g_sky_file_data || fread(g_sky_file_data, 1, (size_t)len, f) != (size_t)len) {
+        free(g_sky_file_data);
+        g_sky_file_data = NULL;
+        fclose(f);
+        renderer_set_sky_assets(NULL, 0, 0, 0, pal_ptr);
+        printf("[IO] Sky: failed to read backfile\n");
+        return;
+    }
+    fclose(f);
+
+    int tw = 432;
+    int th = 38;
+    /* Classic backfile: 432 cols x 38 rows x 2 bytes, column-major (76 bytes/column). */
+    if (len == 32832) {
+        tw = 432;
+        th = 38;
+    } else if (len % 432 == 0 && (len / 432) % 2 == 0) {
+        tw = 432;
+        th = (int)((len / 432) / 2);
+        if (th < 1) th = 1;
+    } else if (len % 256 == 0) {
+        tw = 256;
+        th = (int)(len / 256);
+        if (th < 1) th = 1;
+    } else {
+        tw = 256;
+        th = (int)(len / 256);
+        if (th < 1) th = 1;
+    }
+
+    printf("[IO] Sky: %dx%d (%ld bytes)%s\n", tw, th, len,
+           pal_ptr ? ", + index palette" : " (Amiga 12-bit words)");
+    renderer_set_sky_assets(g_sky_file_data, tw, th, (size_t)len, pal_ptr);
 }
 
 /* Try opening a file; tries subpath then Amiga-style "disk/includes/<name>". */

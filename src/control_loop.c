@@ -396,6 +396,7 @@ void play_game(GameState *state)
     /* ---- Load shared assets ---- */
     io_load_walls();
     io_load_floor();
+    io_load_sky();
     io_load_gun_graphics();
     io_dump_textures();  /* Debug: write textures/*.bmp for viewing */
     io_load_objects();
@@ -416,8 +417,8 @@ void play_game(GameState *state)
     state->plr1.gun_selected = 0;
     state->plr2.gun_selected = 0;
 
-    /* ---- Bypass menu: go straight to level 3 (testing) ---- */
-    state->current_level = 0;  /* Level index 2 = Level 3 */
+    /* ---- Bypass menu: go straight to level 1 (testing) ---- */
+    state->current_level = 0;
     state->max_level = 2;
     state->finished_level = 0;
     state->nasty = true;

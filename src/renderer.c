@@ -516,6 +516,223 @@ void renderer_clear(uint8_t color)
     }
 }
 
+/* Amiga Anims.s putinbackdrop: pan u0 = (ang & 8191) * 432 / 8192 into cylindrical sky map (432 px wrap). */
+#define SKY_PAN_WIDTH 432
+/* Standard backfile: 76 bytes per column = 38 x 16-bit Amiga color words (column-major). */
+#define SKY_AMIGA_BYTES_PER_COL 76
+
+static const uint8_t *s_sky_pixels;
+static int s_sky_tex_w = 1;
+static int s_sky_tex_h = 1;
+static size_t s_sky_data_bytes;
+static int s_sky_bytes_per_col = SKY_AMIGA_BYTES_PER_COL;
+/* 1 = row-major (stride = tex_w*2 per texel row); 0 = column-major (Amiga fromback, 76 bytes/col). */
+static int s_sky_row_major = 0;
+/* 0 = Amiga 16-bit BE column-major (no separate palette), 1 = 8-bit row-major + LUT, 2 = procedural */
+static int s_sky_mode = 2;
+static uint32_t s_sky_argb[256];
+static uint16_t s_sky_cw[256];
+
+static void sky_build_lut_default(void)
+{
+    for (int i = 0; i < 256; i++) {
+        int r = (i * 45) / 255;
+        int g = (i * 70) / 255;
+        int b = 30 + (i * 225) / 255;
+        uint32_t px = RENDER_RGB_RASTER_PIXEL(((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b);
+        s_sky_argb[i] = px;
+        s_sky_cw[i] = argb_to_amiga12(px);
+    }
+}
+
+static void sky_build_lut_from_rgb768(const uint8_t *rgb_palette_768)
+{
+    for (int i = 0; i < 256; i++) {
+        uint32_t r = rgb_palette_768[i * 3 + 0];
+        uint32_t g = rgb_palette_768[i * 3 + 1];
+        uint32_t b = rgb_palette_768[i * 3 + 2];
+        uint32_t px = RENDER_RGB_RASTER_PIXEL((r << 16) | (g << 8) | b);
+        s_sky_argb[i] = px;
+        s_sky_cw[i] = argb_to_amiga12(px);
+    }
+}
+
+void renderer_set_sky_assets(const uint8_t *chunky_pixels, int tex_w, int tex_h, size_t data_bytes,
+                              const uint8_t *rgb_palette_768)
+{
+    s_sky_pixels = chunky_pixels;
+    s_sky_tex_w = tex_w > 0 ? tex_w : 1;
+    s_sky_tex_h = tex_h > 0 ? tex_h : 1;
+    s_sky_data_bytes = data_bytes;
+    s_sky_mode = 2;
+    s_sky_bytes_per_col = SKY_AMIGA_BYTES_PER_COL;
+
+    if (!chunky_pixels) {
+        s_sky_row_major = 0;
+        sky_build_lut_default();
+        return;
+    }
+
+    /* Amiga backfile (Anims.s): 32832 B = 432 cols x 38 rows x 2 bytes, column-major BE color words. */
+    if (data_bytes == 32832u && tex_w == 432 && tex_h == 38) {
+        s_sky_mode = 0;
+        s_sky_bytes_per_col = 76;
+        s_sky_row_major = 0; /* strict Amiga parity for canonical backfile */
+        return;
+    }
+
+    /* Same byte count can be 432x76 8-bit row-major — only when height says so. */
+    if (data_bytes == 32832u && tex_w == 432 && tex_h == 76) {
+        s_sky_mode = 1;
+        if (rgb_palette_768)
+            sky_build_lut_from_rgb768(rgb_palette_768);
+        else
+            sky_build_lut_default();
+        return;
+    }
+
+    /* 8-bit indexed row-major */
+    if ((size_t)tex_w * (size_t)tex_h == data_bytes) {
+        s_sky_mode = 1;
+        if (rgb_palette_768)
+            sky_build_lut_from_rgb768(rgb_palette_768);
+        else
+            sky_build_lut_default();
+        return;
+    }
+
+    /* Non-standard Amiga column-major: width 432, even bytes per column */
+    if (tex_w == 432 && data_bytes % 432u == 0u) {
+        int bpc = (int)(data_bytes / 432u);
+        if (bpc >= 2 && (bpc % 2) == 0) {
+            int rows = bpc / 2;
+            if (rows >= 1) {
+                s_sky_tex_h = rows;
+                s_sky_bytes_per_col = bpc;
+                s_sky_mode = 0;
+                return;
+            }
+        }
+    }
+
+    /* Unknown — procedural only (avoid wrong striping). */
+    s_sky_pixels = NULL;
+    s_sky_mode = 2;
+    s_sky_row_major = 1;
+    sky_build_lut_default();
+}
+
+void renderer_draw_sky_pass(int16_t angpos)
+{
+    uint8_t *buf = g_renderer.buffer;
+    uint32_t *rgb = g_renderer.rgb_buffer;
+    uint16_t *cw = g_renderer.cw_buffer;
+    if (!buf || !rgb || !cw) return;
+    int w = g_renderer.width;
+    int h = g_renderer.height;
+    if (w < 1 || h < 1) return;
+
+    int u0 = ((int)(angpos & 8191) * SKY_PAN_WIDTH) / 8192;
+    /* Amiga puts backdrop in top 38 of 80 rows; keep same proportion at any output height. */
+    int sky_h = (h * 38) / 80;
+    if (sky_h < 1) sky_h = 1;
+    /* Amiga draws one sky source column per 3D screen column (96 visible columns). */
+    const int sky_view_cols = 96;
+
+    if (s_sky_pixels && s_sky_mode == 0) {
+        /* 16-bit BE Amiga color words. Layout: row-major (default) or column-major (Anims.s). */
+        int th = s_sky_tex_h;
+        int tw = s_sky_tex_w;
+        int bpc = s_sky_bytes_per_col;
+        size_t row_stride = (size_t)tw * 2u;
+        /* Map texture rows to upper sky band only (full-frame stretch smeared the image). */
+        for (int y = 0; y < h; y++) {
+            int rpix;
+            if (y < sky_h) {
+                rpix = (int)((int64_t)y * (th - 1) / (sky_h > 1 ? sky_h - 1 : 1));
+            } else {
+                rpix = th - 1;
+            }
+            if (rpix < 0) rpix = 0;
+            if (rpix >= th) rpix = th - 1;
+            size_t row = (size_t)y * (size_t)w;
+            for (int x = 0; x < w; x++) {
+                int sx = (int)((int64_t)x * sky_view_cols / w);
+                if (sx < 0) sx = 0;
+                if (sx >= sky_view_cols) sx = sky_view_cols - 1;
+                int c = (u0 + sx) % SKY_PAN_WIDTH;
+                if (c < 0) c += SKY_PAN_WIDTH;
+                c = (c * tw) / SKY_PAN_WIDTH;
+                if (c >= tw) c = tw - 1;
+                size_t off;
+                if (s_sky_row_major)
+                    off = (size_t)rpix * row_stride + (size_t)c * 2u;
+                else
+                    off = (size_t)c * (size_t)bpc + (size_t)rpix * 2u;
+                if (off + 2u > s_sky_data_bytes) continue;
+                uint16_t cw12 = (uint16_t)((s_sky_pixels[off] << 8) | s_sky_pixels[off + 1]);
+                uint32_t px = amiga12_to_argb(cw12);
+                size_t p = row + (size_t)x;
+                buf[p] = 0;
+                rgb[p] = px;
+                cw[p] = argb_to_amiga12(px);
+            }
+        }
+    } else if (s_sky_pixels && s_sky_mode == 1) {
+        int th = s_sky_tex_h;
+        int tw = s_sky_tex_w;
+        for (int y = 0; y < h; y++) {
+            int v;
+            if (y < sky_h) {
+                v = (int)((int64_t)y * (th - 1) / (sky_h > 1 ? sky_h - 1 : 1));
+            } else {
+                v = th - 1;
+            }
+            if (v < 0) v = 0;
+            if (v >= th) v = th - 1;
+            size_t row = (size_t)y * (size_t)w;
+            for (int x = 0; x < w; x++) {
+                int sx = (int)((int64_t)x * sky_view_cols / w);
+                if (sx < 0) sx = 0;
+                if (sx >= sky_view_cols) sx = sky_view_cols - 1;
+                int tu = (u0 + sx) % SKY_PAN_WIDTH;
+                if (tu < 0) tu += SKY_PAN_WIDTH;
+                tu = (tu * tw) / SKY_PAN_WIDTH;
+                if (tu >= tw) tu = tw - 1;
+                size_t toff = (size_t)v * (size_t)tw + (size_t)tu;
+                if (toff >= (size_t)tw * (size_t)th) continue;
+                uint8_t idx = s_sky_pixels[toff];
+                size_t p = row + (size_t)x;
+                buf[p] = 0;
+                rgb[p] = s_sky_argb[idx];
+                cw[p] = s_sky_cw[idx];
+            }
+        }
+    } else {
+        for (int y = 0; y < h; y++) {
+            int t = (y * 255) / (h > 1 ? h - 1 : 1);
+            size_t row = (size_t)y * (size_t)w;
+            for (int x = 0; x < w; x++) {
+                int sx = (int)((int64_t)x * sky_view_cols / w);
+                if (sx < 0) sx = 0;
+                if (sx >= sky_view_cols) sx = sky_view_cols - 1;
+                int u = (u0 + sx) % SKY_PAN_WIDTH;
+                if (u < 0) u += SKY_PAN_WIDTH;
+                int shade = t + (u * 40) / SKY_PAN_WIDTH;
+                if (shade > 255) shade = 255;
+                int r = (shade * 40) / 255;
+                int g = (shade * 90) / 255;
+                int b = 30 + (shade * 200) / 255;
+                uint32_t px = RENDER_RGB_RASTER_PIXEL(((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b);
+                size_t p = row + (size_t)x;
+                buf[p] = 0;
+                rgb[p] = px;
+                cw[p] = argb_to_amiga12(px);
+            }
+        }
+    }
+}
+
 void renderer_swap(void)
 {
     uint8_t *tmp = g_renderer.buffer;
@@ -3348,8 +3565,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
 
         case 12: /* Backdrop */
         {
-            /* putinbackdrop - no additional data in the graphics stream */
-            /* Would fill the background with sky texture */
+            /* putinbackdrop - no extra stream data. PC port draws sky once per frame
+             * in renderer_draw_display (after clear), so this entry is a no-op here. */
             break;
         }
 
@@ -3408,6 +3625,12 @@ void renderer_draw_display(GameState *state)
     /* 1. Clear framebuffer */
     renderer_clear(0);
     g_fill_screen_water = 0; /* Amiga DrawDisplay: clr.b fillscrnwater */
+
+    /* Sky backdrop first (Amiga Anims.s putinbackdrop / data/gfx/backfile), before world draw. */
+    {
+        PlayerState *plr_sky = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
+        renderer_draw_sky_pass((int16_t)plr_sky->angpos);
+    }
 
     /* Vertical scale per frame: denominator scaled by screen aspect ratio (w/h vs default). */
     int w = (r->width  > 0) ? r->width  : 1;

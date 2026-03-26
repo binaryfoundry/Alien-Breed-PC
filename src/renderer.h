@@ -279,6 +279,14 @@ void renderer_resize(int w, int h);
 /* Clear the framebuffer to a color */
 void renderer_clear(uint8_t color);
 
+/* Sky backdrop (Amiga data/gfx/backfile). Drawn first each frame after clear.
+ * Standard backfile: 32832 bytes = 432 x 38 x 2 (big-endian 12-bit words), interpreted in
+ * strict Amiga column-major parity mode. Optional rgb_palette_768 is only for non-standard
+ * 8-bit indexed sky assets (tex_w*tex_h == data_bytes). */
+void renderer_set_sky_assets(const uint8_t *chunky_pixels, int tex_w, int tex_h, size_t data_bytes,
+                              const uint8_t *rgb_palette_768);
+void renderer_draw_sky_pass(int16_t angpos);
+
 /* Swap front/back buffers */
 void renderer_swap(void);
 

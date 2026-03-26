@@ -24,6 +24,7 @@ void io_release_level_memory(LevelState *level);
 /* Asset loading */
 void io_load_walls(void);
 void io_load_floor(void);
+void io_load_sky(void);
 void io_load_gun_graphics(void);
 void io_load_vec_objects(void);  /* Load 3D vector (.vec) objects into POLYOBJECTS table */
 
