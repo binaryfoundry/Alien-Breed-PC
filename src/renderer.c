@@ -241,7 +241,7 @@ static void build_amiga12_lut(void)
         uint32_t r4 = ((unsigned)i >> 8) & 0xFu;
         uint32_t g4 = ((unsigned)i >> 4) & 0xFu;
         uint32_t b4 =  (unsigned)i       & 0xFu;
-        amiga12_lut[i] = 0xFF000000u | (r4 * 0x11u << 16) | (g4 * 0x11u << 8) | (b4 * 0x11u);
+        amiga12_lut[i] = RENDER_RGB_RASTER_PIXEL((r4 * 0x11u << 16) | (g4 * 0x11u << 8) | (b4 * 0x11u));
     }
     for (int i = 0; i < 256; i++) {
         unsigned n = (unsigned)(i + 8) / 17u;
@@ -284,7 +284,7 @@ static inline uint32_t blend_argb(uint32_t bg, uint32_t fg, uint32_t alpha_fg)
     uint32_t r = (uint32_t)div255_lut[br * inv + fr * alpha_fg];
     uint32_t g = (uint32_t)div255_lut[bg_g * inv + fg_g * alpha_fg];
     uint32_t b = (uint32_t)div255_lut[bb * inv + fb * alpha_fg];
-    return 0xFF000000u | (r << 16) | (g << 8) | b;
+    return RENDER_RGB_RASTER_PIXEL((r << 16) | (g << 8) | b);
 }
 
 #define FLOOR_PAL_LEVEL_COUNT 15
@@ -413,6 +413,10 @@ static void free_buffers(void)
     g_renderer.wall_span_argb_bot = NULL;
     free(g_renderer.wall_span_count);
     g_renderer.wall_span_count = NULL;
+    free(g_renderer.wall_span_fill_down_end);
+    g_renderer.wall_span_fill_down_end = NULL;
+    free(g_renderer.wall_span_fill_up_end);
+    g_renderer.wall_span_fill_up_end = NULL;
 }
 
 static void allocate_buffers(int w, int h)
@@ -446,6 +450,8 @@ static void allocate_buffers(int w, int h)
         g_renderer.wall_span_bot = (int16_t*)calloc(span_cells, sizeof(int16_t));
         g_renderer.wall_span_argb_top = (uint32_t*)calloc(span_cells, sizeof(uint32_t));
         g_renderer.wall_span_argb_bot = (uint32_t*)calloc(span_cells, sizeof(uint32_t));
+        g_renderer.wall_span_fill_down_end = (int16_t*)calloc(span_cells, sizeof(int16_t));
+        g_renderer.wall_span_fill_up_end = (int16_t*)calloc(span_cells, sizeof(int16_t));
     }
     g_renderer.wall_span_count = (uint8_t*)calloc((size_t)w, sizeof(uint8_t));
 
@@ -487,19 +493,15 @@ void renderer_shutdown(void)
 /* Row templates for fast RGB clear (avoid per-pixel loops). Max width from renderer_resize. */
 #define CLEAR_ROW_MAX 2048
 static uint32_t s_clear_sky_row[CLEAR_ROW_MAX];
-static uint32_t s_clear_black_row[CLEAR_ROW_MAX];
 static uint16_t s_clear_sky_cw_row[CLEAR_ROW_MAX];
-static uint16_t s_clear_black_cw_row[CLEAR_ROW_MAX];
 static int s_clear_rows_inited = 0;
 
 static void init_clear_rows(void)
 {
     if (s_clear_rows_inited) return;
     for (int i = 0; i < CLEAR_ROW_MAX; i++) {
-        s_clear_sky_row[i] = 0xFFEEEEEEu;
-        s_clear_black_row[i] = 0xFF000000u;
+        s_clear_sky_row[i] = RENDER_RGB_CLEAR_SKY_PIXEL;
         s_clear_sky_cw_row[i] = 0x0EEEu;
-        s_clear_black_cw_row[i] = 0x0000u;
     }
     s_clear_rows_inited = 1;
 }
@@ -513,38 +515,26 @@ void renderer_clear(uint8_t color)
     if (g_renderer.rgb_buffer) {
         init_clear_rows();
         uint32_t *p = g_renderer.rgb_buffer;
-        int center = h / 2;
         size_t row_bytes = (size_t)w * sizeof(uint32_t);
         if (w <= CLEAR_ROW_MAX) {
-            for (int y = 0; y < center; y++)
+            for (int y = 0; y < h; y++)
                 memcpy(p + (size_t)y * w, s_clear_sky_row, row_bytes);
-            for (int y = center; y < h; y++)
-                memcpy(p + (size_t)y * w, s_clear_black_row, row_bytes);
         } else {
-            for (int y = 0; y < center; y++) {
-                for (int x = 0; x < w; x++) p[y * w + x] = 0xFFEEEEEEu;
-            }
-            for (int y = center; y < h; y++) {
-                for (int x = 0; x < w; x++) p[y * w + x] = 0xFF000000u;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) p[y * w + x] = RENDER_RGB_CLEAR_SKY_PIXEL;
             }
         }
     }
     if (g_renderer.cw_buffer) {
         init_clear_rows();
         uint16_t *p = g_renderer.cw_buffer;
-        int center = h / 2;
         size_t row_bytes = (size_t)w * sizeof(uint16_t);
         if (w <= CLEAR_ROW_MAX) {
-            for (int y = 0; y < center; y++)
+            for (int y = 0; y < h; y++)
                 memcpy(p + (size_t)y * w, s_clear_sky_cw_row, row_bytes);
-            for (int y = center; y < h; y++)
-                memcpy(p + (size_t)y * w, s_clear_black_cw_row, row_bytes);
         } else {
-            for (int y = 0; y < center; y++) {
+            for (int y = 0; y < h; y++) {
                 for (int x = 0; x < w; x++) p[y * w + x] = 0x0EEEu;
-            }
-            for (int y = center; y < h; y++) {
-                for (int x = 0; x < w; x++) p[y * w + x] = 0x0000u;
             }
         }
     }
@@ -797,6 +787,114 @@ void renderer_rotate_object_pts(GameState *state)
 /* Wall texture index for switches (io.c wall_texture_table). Must be before draw_wall_column. */
 #define SWITCHES_WALL_TEX_ID  11
 
+#define WALL_SPAN_SCRATCH (WALL_SPANS_MAX_PER_COLUMN * 2 + 2)
+
+typedef struct {
+    int16_t yt, yb;
+    uint32_t at, ab;
+} WallSpanScratch;
+
+/* Later draws overwrite earlier pixels in the column (painter's order). Merge span list:
+ * subtract new [ct,cb] from existing intervals, re-sample surviving fragment colors from rgb. */
+static void wall_span_record_column_strip(int x, int ct, int cb, uint32_t *rgb, int width)
+{
+    int16_t *top = g_renderer.wall_span_top;
+    int16_t *bot = g_renderer.wall_span_bot;
+    uint32_t *atop = g_renderer.wall_span_argb_top;
+    uint32_t *abot = g_renderer.wall_span_argb_bot;
+    uint8_t *nsp = g_renderer.wall_span_count;
+    if (!top || !bot || !atop || !abot || !nsp || !rgb) return;
+
+    WallSpanScratch scratch[WALL_SPAN_SCRATCH];
+    int nout = 0;
+
+    int nc = (int)nsp[x];
+    if (nc > WALL_SPANS_MAX_PER_COLUMN) nc = WALL_SPANS_MAX_PER_COLUMN;
+
+    for (int i = 0; i < nc; i++) {
+        size_t idx = (size_t)i * (size_t)width + (size_t)x;
+        int yt = (int)top[idx];
+        int yb = (int)bot[idx];
+        if (yt > yb) {
+            int t = yt;
+            yt = yb;
+            yb = t;
+        }
+
+        /* Disjoint: keep (colors still valid; pixels outside new strip unchanged). */
+        if (yb < ct || yt > cb) {
+            if (nout < WALL_SPAN_SCRATCH) {
+                scratch[nout].yt = (int16_t)yt;
+                scratch[nout].yb = (int16_t)yb;
+                scratch[nout].at = atop[idx];
+                scratch[nout].ab = abot[idx];
+                nout++;
+            }
+            continue;
+        }
+
+        /* Upper remainder [yt, ct-1] */
+        if (yt < ct) {
+            int fa = yt, fb = ct - 1;
+            if (fa <= fb && nout < WALL_SPAN_SCRATCH) {
+                size_t pfa = (size_t)fa * (size_t)width + (size_t)x;
+                size_t pfb = (size_t)fb * (size_t)width + (size_t)x;
+                scratch[nout].yt = (int16_t)fa;
+                scratch[nout].yb = (int16_t)fb;
+                scratch[nout].at = rgb[pfa];
+                scratch[nout].ab = rgb[pfb];
+                nout++;
+            }
+        }
+        /* Lower remainder [cb+1, yb] */
+        if (cb < yb) {
+            int fa = cb + 1, fb = yb;
+            if (fa <= fb && nout < WALL_SPAN_SCRATCH) {
+                size_t pfa = (size_t)fa * (size_t)width + (size_t)x;
+                size_t pfb = (size_t)fb * (size_t)width + (size_t)x;
+                scratch[nout].yt = (int16_t)fa;
+                scratch[nout].yb = (int16_t)fb;
+                scratch[nout].at = rgb[pfa];
+                scratch[nout].ab = rgb[pfb];
+                nout++;
+            }
+        }
+    }
+
+    /* New strip on top */
+    if (nout < WALL_SPAN_SCRATCH) {
+        size_t pct = (size_t)ct * (size_t)width + (size_t)x;
+        size_t pcb = (size_t)cb * (size_t)width + (size_t)x;
+        scratch[nout].yt = (int16_t)ct;
+        scratch[nout].yb = (int16_t)cb;
+        scratch[nout].at = rgb[pct];
+        scratch[nout].ab = rgb[pcb];
+        nout++;
+    }
+
+    /* Sort by screen Y (top to bottom) for stable cap */
+    for (int a = 1; a < nout; a++) {
+        WallSpanScratch t = scratch[a];
+        int b = a - 1;
+        while (b >= 0 && scratch[b].yt > t.yt) {
+            scratch[b + 1] = scratch[b];
+            b--;
+        }
+        scratch[b + 1] = t;
+    }
+
+    if (nout > WALL_SPANS_MAX_PER_COLUMN) nout = WALL_SPANS_MAX_PER_COLUMN;
+
+    nsp[x] = (uint8_t)nout;
+    for (int i = 0; i < nout; i++) {
+        size_t idx = (size_t)i * (size_t)width + (size_t)x;
+        top[idx] = scratch[i].yt;
+        bot[idx] = scratch[i].yb;
+        atop[idx] = scratch[i].at;
+        abot[idx] = scratch[i].ab;
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Wall rendering (column-by-column)
  *
@@ -923,7 +1021,7 @@ static void draw_wall_column(int x, int y_top, int y_bot,
         int gray = (64 - amiga_d6) * 255 / 64;
         if (gray < 0)   gray = 0;
         if (gray > 255) gray = 255;
-        fallback = 0xFF000000u | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray;
+        fallback = RENDER_RGB_RASTER_PIXEL(((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray);
         fallback_cw = argb_to_amiga12(fallback);
     }
 
@@ -999,19 +1097,20 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     }
     if (g_renderer.wall_span_top && g_renderer.wall_span_bot && g_renderer.wall_span_count &&
         g_renderer.wall_span_argb_top && g_renderer.wall_span_argb_bot) {
-        int n = (int)g_renderer.wall_span_count[x];
-        if (n < WALL_SPANS_MAX_PER_COLUMN) {
-            size_t idx = (size_t)n * (size_t)g_renderer.width + (size_t)x;
-            g_renderer.wall_span_top[idx] = (int16_t)ct;
-            g_renderer.wall_span_bot[idx] = (int16_t)cb;
-            size_t pix_top = (size_t)ct * (size_t)width + (size_t)x;
-            size_t pix_bot = (size_t)cb * (size_t)width + (size_t)x;
-            g_renderer.wall_span_argb_top[idx] = rgb[pix_top];
-            g_renderer.wall_span_argb_bot[idx] = rgb[pix_bot];
-            g_renderer.wall_span_count[x] = (uint8_t)(n + 1);
-        }
+        wall_span_record_column_strip(x, ct, cb, rgb, width);
     }
 }
+
+/* Project world Y to screen row; nearest-pixel rounding matches visible wall edges better than truncating division. */
+static int wall_proj_y_screen(int16_t world_y, int32_t col_z, int32_t proj_y_scale, int height)
+{
+    int64_t den = col_z;
+    if (den <= 0) den = 1;
+    int64_t num = (int64_t)world_y * proj_y_scale * RENDER_SCALE;
+    int64_t q = (num >= 0) ? ((num + den / 2) / den) : ((num - den / 2) / den);
+    return (int)q + height / 2;
+}
+
 /* Reference Z used to project two-level zone split height to screen Y (same scale as orp->z). */
 #define TWO_LEVEL_SPLIT_REF_Z 400
 
@@ -1122,8 +1221,8 @@ void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
         if (amiga_d6 < 0) amiga_d6 = 0;
         if (amiga_d6 > 64) amiga_d6 = 64;
 
-        int y_top = (int)((int32_t)top * g_renderer.proj_y_scale * RENDER_SCALE / col_z) + (g_renderer.height / 2);
-        int y_bot = (int)((int32_t)bot * g_renderer.proj_y_scale * RENDER_SCALE / col_z) + (g_renderer.height / 2);
+        int y_top = wall_proj_y_screen(top, col_z, g_renderer.proj_y_scale, g_renderer.height);
+        int y_bot = wall_proj_y_screen(bot, col_z, g_renderer.proj_y_scale, g_renderer.height);
         /* Strict Amiga parity: do not apply port-side wall-top seam expansion. */
         int ext = 0;
         int y_top_draw = y_top - ext;
@@ -1503,7 +1602,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 if (r > 255u) r = 255u;
                 if (g > 255u) g = 255u;
                 if (b > 255u) b = 255u;
-                out = blend_argb(bg, 0xFF000000u | (r << 16) | (g << 8) | b, 120u);
+                out = blend_argb(bg, RENDER_RGB_RASTER_PIXEL((r << 16) | (g << 8) | b), 120u);
                 out_cw = argb_to_amiga12(out);
             }
 
@@ -1602,7 +1701,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 v_fp += (uint32_t)v_step;
 
                 int lit = ((int)texel * gour_gray) >> 8;
-                uint32_t argb = 0xFF000000u | ((uint32_t)lit << 16) | ((uint32_t)lit << 8) | (uint32_t)lit;
+                uint32_t argb = RENDER_RGB_RASTER_PIXEL(((uint32_t)lit << 16) | ((uint32_t)lit << 8) | (uint32_t)lit);
                 *p8++ = 1;
                 *p32++ = argb;
                 *p16++ = argb_to_amiga12(argb);
@@ -1615,7 +1714,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             u_fp += (uint32_t)u_step;
             v_fp += (uint32_t)v_step;
             int lit = ((int)texel * gray) >> 8;
-            uint32_t argb = 0xFF000000u | ((uint32_t)lit << 16) | ((uint32_t)lit << 8) | (uint32_t)lit;
+            uint32_t argb = RENDER_RGB_RASTER_PIXEL(((uint32_t)lit << 16) | ((uint32_t)lit << 8) | (uint32_t)lit);
             *row8++ = 1;
             *row32++ = argb;
             *row16++ = argb_to_amiga12(argb);
@@ -1631,13 +1730,13 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             if (d6 < 0) d6 = 0;
             if (d6 > 64) d6 = 64;
             int g = (64 - d6) * 255 / 64;
-            uint32_t argb = 0xFF000000u | ((uint32_t)g << 16) | ((uint32_t)g << 8) | (uint32_t)g;
+            uint32_t argb = RENDER_RGB_RASTER_PIXEL(((uint32_t)g << 16) | ((uint32_t)g << 8) | (uint32_t)g);
             *row8++ = 1;
             *row32++ = argb;
             *row16++ = argb_to_amiga12(argb);
         }
     } else {
-        uint32_t argb = 0xFF000000u | ((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray;
+        uint32_t argb = RENDER_RGB_RASTER_PIXEL(((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray);
         uint16_t out_cw = argb_to_amiga12(argb);
         for (int i = 0; i < span_len; i++) {
             *row8++ = 1;
@@ -1814,16 +1913,14 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
                     row16[screen_col] = c12;
                 } else {
                     int shade = (gray * (int)texel) / 31;
-                    uint32_t c = 0xFF000000u
-                               | ((uint32_t)shade << 16) | ((uint32_t)shade << 8) | (uint32_t)shade;
+                    uint32_t c = RENDER_RGB_RASTER_PIXEL(((uint32_t)shade << 16) | ((uint32_t)shade << 8) | (uint32_t)shade);
                     row32[screen_col] = c;
                     row16[screen_col] = argb_to_amiga12(c);
                 }
             } else {
                 /* No palette: use texel for shading so sprite shape is visible */
                 int shade = (gray * (int)texel) / 31;
-                uint32_t c = 0xFF000000u
-                           | ((uint32_t)shade << 16) | ((uint32_t)shade << 8) | (uint32_t)shade;
+                uint32_t c = RENDER_RGB_RASTER_PIXEL(((uint32_t)shade << 16) | ((uint32_t)shade << 8) | (uint32_t)shade);
                 row32[screen_col] = c;
                 row16[screen_col] = argb_to_amiga12(c);
             }
@@ -3397,11 +3494,86 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
     }
 }
 
-/* Clear color for upper half of view (renderer_clear); seam cracks expose this between columns. */
-#define SEAM_FILL_SKY_ARGB 0xFFEEEEEEu
+/* Seam fill: only pixels tagged with RENDER_RGB_SKY_MASK_A (see renderer_clear). */
 
-/* Fill vertical sky gaps from recorded wall span edges (crack / column seam closure). */
-static void renderer_wall_seam_fill(void)
+static int seam_fill_is_sky(uint32_t c)
+{
+    return (c >> 24) == (uint32_t)RENDER_RGB_SKY_MASK_A;
+}
+
+/* Pass 1: first sky within MAX rows of span; extend contiguous sky. No fill if the run
+ * does not end (non-sky / screen edge) within MAX rows of that span edge — i.e. if
+ * low > yb+MAX (down) or hi < yt-MAX (up) after extending. */
+static void renderer_wall_seam_fill_prepass(void)
+{
+    uint32_t *rgb = g_renderer.rgb_buffer;
+    int16_t *top = g_renderer.wall_span_top;
+    int16_t *bot = g_renderer.wall_span_bot;
+    int16_t *fde = g_renderer.wall_span_fill_down_end;
+    int16_t *fue = g_renderer.wall_span_fill_up_end;
+    uint8_t *nsp = g_renderer.wall_span_count;
+    if (!rgb || !top || !bot || !fde || !fue || !nsp) return;
+
+    const int w = g_renderer.width;
+    const int h = g_renderer.height;
+
+    for (int x = 0; x < w; x++) {
+        int nc = (int)nsp[x];
+        if (nc <= 0) continue;
+        if (nc > WALL_SPANS_MAX_PER_COLUMN) nc = WALL_SPANS_MAX_PER_COLUMN;
+        for (int k = 0; k < nc; k++) {
+            size_t idx = (size_t)k * (size_t)w + (size_t)x;
+            int yt = (int)top[idx];
+            int yb = (int)bot[idx];
+            if (yt < 0) yt = 0;
+            if (yb >= h) yb = h - 1;
+            if (yt > yb) {
+                int t = yt;
+                yt = yb;
+                yb = t;
+            }
+
+            /* Scan down: first sky must be within SEAM_FILL_SKY_SEARCH_MAX rows of yb */
+            int16_t down_end = -1;
+            {
+                int y_lo = yb + 1;
+                int y_hi = yb + SEAM_FILL_SKY_SEARCH_MAX;
+                if (y_hi >= h) y_hi = h - 1;
+                int y = y_lo;
+                while (y <= y_hi && !seam_fill_is_sky(rgb[(size_t)y * (size_t)w + (size_t)x])) y++;
+                if (y <= y_hi && y < h && seam_fill_is_sky(rgb[(size_t)y * (size_t)w + (size_t)x])) {
+                    int low = y;
+                    while (low + 1 < h && seam_fill_is_sky(rgb[(size_t)(low + 1) * (size_t)w + (size_t)x])) low++;
+                    int y_max_edge = yb + SEAM_FILL_SKY_SEARCH_MAX;
+                    if (y_max_edge >= h) y_max_edge = h - 1;
+                    if (low <= y_max_edge) down_end = (int16_t)low;
+                }
+            }
+            fde[idx] = down_end;
+
+            /* Scan up: first sky must be within SEAM_FILL_SKY_SEARCH_MAX rows of yt */
+            int16_t up_end = -1;
+            if (yt > 0) {
+                int y_top = yt - 1;
+                int y_min = yt - SEAM_FILL_SKY_SEARCH_MAX;
+                if (y_min < 0) y_min = 0;
+                int y = y_top;
+                while (y >= y_min && !seam_fill_is_sky(rgb[(size_t)y * (size_t)w + (size_t)x])) y--;
+                if (y >= y_min && y >= 0 && seam_fill_is_sky(rgb[(size_t)y * (size_t)w + (size_t)x])) {
+                    int hi = y;
+                    while (hi - 1 >= 0 && seam_fill_is_sky(rgb[(size_t)(hi - 1) * (size_t)w + (size_t)x])) hi--;
+                    int y_min_edge = yt - SEAM_FILL_SKY_SEARCH_MAX;
+                    if (y_min_edge < 0) y_min_edge = 0;
+                    if (hi >= y_min_edge) up_end = (int16_t)hi;
+                }
+            }
+            fue[idx] = up_end;
+        }
+    }
+}
+
+/* Pass 2: fill prepass range (still sky). Prepass skips runs that extend past MAX without ending. */
+static void renderer_wall_seam_fill_apply(void)
 {
     uint32_t *rgb = g_renderer.rgb_buffer;
     uint16_t *cw = g_renderer.cw_buffer;
@@ -3410,8 +3582,10 @@ static void renderer_wall_seam_fill(void)
     int16_t *bot = g_renderer.wall_span_bot;
     uint32_t *atop = g_renderer.wall_span_argb_top;
     uint32_t *abot = g_renderer.wall_span_argb_bot;
+    int16_t *fde = g_renderer.wall_span_fill_down_end;
+    int16_t *fue = g_renderer.wall_span_fill_up_end;
     uint8_t *nsp = g_renderer.wall_span_count;
-    if (!rgb || !top || !bot || !atop || !abot || !nsp) return;
+    if (!rgb || !top || !bot || !atop || !abot || !fde || !fue || !nsp) return;
 
     const int w = g_renderer.width;
     const int h = g_renderer.height;
@@ -3434,44 +3608,38 @@ static void renderer_wall_seam_fill(void)
 
             uint32_t c_top = atop[idx];
             uint32_t c_bot = abot[idx];
+            uint16_t cw_top = argb_to_amiga12(c_top);
+            uint16_t cw_bot = argb_to_amiga12(c_bot);
 
-            /* From below bottom edge: fill downward while sky. */
-            for (int y = yb + 1; y < h; y++) {
-                size_t pix = (size_t)y * (size_t)w + (size_t)x;
-                if (rgb[pix] != SEAM_FILL_SKY_ARGB) break;
-                rgb[pix] = c_bot;
-                if (cw) cw[pix] = argb_to_amiga12(c_bot);
-                if (buf) buf[pix] = 2;
-            }
-
-            /* From above top edge: fill upward only if another span endpoint in this column
-             * lies strictly higher on screen (smaller y). Otherwise the gap is open sky — skip. */
-            int has_point_above = 0;
-            for (int j = 0; j < nc; j++) {
-                size_t jdx = (size_t)j * (size_t)w + (size_t)x;
-                int tj = (int)top[jdx];
-                int bj = (int)bot[jdx];
-                if (tj < 0) tj = 0;
-                if (bj >= h) bj = h - 1;
-                if (tj > bj) {
-                    int t = tj;
-                    tj = bj;
-                    bj = t;
+            int16_t down_end = fde[idx];
+            if (down_end >= 0 && yb + 1 <= (int)down_end) {
+                for (int yy = yb + 1; yy <= (int)down_end; yy++) {
+                    size_t pix = (size_t)yy * (size_t)w + (size_t)x;
+                    if (!seam_fill_is_sky(rgb[pix])) continue;
+                    rgb[pix] = c_bot;
+                    if (cw) cw[pix] = cw_bot;
+                    if (buf) buf[pix] = 2;
                 }
-                if (tj < yt) has_point_above = 1;
-                if (bj < yt) has_point_above = 1;
             }
-            if (has_point_above && yt > 0) {
-                for (int y = yt - 1; y >= 0; y--) {
-                    size_t pix = (size_t)y * (size_t)w + (size_t)x;
-                    if (rgb[pix] != SEAM_FILL_SKY_ARGB) break;
+
+            int16_t up_end = fue[idx];
+            if (up_end >= 0 && yt > 0 && (int)up_end <= yt - 1) {
+                for (int yy = yt - 1; yy >= (int)up_end; yy--) {
+                    size_t pix = (size_t)yy * (size_t)w + (size_t)x;
+                    if (!seam_fill_is_sky(rgb[pix])) continue;
                     rgb[pix] = c_top;
-                    if (cw) cw[pix] = argb_to_amiga12(c_top);
+                    if (cw) cw[pix] = cw_top;
                     if (buf) buf[pix] = 2;
                 }
             }
         }
     }
+}
+
+static void renderer_wall_seam_fill(void)
+{
+    renderer_wall_seam_fill_prepass();
+    renderer_wall_seam_fill_apply();
 }
 
 static void renderer_apply_underwater_tint(void)
@@ -3569,6 +3737,11 @@ void renderer_draw_display(GameState *state)
 
     if (r->wall_span_count) {
         memset(r->wall_span_count, 0, (size_t)w);
+    }
+    if (r->wall_span_fill_down_end && r->wall_span_fill_up_end) {
+        size_t span_cells = (size_t)w * (size_t)WALL_SPANS_MAX_PER_COLUMN;
+        memset(r->wall_span_fill_down_end, 0xFF, span_cells * sizeof(int16_t));
+        memset(r->wall_span_fill_up_end, 0xFF, span_cells * sizeof(int16_t));
     }
 
     /* 4. Rotate geometry */

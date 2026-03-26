@@ -244,13 +244,17 @@ void display_draw_display(GameState *state)
     if (SDL_LockTexture(g_texture, NULL, (void**)&pixels, &pitch) < 0) return;
 
     int w = renderer_get_width(), h = renderer_get_height();
-    const size_t row_bytes = (size_t)w * sizeof(uint32_t);
+    /* Game buffer: A=0 raster, A=1 clear/sky (see renderer.h). SDL upload forces opaque. */
     if (pitch == (int)(w * sizeof(uint32_t))) {
-        memcpy(pixels, src, row_bytes * (size_t)h);
+        const size_t n = (size_t)w * (size_t)h;
+        for (size_t i = 0; i < n; i++)
+            pixels[i] = src[i] | 0xFF000000u;
     } else {
         for (int y = 0; y < h; y++) {
             uint32_t *dst_row = (uint32_t*)((uint8_t*)pixels + (size_t)y * pitch);
-            memcpy(dst_row, src + (size_t)y * w, row_bytes);
+            const uint32_t *src_row = src + (size_t)y * w;
+            for (int x = 0; x < w; x++)
+                dst_row[x] = src_row[x] | 0xFF000000u;
         }
     }
 
@@ -295,8 +299,8 @@ void display_energy_bar(int16_t energy)
     int bar_y = h - 2;
     int bar_w = (energy > 0) ? ((int)energy * (w - 4) / 127) : 0;
     for (int x = 2; x < 2 + bar_w && x < w - 2; x++) {
-        rgb[bar_y * w + x] = 0xFF00CC00;
-        rgb[(bar_y - 1) * w + x] = 0xFF00CC00;
+        rgb[bar_y * w + x] = RENDER_RGB_RASTER_PIXEL(0x00CC00u);
+        rgb[(bar_y - 1) * w + x] = RENDER_RGB_RASTER_PIXEL(0x00CC00u);
     }
 }
 
@@ -310,8 +314,8 @@ void display_ammo_bar(int16_t ammo)
     int bar_w = (ammo > 0) ? ((int)ammo * (w - 4) / max_ammo) : 0;
     if (bar_w > w - 4) bar_w = w - 4;
     for (int x = 2; x < 2 + bar_w && x < w - 2; x++) {
-        rgb[bar_y * w + x] = 0xFFCCCC00;
-        rgb[(bar_y - 1) * w + x] = 0xFFCCCC00;
+        rgb[bar_y * w + x] = RENDER_RGB_RASTER_PIXEL(0xCCCC00u);
+        rgb[(bar_y - 1) * w + x] = RENDER_RGB_RASTER_PIXEL(0xCCCC00u);
     }
 }
 

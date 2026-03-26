@@ -320,7 +320,7 @@ static uint32_t make_poly_color(int slot, uint16_t tex_map_word, int shade_level
     bg = bg * shade / 255;
     bb = bb * shade / 255;
 
-    return 0xFF000000u | (br << 16) | (bg << 8) | bb;
+    return RENDER_RGB_RASTER_PIXEL((br << 16) | (bg << 8) | bb);
 }
 
 /* -----------------------------------------------------------------------
@@ -617,7 +617,7 @@ static inline uint32_t amiga12_to_argb_local(uint16_t w)
     uint32_t r4 = (uint32_t)((w >> 8) & 0xF);
     uint32_t g4 = (uint32_t)((w >> 4) & 0xF);
     uint32_t b4 = (uint32_t)(w & 0xF);
-    return 0xFF000000u | (r4 * 0x11u << 16) | (g4 * 0x11u << 8) | (b4 * 0x11u);
+    return RENDER_RGB_RASTER_PIXEL((r4 * 0x11u << 16) | (g4 * 0x11u << 8) | (b4 * 0x11u));
 }
 
 static int poly_textures_ready(void)
