@@ -2949,10 +2949,6 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             if (y_min_clamp < top_clip_for_poly) y_min_clamp = top_clip_for_poly;
             if (y_max_clamp > r->bot_clip) y_max_clamp = r->bot_clip;
 
-            /* Strict parity mode: keep edge extension disabled in all clip modes. */
-            int full_screen_zone = (r->left_clip == 0 && r->right_clip == g_renderer.width);
-            int edge_extra_portal = full_screen_zone ? 0 : PORTAL_EDGE_EXTRA;
-
             /* Walk each polygon edge and rasterize into edge tables (floor and ceiling/roof).
              * Near-plane clip edges so vertices behind the camera get proper
              * screen X values (otherwise on_screen[].screen_x is garbage and
@@ -3041,10 +3037,6 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                         int hi = sx1 > sx2 ? sx1 : sx2;
                         int32_t lo_b = (sx1 <= sx2) ? eb1 : eb2;
                         int32_t hi_b = (sx1 <= sx2) ? eb2 : eb1;
-                        /* Strict parity mode: no floor/ceiling edge expansion. */
-                        int he_extra = (floor_y_dist < 0) ? (full_screen_zone ? CEILING_EDGE_EXTRA : edge_extra_portal) : 0;
-                        lo -= he_extra;
-                        hi += he_extra;
                         if (lo < r->left_clip) lo = r->left_clip;
                         if (hi >= r->right_clip) hi = r->right_clip - 1;
                         if (lo < left_edge[row]) {
@@ -3086,14 +3078,12 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     b_fp += db_fp * (row_start - sy2_raw);
                 }
                 
-                /* Strict parity mode: no floor/ceiling edge expansion. */
-                int edge_extra = (floor_y_dist < 0) ? (full_screen_zone ? CEILING_EDGE_EXTRA : edge_extra_portal) : 0;
                 for (int row = row_start; row <= row_end; row++) {
                     if (row < 0 || row >= h) { x_fp += dx_fp; b_fp += db_fp; continue; }
                     int x = (int)(x_fp >> 16);
                     int32_t edge_bright = (int32_t)(b_fp >> 16);
-                    int left_x = x - edge_extra;
-                    int right_x = x + edge_extra;
+                    int left_x = x;
+                    int right_x = x;
                     if (left_x < r->left_clip) left_x = r->left_clip;
                     if (right_x >= r->right_clip) right_x = r->right_clip - 1;
                     if (left_x < left_edge[row]) {
