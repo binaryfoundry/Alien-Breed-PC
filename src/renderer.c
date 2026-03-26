@@ -705,10 +705,9 @@ void renderer_draw_sky_pass(int16_t angpos)
         if (th > 1 && tw > 1 && w > 1 && sky_h > 1) {
             const int64_t pan_period_fp = ((int64_t)SKY_PAN_WIDTH << 16);
             const int64_t sx_step_fp = (((int64_t)(sky_view_cols - 1)) << 16) / (int64_t)(w - 1);
-            for (int y = 0; y < h; y++) {
-                int64_t v_fp;
-                if (y < sky_h) v_fp = (((int64_t)y * (th - 1)) << 16) / (int64_t)(sky_h - 1);
-                else           v_fp = ((int64_t)(th - 1) << 16);
+            const int64_t v_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
+            for (int y = 0; y < sky_h; y++) {
+                int64_t v_fp = (((int64_t)y * (th - 1)) << 16) / v_den;
                 int v0 = (int)(v_fp >> 16);
                 int v1 = (v0 < th - 1) ? (v0 + 1) : v0;
                 uint32_t fy = (uint32_t)(v_fp & 0xFFFF);
@@ -740,10 +739,9 @@ void renderer_draw_sky_pass(int16_t angpos)
             /* Nearest-neighbour path (or filtering disabled). */
             int bpc = s_sky_bytes_per_col;
             size_t row_stride = (size_t)tw * 2u;
-            for (int y = 0; y < h; y++) {
-                int rpix;
-                if (y < sky_h) rpix = (int)((int64_t)y * (th - 1) / (sky_h > 1 ? sky_h - 1 : 1));
-                else           rpix = th - 1;
+            const int64_t r_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
+            for (int y = 0; y < sky_h; y++) {
+                int rpix = (int)((int64_t)y * (th - 1) / r_den);
                 if (rpix < 0) rpix = 0;
                 if (rpix >= th) rpix = th - 1;
                 size_t row = (size_t)y * (size_t)w;
@@ -775,10 +773,9 @@ void renderer_draw_sky_pass(int16_t angpos)
         if (th > 1 && tw > 1 && w > 1 && sky_h > 1) {
             const int64_t pan_period_fp = ((int64_t)SKY_PAN_WIDTH << 16);
             const int64_t sx_step_fp = (((int64_t)(sky_view_cols - 1)) << 16) / (int64_t)(w - 1);
-            for (int y = 0; y < h; y++) {
-                int64_t v_fp;
-                if (y < sky_h) v_fp = (((int64_t)y * (th - 1)) << 16) / (int64_t)(sky_h - 1);
-                else           v_fp = ((int64_t)(th - 1) << 16);
+            const int64_t v_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
+            for (int y = 0; y < sky_h; y++) {
+                int64_t v_fp = (((int64_t)y * (th - 1)) << 16) / v_den;
                 int v0 = (int)(v_fp >> 16);
                 int v1 = (v0 < th - 1) ? (v0 + 1) : v0;
                 uint32_t fy = (uint32_t)(v_fp & 0xFFFF);
@@ -808,10 +805,9 @@ void renderer_draw_sky_pass(int16_t angpos)
 #endif
         {
             /* Nearest-neighbour path (or filtering disabled). */
-            for (int y = 0; y < h; y++) {
-                int v;
-                if (y < sky_h) v = (int)((int64_t)y * (th - 1) / (sky_h > 1 ? sky_h - 1 : 1));
-                else           v = th - 1;
+            const int64_t v_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
+            for (int y = 0; y < sky_h; y++) {
+                int v = (int)((int64_t)y * (th - 1) / v_den);
                 if (v < 0) v = 0;
                 if (v >= th) v = th - 1;
                 size_t row = (size_t)y * (size_t)w;
@@ -834,8 +830,8 @@ void renderer_draw_sky_pass(int16_t angpos)
             }
         }
     } else {
-        for (int y = 0; y < h; y++) {
-            int t = (y * 255) / (h > 1 ? h - 1 : 1);
+        for (int y = 0; y < sky_h; y++) {
+            int t = (y * 255) / (sky_h > 1 ? sky_h - 1 : 1);
             size_t row = (size_t)y * (size_t)w;
             for (int x = 0; x < w; x++) {
                 int sx = (int)((int64_t)x * sky_view_cols / w);
@@ -853,6 +849,33 @@ void renderer_draw_sky_pass(int16_t angpos)
                 buf[p] = 0;
                 rgb[p] = px;
                 cw[p] = argb_to_amiga12(px);
+            }
+        }
+    }
+
+    /* Below sky band: same clear as renderer_clear (empty canvas for world draw). */
+    {
+        init_clear_rows();
+        const uint32_t below_px = RENDER_RGB_CLEAR_SKY_PIXEL;
+        const uint16_t below_cw = 0x0EEEu;
+        size_t row_bytes_rgb = (size_t)w * sizeof(uint32_t);
+        size_t row_bytes_cw = (size_t)w * sizeof(uint16_t);
+        if (w <= CLEAR_ROW_MAX) {
+            for (int y = sky_h; y < h; y++) {
+                size_t row = (size_t)y * (size_t)w;
+                memset(buf + row, 0, (size_t)w);
+                memcpy(rgb + row, s_clear_sky_row, row_bytes_rgb);
+                memcpy(cw + row, s_clear_sky_cw_row, row_bytes_cw);
+            }
+        } else {
+            for (int y = sky_h; y < h; y++) {
+                size_t row = (size_t)y * (size_t)w;
+                for (int x = 0; x < w; x++) {
+                    size_t p = row + (size_t)x;
+                    buf[p] = 0;
+                    rgb[p] = below_px;
+                    cw[p] = below_cw;
+                }
             }
         }
     }
