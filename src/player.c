@@ -41,8 +41,8 @@
 #define INSTANT_TRACE_MAX_ITERS 1024
 
 /* Gun selection key -> gun index mapping (from GUNVALS in Plr1Control.s):
- * key1 pistol, key2 shotgun, key3 plasma, key4 grenade, key5 rocket. */
-static const int8_t gun_key_map[5] = { 0, 7, 1, 4, 2 };
+ * key1 pistol, key2 shotgun, key3 plasma, key4 grenade, key5 rocket, key6 flamethrower. */
+static const int8_t gun_key_map[6] = { 0, 7, 1, 4, 2, 3 };
 #define GUN_KEY_COUNT ((int)(sizeof(gun_key_map) / sizeof(gun_key_map[0])))
 
 static int player_weapon_slot_from_gun(int16_t gun_idx)
