@@ -2526,6 +2526,12 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             obj->raw[14] = bullet_fly_src_cols[(uint8_t)shot_size < MAX_BULLET_ANIM_IDX ? (uint8_t)shot_size : 0];
             obj->raw[15] = bullet_fly_src_rows[(uint8_t)shot_size < MAX_BULLET_ANIM_IDX ? (uint8_t)shot_size : 0];
         }
+        /* ItsABullet notpopping: add anim y_offset to accypos (Anims.s; flame table uses 0). */
+        {
+            int32_t acc = SHOT_ACCYPOS(*obj) + ((int32_t)f->y_offset << 7);
+            SHOT_SET_ACCYPOS(*obj, acc);
+            obj_sw(obj->raw + 4, (int16_t)(acc >> 7));
+        }
         /* Advance for next tick(s). Gibs use paced cadence to match Amiga feel. */
         while (anim_steps > 0) {
             anim_idx = (uint8_t)(anim_idx + 1);

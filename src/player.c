@@ -1788,10 +1788,10 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
         int32_t zvel = ((int32_t)cos_val) << (shift + 1);
         SHOT_SET_XVEL(*bullet, xvel);
         SHOT_SET_ZVEL(*bullet, zvel);
-        /* Keep the exact PLR1FIREBULLET clamp sequence from PlayerShoot.s. */
+        /* PlayerShoot.s PLR1FIREBULLET: clamp bulyspd to [-20,20], then add word 20 (bullet Y tweak). */
         int16_t final_yvel = bulyspd;
-        if (final_yvel >= 20) final_yvel = 20;
-        if (final_yvel >= -20) final_yvel = -20;
+        if (final_yvel > 20) final_yvel = 20;
+        else if (final_yvel < -20) final_yvel = -20;
         final_yvel = (int16_t)(final_yvel + gun->bullet_y_offset);
         SHOT_SET_YVEL(*bullet, final_yvel);
         SHOT_POWER(*bullet) = gun->shot_power;
