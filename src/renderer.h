@@ -38,16 +38,8 @@
 #define RENDER_STRIDE    RENDER_WIDTH   /* stride = width; runtime uses renderer width */
 #define RENDER_BUF_SIZE  (RENDER_STRIDE * RENDER_HEIGHT)
 
-/* Wall column strips merged per column (occlusion); at most this many disjoint intervals. */
-#define WALL_SPANS_MAX_PER_COLUMN 32
-
-/* Wall seam fill: max pixel distance from span edge (see renderer_wall_seam_fill). */
-#ifndef SEAM_FILL_SKY_SEARCH_MAX
-#define SEAM_FILL_SKY_SEARCH_MAX 8
-#endif
-
 /* Alpha tagging for the ARGB game buffer:
- *   RENDER_RGB_SKY_MASK_A (1) = cleared / empty sky (seam-fill target).
+ *   RENDER_RGB_SKY_MASK_A (1) = cleared / empty sky.
  *   RENDER_RGB_RASTER_A (0)  = anything drawn by the 3D rasterizer.
  * display.c forces A=0xFF when uploading to SDL (RGB unchanged). */
 #ifndef RENDER_RGB_SKY_MASK_A
@@ -192,17 +184,6 @@ typedef struct {
     /* Column clipping */
     ColumnClip clip;
 
-    /* Wall vertical spans per column (clipped screen Y), merged to visible strips only.
-     * Layout: index = layer * width + x, layer in [0, wall_span_count[x]). */
-    int16_t *wall_span_top;
-    int16_t *wall_span_bot;
-    uint32_t *wall_span_argb_top;
-    uint32_t *wall_span_argb_bot;
-    uint8_t *wall_span_count;
-    /* Seam fill prepass: lowest screen Y of sky run below span bot; topmost Y of sky run above span top (-1 = none). */
-    int16_t *wall_span_fill_down_end;
-    int16_t *wall_span_fill_up_end;
-
     /* Unused (Amiga uses no depth buffer; painter's + stream order only). */
     int16_t *depth_buffer;
 
@@ -345,13 +326,6 @@ void renderer_draw_gun(GameState *state);
 /* Get pointer to the current rendered frame for display */
 const uint8_t *renderer_get_buffer(void);
 const uint32_t *renderer_get_rgb_buffer(void);
-/* Wall span arrays: length width * WALL_SPANS_MAX_PER_COLUMN; use count per column.
- * ARGB at span top/bottom rows (matches rgb_buffer after that column is drawn). */
-const int16_t *renderer_get_wall_span_top(void);
-const int16_t *renderer_get_wall_span_bot(void);
-const uint32_t *renderer_get_wall_span_argb_top(void);
-const uint32_t *renderer_get_wall_span_argb_bot(void);
-const uint8_t *renderer_get_wall_span_count(void);
 int renderer_get_width(void);
 int renderer_get_height(void);
 int renderer_get_stride(void);

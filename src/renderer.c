@@ -403,20 +403,6 @@ static void free_buffers(void)
     g_renderer.clip.bot = NULL;
     free(g_renderer.clip.z);
     g_renderer.clip.z = NULL;
-    free(g_renderer.wall_span_top);
-    g_renderer.wall_span_top = NULL;
-    free(g_renderer.wall_span_bot);
-    g_renderer.wall_span_bot = NULL;
-    free(g_renderer.wall_span_argb_top);
-    g_renderer.wall_span_argb_top = NULL;
-    free(g_renderer.wall_span_argb_bot);
-    g_renderer.wall_span_argb_bot = NULL;
-    free(g_renderer.wall_span_count);
-    g_renderer.wall_span_count = NULL;
-    free(g_renderer.wall_span_fill_down_end);
-    g_renderer.wall_span_fill_down_end = NULL;
-    free(g_renderer.wall_span_fill_up_end);
-    g_renderer.wall_span_fill_up_end = NULL;
 }
 
 static void allocate_buffers(int w, int h)
@@ -444,16 +430,6 @@ static void allocate_buffers(int w, int h)
     g_renderer.clip.top = (int16_t*)calloc(1, clip_size);
     g_renderer.clip.bot = (int16_t*)calloc(1, clip_size);
     g_renderer.clip.z = (int32_t*)calloc(1, (size_t)w * sizeof(int32_t));
-    {
-        size_t span_cells = (size_t)w * (size_t)WALL_SPANS_MAX_PER_COLUMN;
-        g_renderer.wall_span_top = (int16_t*)calloc(span_cells, sizeof(int16_t));
-        g_renderer.wall_span_bot = (int16_t*)calloc(span_cells, sizeof(int16_t));
-        g_renderer.wall_span_argb_top = (uint32_t*)calloc(span_cells, sizeof(uint32_t));
-        g_renderer.wall_span_argb_bot = (uint32_t*)calloc(span_cells, sizeof(uint32_t));
-        g_renderer.wall_span_fill_down_end = (int16_t*)calloc(span_cells, sizeof(int16_t));
-        g_renderer.wall_span_fill_up_end = (int16_t*)calloc(span_cells, sizeof(int16_t));
-    }
-    g_renderer.wall_span_count = (uint8_t*)calloc((size_t)w, sizeof(uint8_t));
 
     g_renderer.top_clip = 0;
     g_renderer.bot_clip = (int16_t)(h - 1);
@@ -563,31 +539,6 @@ const uint8_t *renderer_get_buffer(void)
 const uint32_t *renderer_get_rgb_buffer(void)
 {
     return g_renderer.rgb_back_buffer; /* The just-drawn RGB frame */
-}
-
-const int16_t *renderer_get_wall_span_top(void)
-{
-    return g_renderer.wall_span_top;
-}
-
-const int16_t *renderer_get_wall_span_bot(void)
-{
-    return g_renderer.wall_span_bot;
-}
-
-const uint32_t *renderer_get_wall_span_argb_top(void)
-{
-    return g_renderer.wall_span_argb_top;
-}
-
-const uint32_t *renderer_get_wall_span_argb_bot(void)
-{
-    return g_renderer.wall_span_argb_bot;
-}
-
-const uint8_t *renderer_get_wall_span_count(void)
-{
-    return g_renderer.wall_span_count;
 }
 
 int renderer_get_width(void)  { return g_renderer.width; }
@@ -786,114 +737,6 @@ void renderer_rotate_object_pts(GameState *state)
 
 /* Wall texture index for switches (io.c wall_texture_table). Must be before draw_wall_column. */
 #define SWITCHES_WALL_TEX_ID  11
-
-#define WALL_SPAN_SCRATCH (WALL_SPANS_MAX_PER_COLUMN * 2 + 2)
-
-typedef struct {
-    int16_t yt, yb;
-    uint32_t at, ab;
-} WallSpanScratch;
-
-/* Later draws overwrite earlier pixels in the column (painter's order). Merge span list:
- * subtract new [ct,cb] from existing intervals, re-sample surviving fragment colors from rgb. */
-static void wall_span_record_column_strip(int x, int ct, int cb, uint32_t *rgb, int width)
-{
-    int16_t *top = g_renderer.wall_span_top;
-    int16_t *bot = g_renderer.wall_span_bot;
-    uint32_t *atop = g_renderer.wall_span_argb_top;
-    uint32_t *abot = g_renderer.wall_span_argb_bot;
-    uint8_t *nsp = g_renderer.wall_span_count;
-    if (!top || !bot || !atop || !abot || !nsp || !rgb) return;
-
-    WallSpanScratch scratch[WALL_SPAN_SCRATCH];
-    int nout = 0;
-
-    int nc = (int)nsp[x];
-    if (nc > WALL_SPANS_MAX_PER_COLUMN) nc = WALL_SPANS_MAX_PER_COLUMN;
-
-    for (int i = 0; i < nc; i++) {
-        size_t idx = (size_t)i * (size_t)width + (size_t)x;
-        int yt = (int)top[idx];
-        int yb = (int)bot[idx];
-        if (yt > yb) {
-            int t = yt;
-            yt = yb;
-            yb = t;
-        }
-
-        /* Disjoint: keep (colors still valid; pixels outside new strip unchanged). */
-        if (yb < ct || yt > cb) {
-            if (nout < WALL_SPAN_SCRATCH) {
-                scratch[nout].yt = (int16_t)yt;
-                scratch[nout].yb = (int16_t)yb;
-                scratch[nout].at = atop[idx];
-                scratch[nout].ab = abot[idx];
-                nout++;
-            }
-            continue;
-        }
-
-        /* Upper remainder [yt, ct-1] */
-        if (yt < ct) {
-            int fa = yt, fb = ct - 1;
-            if (fa <= fb && nout < WALL_SPAN_SCRATCH) {
-                size_t pfa = (size_t)fa * (size_t)width + (size_t)x;
-                size_t pfb = (size_t)fb * (size_t)width + (size_t)x;
-                scratch[nout].yt = (int16_t)fa;
-                scratch[nout].yb = (int16_t)fb;
-                scratch[nout].at = rgb[pfa];
-                scratch[nout].ab = rgb[pfb];
-                nout++;
-            }
-        }
-        /* Lower remainder [cb+1, yb] */
-        if (cb < yb) {
-            int fa = cb + 1, fb = yb;
-            if (fa <= fb && nout < WALL_SPAN_SCRATCH) {
-                size_t pfa = (size_t)fa * (size_t)width + (size_t)x;
-                size_t pfb = (size_t)fb * (size_t)width + (size_t)x;
-                scratch[nout].yt = (int16_t)fa;
-                scratch[nout].yb = (int16_t)fb;
-                scratch[nout].at = rgb[pfa];
-                scratch[nout].ab = rgb[pfb];
-                nout++;
-            }
-        }
-    }
-
-    /* New strip on top */
-    if (nout < WALL_SPAN_SCRATCH) {
-        size_t pct = (size_t)ct * (size_t)width + (size_t)x;
-        size_t pcb = (size_t)cb * (size_t)width + (size_t)x;
-        scratch[nout].yt = (int16_t)ct;
-        scratch[nout].yb = (int16_t)cb;
-        scratch[nout].at = rgb[pct];
-        scratch[nout].ab = rgb[pcb];
-        nout++;
-    }
-
-    /* Sort by screen Y (top to bottom) for stable cap */
-    for (int a = 1; a < nout; a++) {
-        WallSpanScratch t = scratch[a];
-        int b = a - 1;
-        while (b >= 0 && scratch[b].yt > t.yt) {
-            scratch[b + 1] = scratch[b];
-            b--;
-        }
-        scratch[b + 1] = t;
-    }
-
-    if (nout > WALL_SPANS_MAX_PER_COLUMN) nout = WALL_SPANS_MAX_PER_COLUMN;
-
-    nsp[x] = (uint8_t)nout;
-    for (int i = 0; i < nout; i++) {
-        size_t idx = (size_t)i * (size_t)width + (size_t)x;
-        top[idx] = scratch[i].yt;
-        bot[idx] = scratch[i].yb;
-        atop[idx] = scratch[i].at;
-        abot[idx] = scratch[i].ab;
-    }
-}
 
 /* -----------------------------------------------------------------------
  * Wall rendering (column-by-column)
@@ -1094,10 +937,6 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     }
     if (g_renderer.clip.z) {
         g_renderer.clip.z[x] = col_z;
-    }
-    if (g_renderer.wall_span_top && g_renderer.wall_span_bot && g_renderer.wall_span_count &&
-        g_renderer.wall_span_argb_top && g_renderer.wall_span_argb_bot) {
-        wall_span_record_column_strip(x, ct, cb, rgb, width);
     }
 }
 
@@ -3494,154 +3333,6 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
     }
 }
 
-/* Seam fill: only pixels tagged with RENDER_RGB_SKY_MASK_A (see renderer_clear). */
-
-static int seam_fill_is_sky(uint32_t c)
-{
-    return (c >> 24) == (uint32_t)RENDER_RGB_SKY_MASK_A;
-}
-
-/* Pass 1: first sky within MAX rows of span; extend contiguous sky. No fill if the run
- * does not end (non-sky / screen edge) within MAX rows of that span edge — i.e. if
- * low > yb+MAX (down) or hi < yt-MAX (up) after extending. */
-static void renderer_wall_seam_fill_prepass(void)
-{
-    uint32_t *rgb = g_renderer.rgb_buffer;
-    int16_t *top = g_renderer.wall_span_top;
-    int16_t *bot = g_renderer.wall_span_bot;
-    int16_t *fde = g_renderer.wall_span_fill_down_end;
-    int16_t *fue = g_renderer.wall_span_fill_up_end;
-    uint8_t *nsp = g_renderer.wall_span_count;
-    if (!rgb || !top || !bot || !fde || !fue || !nsp) return;
-
-    const int w = g_renderer.width;
-    const int h = g_renderer.height;
-
-    for (int x = 0; x < w; x++) {
-        int nc = (int)nsp[x];
-        if (nc <= 0) continue;
-        if (nc > WALL_SPANS_MAX_PER_COLUMN) nc = WALL_SPANS_MAX_PER_COLUMN;
-        for (int k = 0; k < nc; k++) {
-            size_t idx = (size_t)k * (size_t)w + (size_t)x;
-            int yt = (int)top[idx];
-            int yb = (int)bot[idx];
-            if (yt < 0) yt = 0;
-            if (yb >= h) yb = h - 1;
-            if (yt > yb) {
-                int t = yt;
-                yt = yb;
-                yb = t;
-            }
-
-            /* Scan down: first sky must be within SEAM_FILL_SKY_SEARCH_MAX rows of yb */
-            int16_t down_end = -1;
-            {
-                int y_lo = yb + 1;
-                int y_hi = yb + SEAM_FILL_SKY_SEARCH_MAX;
-                if (y_hi >= h) y_hi = h - 1;
-                int y = y_lo;
-                while (y <= y_hi && !seam_fill_is_sky(rgb[(size_t)y * (size_t)w + (size_t)x])) y++;
-                if (y <= y_hi && y < h && seam_fill_is_sky(rgb[(size_t)y * (size_t)w + (size_t)x])) {
-                    int low = y;
-                    while (low + 1 < h && seam_fill_is_sky(rgb[(size_t)(low + 1) * (size_t)w + (size_t)x])) low++;
-                    int y_max_edge = yb + SEAM_FILL_SKY_SEARCH_MAX;
-                    if (y_max_edge >= h) y_max_edge = h - 1;
-                    if (low <= y_max_edge) down_end = (int16_t)low;
-                }
-            }
-            fde[idx] = down_end;
-
-            /* Scan up: first sky must be within SEAM_FILL_SKY_SEARCH_MAX rows of yt */
-            int16_t up_end = -1;
-            if (yt > 0) {
-                int y_top = yt - 1;
-                int y_min = yt - SEAM_FILL_SKY_SEARCH_MAX;
-                if (y_min < 0) y_min = 0;
-                int y = y_top;
-                while (y >= y_min && !seam_fill_is_sky(rgb[(size_t)y * (size_t)w + (size_t)x])) y--;
-                if (y >= y_min && y >= 0 && seam_fill_is_sky(rgb[(size_t)y * (size_t)w + (size_t)x])) {
-                    int hi = y;
-                    while (hi - 1 >= 0 && seam_fill_is_sky(rgb[(size_t)(hi - 1) * (size_t)w + (size_t)x])) hi--;
-                    int y_min_edge = yt - SEAM_FILL_SKY_SEARCH_MAX;
-                    if (y_min_edge < 0) y_min_edge = 0;
-                    if (hi >= y_min_edge) up_end = (int16_t)hi;
-                }
-            }
-            fue[idx] = up_end;
-        }
-    }
-}
-
-/* Pass 2: fill prepass range (still sky). Prepass skips runs that extend past MAX without ending. */
-static void renderer_wall_seam_fill_apply(void)
-{
-    uint32_t *rgb = g_renderer.rgb_buffer;
-    uint16_t *cw = g_renderer.cw_buffer;
-    uint8_t *buf = g_renderer.buffer;
-    int16_t *top = g_renderer.wall_span_top;
-    int16_t *bot = g_renderer.wall_span_bot;
-    uint32_t *atop = g_renderer.wall_span_argb_top;
-    uint32_t *abot = g_renderer.wall_span_argb_bot;
-    int16_t *fde = g_renderer.wall_span_fill_down_end;
-    int16_t *fue = g_renderer.wall_span_fill_up_end;
-    uint8_t *nsp = g_renderer.wall_span_count;
-    if (!rgb || !top || !bot || !atop || !abot || !fde || !fue || !nsp) return;
-
-    const int w = g_renderer.width;
-    const int h = g_renderer.height;
-
-    for (int x = 0; x < w; x++) {
-        int nc = (int)nsp[x];
-        if (nc <= 0) continue;
-        if (nc > WALL_SPANS_MAX_PER_COLUMN) nc = WALL_SPANS_MAX_PER_COLUMN;
-        for (int k = 0; k < nc; k++) {
-            size_t idx = (size_t)k * (size_t)w + (size_t)x;
-            int yt = (int)top[idx];
-            int yb = (int)bot[idx];
-            if (yt < 0) yt = 0;
-            if (yb >= h) yb = h - 1;
-            if (yt > yb) {
-                int t = yt;
-                yt = yb;
-                yb = t;
-            }
-
-            uint32_t c_top = atop[idx];
-            uint32_t c_bot = abot[idx];
-            uint16_t cw_top = argb_to_amiga12(c_top);
-            uint16_t cw_bot = argb_to_amiga12(c_bot);
-
-            int16_t down_end = fde[idx];
-            if (down_end >= 0 && yb + 1 <= (int)down_end) {
-                for (int yy = yb + 1; yy <= (int)down_end; yy++) {
-                    size_t pix = (size_t)yy * (size_t)w + (size_t)x;
-                    if (!seam_fill_is_sky(rgb[pix])) continue;
-                    rgb[pix] = c_bot;
-                    if (cw) cw[pix] = cw_bot;
-                    if (buf) buf[pix] = 2;
-                }
-            }
-
-            int16_t up_end = fue[idx];
-            if (up_end >= 0 && yt > 0 && (int)up_end <= yt - 1) {
-                for (int yy = yt - 1; yy >= (int)up_end; yy--) {
-                    size_t pix = (size_t)yy * (size_t)w + (size_t)x;
-                    if (!seam_fill_is_sky(rgb[pix])) continue;
-                    rgb[pix] = c_top;
-                    if (cw) cw[pix] = cw_top;
-                    if (buf) buf[pix] = 2;
-                }
-            }
-        }
-    }
-}
-
-static void renderer_wall_seam_fill(void)
-{
-    renderer_wall_seam_fill_prepass();
-    renderer_wall_seam_fill_apply();
-}
-
 static void renderer_apply_underwater_tint(void)
 {
     if (g_fill_screen_water == 0) return;
@@ -3733,15 +3424,6 @@ void renderer_draw_display(GameState *state)
         int16_t *bot = r->clip.bot;
         for (int i = 0; i < w; i++) bot[i] = bot_val;
         if (r->clip.z) memset(r->clip.z, 0, (size_t)w * sizeof(int32_t));
-    }
-
-    if (r->wall_span_count) {
-        memset(r->wall_span_count, 0, (size_t)w);
-    }
-    if (r->wall_span_fill_down_end && r->wall_span_fill_up_end) {
-        size_t span_cells = (size_t)w * (size_t)WALL_SPANS_MAX_PER_COLUMN;
-        memset(r->wall_span_fill_down_end, 0xFF, span_cells * sizeof(int16_t));
-        memset(r->wall_span_fill_up_end, 0xFF, span_cells * sizeof(int16_t));
     }
 
     /* 4. Rotate geometry */
@@ -3920,8 +3602,6 @@ void renderer_draw_display(GameState *state)
         }
         renderer_draw_zone(state, zone_id, 0);
     }
-
-    renderer_wall_seam_fill();
 
     /* 6. Draw gun overlay */
     renderer_draw_gun(state);
