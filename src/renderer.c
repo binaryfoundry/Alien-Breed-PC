@@ -43,10 +43,10 @@
 /* Camera UV scale in fixed-point, matching Amiga sxoff/szoff setup in pastsides:
  * xoff/zoff words are promoted to 16.16 before entering pastfloorbright. */
 #define FLOOR_CAM_UV_SCALE  65536  /* 1<<16 */
-/* Extra pixels to extend beyond polygon edge (ceiling needs it at wall join; floor does not). */
+/* Strict Amiga parity: no extra edge expansion beyond geometry rasterization. */
 #define FLOOR_EDGE_EXTRA  0
-#define CEILING_EDGE_EXTRA 3
-#define PORTAL_EDGE_EXTRA 1
+#define CEILING_EDGE_EXTRA 0
+#define PORTAL_EDGE_EXTRA 0
 /* AB3DI itsachunkyfloor does `sub.w #12,topclip` before itsafloordraw.
  * Scale to current render resolution. */
 #define CHUNKY_TOPCLIP_BIAS  (12 * RENDER_SCALE)
@@ -183,7 +183,6 @@ static int argb24_to_amiga12_lut_ready = 0;
 #define DIV255_LUT_MAX 130050u
 static uint16_t div255_lut[DIV255_LUT_MAX + 1u];
 static uint32_t g_render_frame_counter = 0;
-static uint32_t g_render_frame_index_for_walls = 0;
 
 /* Debug helper:
  * Set AB3D_CLIP_TRACE_FRAMES=N to print portal clip windows for first N frames. */
@@ -193,24 +192,6 @@ static int renderer_take_clip_trace_slot(void)
     static int frames_left = 0;
     if (!initialized) {
         const char *env = getenv("AB3D_CLIP_TRACE_FRAMES");
-        if (env) frames_left = atoi(env);
-        initialized = 1;
-    }
-    if (frames_left > 0) {
-        frames_left--;
-        return 1;
-    }
-    return 0;
-}
-
-/* Debug helper:
- * Set AB3D_WALL_SEAM_TRACE_FRAMES=N to log wall left-clip seam candidates. */
-static int renderer_take_wall_seam_trace_slot(void)
-{
-    static int initialized = 0;
-    static int frames_left = 0;
-    if (!initialized) {
-        const char *env = getenv("AB3D_WALL_SEAM_TRACE_FRAMES");
         if (env) frames_left = atoi(env);
         initialized = 1;
     }
@@ -770,107 +751,6 @@ void renderer_rotate_object_pts(GameState *state)
     }
 }
 
-/* -----------------------------------------------------------------------
- * Post-pass: fill ceiling/floor to meet wall columns (order-independent)
- *
- * Your per-column filler inside draw_wall_column can only pull from pixels
- * that already exist at that moment. If the wall is drawn before the ceiling
- * polygon (stream order / portals), it cannot "find" the ceiling yet.
- *
- * Fix: do a small post-pass after all zones are drawn (but before the gun),
- * and for each column, for each wall segment, search a short distance for a
- * ceiling/floor pixel (tag==1) above/below and extend it into the gap.
- *
- * This is order-independent and fixes the "not early enough" issue.
- * ----------------------------------------------------------------------- */
-static void renderer_fill_wall_joins(void)
-{
-    uint8_t* buf = g_renderer.buffer;
-    uint32_t* rgb = g_renderer.rgb_buffer;
-    uint16_t* cw = g_renderer.cw_buffer;
-    if (!buf || !rgb || !cw) return;
-
-    const int w = g_renderer.width;
-    const int h = g_renderer.height;
-
-    /* Small window: close quantization wedges without smearing across rooms */
-    const int SCAN = 24;
-
-    for (int x = 0; x < w; x++) {
-        int y = 0;
-        while (y < h) {
-            /* Find start of a wall run */
-            while (y < h && buf[y * w + x] != 2) y++;
-            if (y >= h) break;
-
-            int wall_top = y;
-            while (y < h && buf[y * w + x] == 2) y++;
-            int wall_bot = y - 1;
-
-            /* ---- Fill above wall: pull ceiling (tag==1) down to wall_top-1 ---- */
-            if (wall_top > 0) {
-                int y_gap_top = wall_top - 1;
-
-                /* Only consider if there is actually a gap (background/clear) */
-                if (buf[y_gap_top * w + x] != 2) {
-                    int y_src_min = wall_top - SCAN;
-                    if (y_src_min < 0) y_src_min = 0;
-
-                    int y_src = -1;
-                    for (int yy = wall_top - 1; yy >= y_src_min; yy--) {
-                        if (buf[yy * w + x] == 1) { y_src = yy; break; }
-                        /* Stop if we hit another wall segment */
-                        if (buf[yy * w + x] == 2) break;
-                    }
-
-                    if (y_src >= 0) {
-                        uint32_t c = rgb[y_src * w + x];
-                        uint16_t c_cw = cw[y_src * w + x];
-                        /* Fill only clear/background pixels between y_src and wall_top */
-                        for (int yy = y_src + 1; yy <= wall_top - 1; yy++) {
-                            if (buf[yy * w + x] == 2) break;
-                            if (buf[yy * w + x] == 0) {
-                                buf[yy * w + x] = 1;
-                                rgb[yy * w + x] = c;
-                                cw[yy * w + x] = c_cw;
-                            }
-                        }
-                    }
-                }
-            }
-
-            /* ---- Fill below wall: pull floor (tag==1) up to wall_bot+1 ---- */
-            if (wall_bot + 1 < h) {
-                int y_gap_bot = wall_bot + 1;
-
-                if (buf[y_gap_bot * w + x] != 2) {
-                    int y_src_max = wall_bot + SCAN;
-                    if (y_src_max >= h) y_src_max = h - 1;
-
-                    int y_src = -1;
-                    for (int yy = wall_bot + 1; yy <= y_src_max; yy++) {
-                        if (buf[yy * w + x] == 1) { y_src = yy; break; }
-                        if (buf[yy * w + x] == 2) break;
-                    }
-
-                    if (y_src >= 0) {
-                        uint32_t c = rgb[y_src * w + x];
-                        uint16_t c_cw = cw[y_src * w + x];
-                        for (int yy = y_src - 1; yy >= wall_bot + 1; yy--) {
-                            if (buf[yy * w + x] == 2) break;
-                            if (buf[yy * w + x] == 0) {
-                                buf[yy * w + x] = 1;
-                                rgb[yy * w + x] = c;
-                                cw[yy * w + x] = c_cw;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 /* Wall texture index for switches (io.c wall_texture_table). Must be before draw_wall_column. */
 #define SWITCHES_WALL_TEX_ID  11
 
@@ -1130,13 +1010,10 @@ void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
         }
     }
 
-    /* Project in fine pixel space for smooth motion. Keep 96-column projections
-     * alongside this so we can enforce Amiga column continuity at clip edges. */
+    /* Project in fine pixel space for smooth motion. */
     int center_x = (g_renderer.width * 47) / 96;
     int scr_x1 = (int)((int64_t)cx1 * (int64_t)RENDER_SCALE / cz1) + center_x;
     int scr_x2 = (int)((int64_t)cx2 * (int64_t)RENDER_SCALE / cz2) + center_x;
-    int scr96_1 = (int)(cx1 / cz1) + 47;
-    int scr96_2 = (int)(cx2 / cz2) + 47;
 
     /* If endpoints project in reverse order, swap them for left-to-right drawing.
      * This can happen after near-plane clipping. All endpoint data must stay in sync. */
@@ -1145,7 +1022,6 @@ void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
         tmp = scr_x1; scr_x1 = scr_x2; scr_x2 = tmp;
         { int32_t t32 = cx1; cx1 = cx2; cx2 = t32; }
         { int32_t t32 = cz1; cz1 = cz2; cz2 = t32; }
-        tmp = scr96_1; scr96_1 = scr96_2; scr96_2 = tmp;
         tmp = ct1; ct1 = (int16_t)ct2; ct2 = (int16_t)tmp;
     }
 
@@ -1158,65 +1034,7 @@ void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
     if (draw_start < r->left_clip) draw_start = r->left_clip;
     int draw_end = scr_x2;
     if (draw_end >= r->right_clip) draw_end = r->right_clip - 1;
-
-    /* Seam guard at left clip: if the wall's left edge is in the same Amiga
-     * 96-column as the clip boundary, extend start to boundary to avoid small
-     * gaps introduced by sub-column projection at scaled resolutions. */
-    if (draw_start > r->left_clip) {
-        int gap = draw_start - r->left_clip;
-        if (gap > 0 && gap <= RENDER_SCALE) {
-            int left96 = r->left_clip / RENDER_SCALE;
-            int seg_min96 = (scr96_1 < scr96_2) ? scr96_1 : scr96_2;
-            int seg_max96 = (scr96_1 > scr96_2) ? scr96_1 : scr96_2;
-            if (seg_min96 <= (left96 + 1) && seg_max96 >= left96) {
-                draw_start = r->left_clip;
-            }
-        }
-    }
-
-    /* Symmetric seam guard at right clip: preserve last visible scaled columns
-     * when wall and clip edge share the same Amiga 96-column boundary. */
-    if (draw_end < r->right_clip - 1) {
-        int gap = (r->right_clip - 1) - draw_end;
-        if (gap > 0 && gap <= RENDER_SCALE) {
-            int right96_last = (r->right_clip - 1) / RENDER_SCALE;
-            int seg_min96 = (scr96_1 < scr96_2) ? scr96_1 : scr96_2;
-            int seg_max96 = (scr96_1 > scr96_2) ? scr96_1 : scr96_2;
-            if (seg_min96 <= right96_last && seg_max96 >= (right96_last - 1)) {
-                draw_end = r->right_clip - 1;
-            }
-        }
-    }
-
     if (draw_start > draw_end) return;
-
-    /* Trace candidate seam cases where clip pushes the first drawn column
-     * right of the projected wall start. */
-    {
-        static uint32_t seam_trace_frame = UINT32_MAX;
-        static int seam_trace_enabled = 0;
-        static int seam_logs_this_frame = 0;
-        uint32_t f = g_render_frame_index_for_walls;
-        if (seam_trace_frame != f) {
-            seam_trace_frame = f;
-            seam_trace_enabled = renderer_take_wall_seam_trace_slot();
-            seam_logs_this_frame = 0;
-            if (seam_trace_enabled) {
-                printf("[WSEAM][frame %u] begin\n", (unsigned)f);
-            }
-        }
-        if (seam_trace_enabled && seam_logs_this_frame < 120 &&
-            (draw_start > scr_x1 || draw_end < scr_x2)) {
-            int lgap = draw_start - scr_x1;
-            int rgap = scr_x2 - draw_end;
-            if (lgap < 0) lgap = 0;
-            if (rgap < 0) rgap = 0;
-            printf("[WSEAM][frame %u] lgap=%d rgap=%d scr=[%d,%d] draw=[%d,%d] clip=[%d,%d)\n",
-                   (unsigned)f, lgap, rgap, scr_x1, scr_x2, draw_start, draw_end,
-                   (int)r->left_clip, (int)r->right_clip);
-            seam_logs_this_frame++;
-        }
-    }
 
     /* Wall span for interpolation (use at least 1 to avoid division by zero) */
     int span = scr_x2 - scr_x1;
@@ -1249,7 +1067,8 @@ void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
 
         int y_top = (int)((int32_t)top * g_renderer.proj_y_scale * RENDER_SCALE / col_z) + (g_renderer.height / 2);
         int y_bot = (int)((int32_t)bot * g_renderer.proj_y_scale * RENDER_SCALE / col_z) + (g_renderer.height / 2);
-        int ext = (y_top >= 3) ? 3 : (y_top >= 2) ? 2 : (y_top >= 1) ? 1 : 0;
+        /* Strict Amiga parity: do not apply port-side wall-top seam expansion. */
+        int ext = 0;
         int y_top_draw = y_top - ext;
 
         /* tex = (tex/z) * z in the same 8.24 domain, then convert to integer tex units. */
@@ -3130,9 +2949,9 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             if (y_min_clamp < top_clip_for_poly) y_min_clamp = top_clip_for_poly;
             if (y_max_clamp > r->bot_clip) y_max_clamp = r->bot_clip;
 
-            /* Full screen: use full extension; portal view: use 1px only to avoid drawing outside. */
+            /* Strict parity mode: keep edge extension disabled in all clip modes. */
             int full_screen_zone = (r->left_clip == 0 && r->right_clip == g_renderer.width);
-            int edge_extra_portal = full_screen_zone ? 0 : PORTAL_EDGE_EXTRA;  /* portal: 1px to close gaps only */
+            int edge_extra_portal = full_screen_zone ? 0 : PORTAL_EDGE_EXTRA;
 
             /* Walk each polygon edge and rasterize into edge tables (floor and ceiling/roof).
              * Near-plane clip edges so vertices behind the camera get proper
@@ -3222,7 +3041,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                         int hi = sx1 > sx2 ? sx1 : sx2;
                         int32_t lo_b = (sx1 <= sx2) ? eb1 : eb2;
                         int32_t hi_b = (sx1 <= sx2) ? eb2 : eb1;
-                        /* Floor: no edge extension (steps look bad). Ceiling: extend to close wall join. */
+                        /* Strict parity mode: no floor/ceiling edge expansion. */
                         int he_extra = (floor_y_dist < 0) ? (full_screen_zone ? CEILING_EDGE_EXTRA : edge_extra_portal) : 0;
                         lo -= he_extra;
                         hi += he_extra;
@@ -3267,13 +3086,12 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     b_fp += db_fp * (row_start - sy2_raw);
                 }
                 
-                /* Floor: no edge extension (steps look bad). Ceiling: extend to close wall join. */
+                /* Strict parity mode: no floor/ceiling edge expansion. */
                 int edge_extra = (floor_y_dist < 0) ? (full_screen_zone ? CEILING_EDGE_EXTRA : edge_extra_portal) : 0;
                 for (int row = row_start; row <= row_end; row++) {
                     if (row < 0 || row >= h) { x_fp += dx_fp; b_fp += db_fp; continue; }
                     int x = (int)(x_fp >> 16);
                     int32_t edge_bright = (int32_t)(b_fp >> 16);
-                    /* Extend edges only when full screen (avoid drawing outside portal). */
                     int left_x = x - edge_extra;
                     int right_x = x + edge_extra;
                     if (left_x < r->left_clip) left_x = r->left_clip;
@@ -3572,7 +3390,6 @@ void renderer_draw_display(GameState *state)
     RendererState *r = &g_renderer;
     if (!r->buffer) return;
     uint32_t frame_idx = g_render_frame_counter++;
-    g_render_frame_index_for_walls = frame_idx;
     int trace_clip = renderer_take_clip_trace_slot();
     if (trace_clip) {
         printf("[CLIP][frame %u] begin\n", (unsigned)frame_idx);
@@ -3803,7 +3620,6 @@ void renderer_draw_display(GameState *state)
         renderer_draw_zone(state, zone_id, 0);
     }
 
-    renderer_fill_wall_joins();
     /* 6. Draw gun overlay */
     renderer_draw_gun(state);
     renderer_apply_underwater_tint();
