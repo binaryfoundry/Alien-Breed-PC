@@ -6,8 +6,8 @@
  * converts it through a palette to RGB, and presents it on screen.
  *
  * Internal render size comes from ab3d.ini (render_width/render_height).
- * The window is scaled independently; the image is letterboxed, centered,
- * aspect preserved.
+ * The window is created at that size (1:1); if resized, the image is
+ * letterboxed, centered, aspect preserved.
  */
 
 #include "display.h"
@@ -45,10 +45,6 @@ static DisplayGlTexParameteriFn g_gl_tex_parameteri;
 static int g_fb_mipmap_ok_logged;
 static int g_fb_mipmap_fail_logged;
 #endif
-
-/* Initial window size (pixels); does not affect internal render resolution */
-#define DISPLAY_DEFAULT_WINDOW_W 1280
-#define DISPLAY_DEFAULT_WINDOW_H 720
 
 #ifdef AB3D_RELEASE
 /* Release: optional fullscreen desktop after window creation */
@@ -200,13 +196,13 @@ void display_init(GameState *state)
         }
     }
 
-    printf("[DISPLAY] SDL2 init (internal render %dx%d, window scaled to fit)\n",
+    printf("[DISPLAY] SDL2 init (internal render %dx%d, window opens at that size; resize to letterbox)\n",
            g_internal_w, g_internal_h);
 
     renderer_init();
 
-    int window_w = DISPLAY_DEFAULT_WINDOW_W;
-    int window_h = DISPLAY_DEFAULT_WINDOW_H;
+    int window_w = rw;
+    int window_h = rh;
 
     g_window = SDL_CreateWindow(
         "Alien Breed 3D I",
