@@ -175,8 +175,8 @@ static void display_set_renderer_target_size(int w, int h)
  * ----------------------------------------------------------------------- */
 void display_init(GameState *state)
 {
-    int rw = 1920;
-    int rh = 1080;
+    int rw = 1280;
+    int rh = 720;
     if (state) {
         rw = (int)state->cfg_render_width;
         rh = (int)state->cfg_render_height;
