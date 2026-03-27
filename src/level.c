@@ -719,16 +719,21 @@ int level_parse(LevelState *level)
             int8_t number = (int8_t)obj[16];  /* object type */
             int8_t can_see = (int8_t)obj[17];
             const uint8_t *type_data = obj + 18;  /* 44 bytes */
-            printf("[LEVEL] obj[%d] zone=%d cid=%d type=%d (%s)",
-                   oi, (int)zone, (int)cid, (int)number,
-                   number == OBJ_NBR_KEY ? "key" :
-                   number == OBJ_NBR_MEDIKIT ? "medikit" :
-                   number == OBJ_NBR_AMMO ? "ammo" :
-                   number == OBJ_NBR_BIG_GUN ? "big_gun" :
-                   number == OBJ_NBR_PLR1 ? "plr1" : number == OBJ_NBR_PLR2 ? "plr2" : "other");
-            if (number == OBJ_NBR_KEY)
-                printf(" key_byte17=%d", (int)(can_see & 0xFF));
-            printf("\n");
+            {
+                const char *otype =
+                    number == OBJ_NBR_KEY ? "key" :
+                    number == OBJ_NBR_MEDIKIT ? "medikit" :
+                    number == OBJ_NBR_AMMO ? "ammo" :
+                    number == OBJ_NBR_BIG_GUN ? "big_gun" :
+                    number == OBJ_NBR_PLR1 ? "plr1" : number == OBJ_NBR_PLR2 ? "plr2" : "other";
+                /* One [LEVEL] line so ab3d_log_printf suppresses it (split printf leaked key_byte17=). */
+                if (number == OBJ_NBR_KEY)
+                    printf("[LEVEL] obj[%d] zone=%d cid=%d type=%d (%s) key_byte17=%d\n",
+                           oi, (int)zone, (int)cid, (int)number, otype, (int)(can_see & 0xFF));
+                else
+                    printf("[LEVEL] obj[%d] zone=%d cid=%d type=%d (%s)\n",
+                           oi, (int)zone, (int)cid, (int)number, otype);
+            }
             obj += OBJECT_SIZE;
             oi++;
         }
