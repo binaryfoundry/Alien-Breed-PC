@@ -37,6 +37,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
+#include <math.h>
 
 /* Floor/ceiling UV step per pixel: d1>>FLOOR_STEP_SHIFT (same at any width so texture scale is correct). */
 #define FLOOR_STEP_SHIFT  (6 + RENDER_SCALE_LOG2)  /* d1>>9 at RENDER_SCALE=8 */
@@ -701,19 +702,35 @@ void renderer_draw_sky_pass(int16_t angpos)
     int h = g_renderer.height;
     if (w < 1 || h < 1) return;
 
-    int u0 = ((int)(angpos & 8191) * SKY_PAN_WIDTH) / 8192;
+    /* Use sub-column pan precision so sky rotation does not quantize/judder at small turns. */
+    const int64_t sky_pan_period_fp = ((int64_t)SKY_PAN_WIDTH << 16);
+    int64_t u0_fp = ((int64_t)(angpos & 8191) * sky_pan_period_fp) / 8192;
     /* Amiga puts backdrop in top 38 of 80 rows; keep same proportion at any output height. */
     int sky_h = (h * 38) / 80;
     if (sky_h < 1) sky_h = 1;
-    /* Amiga draws one sky source column per 3D screen column (96 visible columns). */
-    const int sky_view_cols = 96;
+    /* Match sky horizontal span to the renderer's actual projection FOV.
+     * World projection uses: screen_x = center_x + (64*RENDER_SCALE)*tan(theta),
+     * so derive FOV from the same center/focal values and convert it to sky columns. */
+    int sky_view_cols;
+    {
+        int center_x = (w * 47) / 96;
+        int left_px = center_x;
+        int right_px = (w - 1) - center_x;
+        const double focal_px = (double)(64 * RENDER_SCALE);
+        const double hfov =
+            atan((double)left_px / focal_px) +
+            atan((double)right_px / focal_px);
+        double sky_cols_f = ((double)SKY_PAN_WIDTH * hfov) / (2.0 * 3.14159265358979323846);
+        sky_view_cols = (int)(sky_cols_f + 0.5);
+    }
+    if (sky_view_cols < 1) sky_view_cols = 1;
+    if (sky_view_cols > SKY_PAN_WIDTH) sky_view_cols = SKY_PAN_WIDTH;
 
     if (s_sky_pixels && s_sky_mode == 0) {
         int th = s_sky_tex_h;
         int tw = s_sky_tex_w;
 #if SKY_BILINEAR_FILTER
         if (th > 1 && tw > 1 && w > 1 && sky_h > 1) {
-            const int64_t pan_period_fp = ((int64_t)SKY_PAN_WIDTH << 16);
             const int64_t sx_step_fp = (((int64_t)(sky_view_cols - 1)) << 16) / (int64_t)(w - 1);
             const int64_t v_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
             for (int y = 0; y < sky_h; y++) {
@@ -724,9 +741,9 @@ void renderer_draw_sky_pass(int16_t angpos)
                 size_t row = (size_t)y * (size_t)w;
                 int64_t sx_fp = 0;
                 for (int x = 0; x < w; x++, sx_fp += sx_step_fp) {
-                    int64_t pan_fp = ((int64_t)u0 << 16) + sx_fp;
-                    pan_fp %= pan_period_fp;
-                    if (pan_fp < 0) pan_fp += pan_period_fp;
+                    int64_t pan_fp = u0_fp + sx_fp;
+                    pan_fp %= sky_pan_period_fp;
+                    if (pan_fp < 0) pan_fp += sky_pan_period_fp;
                     int64_t tx_fp = (pan_fp * (int64_t)tw) / (int64_t)SKY_PAN_WIDTH;
                     int tx0 = (int)(tx_fp >> 16);
                     uint32_t fx = (uint32_t)(tx_fp & 0xFFFF);
@@ -750,17 +767,18 @@ void renderer_draw_sky_pass(int16_t angpos)
             int bpc = s_sky_bytes_per_col;
             size_t row_stride = (size_t)tw * 2u;
             const int64_t r_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
+            const int64_t sx_step_fp = ((int64_t)sky_view_cols << 16) / (int64_t)w;
             for (int y = 0; y < sky_h; y++) {
                 int rpix = (int)((int64_t)y * (th - 1) / r_den);
                 if (rpix < 0) rpix = 0;
                 if (rpix >= th) rpix = th - 1;
                 size_t row = (size_t)y * (size_t)w;
+                int64_t sx_fp = 0;
                 for (int x = 0; x < w; x++) {
-                    int sx = (int)((int64_t)x * sky_view_cols / w);
-                    if (sx < 0) sx = 0;
-                    if (sx >= sky_view_cols) sx = sky_view_cols - 1;
-                    int c = (u0 + sx) % SKY_PAN_WIDTH;
-                    if (c < 0) c += SKY_PAN_WIDTH;
+                    int64_t pan_fp = u0_fp + sx_fp;
+                    pan_fp %= sky_pan_period_fp;
+                    if (pan_fp < 0) pan_fp += sky_pan_period_fp;
+                    int c = (int)(pan_fp >> 16);
                     c = (c * tw) / SKY_PAN_WIDTH;
                     if (c >= tw) c = tw - 1;
                     size_t off;
@@ -773,6 +791,7 @@ void renderer_draw_sky_pass(int16_t angpos)
                     buf[p] = 0;
                     rgb[p] = px;
                     cw[p] = argb_to_amiga12(px);
+                    sx_fp += sx_step_fp;
                 }
             }
         }
@@ -781,7 +800,6 @@ void renderer_draw_sky_pass(int16_t angpos)
         int tw = s_sky_tex_w;
 #if SKY_BILINEAR_FILTER
         if (th > 1 && tw > 1 && w > 1 && sky_h > 1) {
-            const int64_t pan_period_fp = ((int64_t)SKY_PAN_WIDTH << 16);
             const int64_t sx_step_fp = (((int64_t)(sky_view_cols - 1)) << 16) / (int64_t)(w - 1);
             const int64_t v_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
             for (int y = 0; y < sky_h; y++) {
@@ -792,9 +810,9 @@ void renderer_draw_sky_pass(int16_t angpos)
                 size_t row = (size_t)y * (size_t)w;
                 int64_t sx_fp = 0;
                 for (int x = 0; x < w; x++, sx_fp += sx_step_fp) {
-                    int64_t pan_fp = ((int64_t)u0 << 16) + sx_fp;
-                    pan_fp %= pan_period_fp;
-                    if (pan_fp < 0) pan_fp += pan_period_fp;
+                    int64_t pan_fp = u0_fp + sx_fp;
+                    pan_fp %= sky_pan_period_fp;
+                    if (pan_fp < 0) pan_fp += sky_pan_period_fp;
                     int64_t tx_fp = (pan_fp * (int64_t)tw) / (int64_t)SKY_PAN_WIDTH;
                     int tx0 = (int)(tx_fp >> 16);
                     uint32_t fx = (uint32_t)(tx_fp & 0xFFFF);
@@ -816,17 +834,18 @@ void renderer_draw_sky_pass(int16_t angpos)
         {
             /* Nearest-neighbour path (or filtering disabled). */
             const int64_t v_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
+            const int64_t sx_step_fp = ((int64_t)sky_view_cols << 16) / (int64_t)w;
             for (int y = 0; y < sky_h; y++) {
                 int v = (int)((int64_t)y * (th - 1) / v_den);
                 if (v < 0) v = 0;
                 if (v >= th) v = th - 1;
                 size_t row = (size_t)y * (size_t)w;
+                int64_t sx_fp = 0;
                 for (int x = 0; x < w; x++) {
-                    int sx = (int)((int64_t)x * sky_view_cols / w);
-                    if (sx < 0) sx = 0;
-                    if (sx >= sky_view_cols) sx = sky_view_cols - 1;
-                    int tu = (u0 + sx) % SKY_PAN_WIDTH;
-                    if (tu < 0) tu += SKY_PAN_WIDTH;
+                    int64_t pan_fp = u0_fp + sx_fp;
+                    pan_fp %= sky_pan_period_fp;
+                    if (pan_fp < 0) pan_fp += sky_pan_period_fp;
+                    int tu = (int)(pan_fp >> 16);
                     tu = (tu * tw) / SKY_PAN_WIDTH;
                     if (tu >= tw) tu = tw - 1;
                     size_t toff = (size_t)v * (size_t)tw + (size_t)tu;
@@ -836,19 +855,21 @@ void renderer_draw_sky_pass(int16_t angpos)
                     buf[p] = 0;
                     rgb[p] = s_sky_argb[idx];
                     cw[p] = s_sky_cw[idx];
+                    sx_fp += sx_step_fp;
                 }
             }
         }
     } else {
+        const int64_t sx_step_fp = ((int64_t)sky_view_cols << 16) / (int64_t)w;
         for (int y = 0; y < sky_h; y++) {
             int t = (y * 255) / (sky_h > 1 ? sky_h - 1 : 1);
             size_t row = (size_t)y * (size_t)w;
+            int64_t sx_fp = 0;
             for (int x = 0; x < w; x++) {
-                int sx = (int)((int64_t)x * sky_view_cols / w);
-                if (sx < 0) sx = 0;
-                if (sx >= sky_view_cols) sx = sky_view_cols - 1;
-                int u = (u0 + sx) % SKY_PAN_WIDTH;
-                if (u < 0) u += SKY_PAN_WIDTH;
+                int64_t pan_fp = u0_fp + sx_fp;
+                pan_fp %= sky_pan_period_fp;
+                if (pan_fp < 0) pan_fp += sky_pan_period_fp;
+                int u = (int)(pan_fp >> 16);
                 int shade = t + (u * 40) / SKY_PAN_WIDTH;
                 if (shade > 255) shade = 255;
                 int r = (shade * 40) / 255;
@@ -859,6 +880,7 @@ void renderer_draw_sky_pass(int16_t angpos)
                 buf[p] = 0;
                 rgb[p] = px;
                 cw[p] = argb_to_amiga12(px);
+                sx_fp += sx_step_fp;
             }
         }
     }
