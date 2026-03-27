@@ -875,6 +875,29 @@ static bool object_type_uses_worry_gate(int8_t obj_type)
     }
 }
 
+/* Amiga handlers set objY (4(a0)) from floor using per-type constants for most enemies,
+ * not raw object height byte 7(a0). Matching these offsets avoids "floating" enemies. */
+static int object_floor_render_offset_units(const GameObject *obj, int8_t obj_type)
+{
+    switch (obj_type) {
+    case OBJ_NBR_ALIEN:           return 40;   /* NormalAlien.s: sub.w #40,d0 */
+    case OBJ_NBR_ROBOT:           return 120;  /* Robot.s: sub.w #120,d0 */
+    case OBJ_NBR_BIG_NASTY:       return 70;   /* BigUglyAlien.s: sub.w #70,d0 */
+    case OBJ_NBR_MARINE:
+    case OBJ_NBR_TOUGH_MARINE:
+    case OBJ_NBR_FLAME_MARINE:    return 64;   /* *Marine.s: sub.w #64,d0 */
+    case OBJ_NBR_WORM:            return 100;  /* HalfWorm.s: sub.w #100,d0 */
+    case OBJ_NBR_HUGE_RED_THING:  return 256;  /* BigRedThing.s: sub.w #256,d0 */
+    case OBJ_NBR_SMALL_RED_THING: return 128;  /* BigClaws.s: sub.w #128,d0 */
+    case OBJ_NBR_TREE:            return 100;  /* Tree.s: sub.w #100,d0 */
+    default: {
+        int world_h = (int)(uint8_t)obj->raw[7];
+        if (world_h == 0) world_h = 32;
+        return world_h;
+    }
+    }
+}
+
 /* Amiga handlers (most enemies): decay low 7 bits, preserve bit 7 latch. */
 static void enemy_decay_worry_latched(GameObject *obj)
 {
@@ -1210,9 +1233,7 @@ void objects_update(GameState *state)
                         if (upper_floor != 0 && obj->obj.in_top)
                             floor_h = upper_floor;
 
-                        int world_h = (int)(int8_t)obj->raw[7];
-                        if (world_h == 0)
-                            world_h = 32;
+                        int world_h = object_floor_render_offset_units(obj, obj_type);
 
                         int16_t render_y = (int16_t)((floor_h >> 7) - world_h);
                         obj_sw(obj->raw + 4, render_y);
