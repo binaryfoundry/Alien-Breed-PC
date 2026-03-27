@@ -68,7 +68,18 @@
  * ----------------------------------------------------------------------- */
 RendererState g_renderer;
 
+#define RENDERER_MAX_ZONE_ORDER 256
+
+typedef struct {
+    int count;
+    int16_t zone_ids[RENDERER_MAX_ZONE_ORDER];
+    int16_t left_px[RENDERER_MAX_ZONE_ORDER];
+    int16_t right_px[RENDERER_MAX_ZONE_ORDER];
+    uint8_t valid[RENDERER_MAX_ZONE_ORDER];
+} RendererWorldZonePrepass;
+
 static void renderer_draw_world_slice(GameState *state,
+                                      const RendererWorldZonePrepass *zone_prepass,
                                       int16_t slice_left, int16_t slice_right,
                                       uint32_t frame_idx, int trace_clip,
                                       int8_t *out_fill_screen_water);
@@ -76,6 +87,8 @@ static void renderer_apply_underwater_tint_slice(int8_t fill_screen_water,
                                                   int16_t slice_left, int16_t slice_right,
                                                   const uint32_t *src_rgb, const uint16_t *src_cw,
                                                   uint32_t *dst_rgb, uint16_t *dst_cw);
+static void renderer_build_world_zone_prepass(GameState *state, uint32_t frame_idx,
+                                              int trace_clip, RendererWorldZonePrepass *out);
 
 #ifndef AB3D_NO_THREADS
 #define RENDERER_MAX_THREADS 64
@@ -103,6 +116,7 @@ typedef struct {
     int active_workers;
     RendererThreadJobType job_type;
     GameState *job_state;
+    const RendererWorldZonePrepass *world_zone_prepass;
     uint32_t frame_idx;
     int trace_clip;
     int8_t tint_fill_screen_water;
@@ -240,6 +254,7 @@ static int renderer_thread_worker_main(void *userdata)
         const int16_t slice_right = worker->slice_right;
         const RendererThreadJobType job_type = pool->job_type;
         GameState *state = pool->job_state;
+        const RendererWorldZonePrepass *world_zone_prepass = pool->world_zone_prepass;
         uint32_t frame_idx = pool->frame_idx;
         int trace_clip = pool->trace_clip;
         int8_t tint_fill_screen_water = pool->tint_fill_screen_water;
@@ -253,7 +268,8 @@ static int renderer_thread_worker_main(void *userdata)
         int8_t fill_screen_water = 0;
         if (active && slice_left < slice_right) {
             if (job_type == RENDERER_THREAD_JOB_WORLD && state) {
-                renderer_draw_world_slice(state, slice_left, slice_right,
+                renderer_draw_world_slice(state, world_zone_prepass,
+                                          slice_left, slice_right,
                                           frame_idx, trace_clip, &fill_screen_water);
             } else if (job_type == RENDERER_THREAD_JOB_WATER_TINT) {
                 renderer_apply_underwater_tint_slice(tint_fill_screen_water,
@@ -396,12 +412,15 @@ static int renderer_prepare_worker_slices_locked(RendererThreadPool *pool, int w
     return active_workers;
 }
 
-static int renderer_dispatch_threaded_world(GameState *state, uint32_t frame_idx,
+static int renderer_dispatch_threaded_world(GameState *state,
+                                            const RendererWorldZonePrepass *zone_prepass,
+                                            uint32_t frame_idx,
                                             int trace_clip, int8_t *out_fill_screen_water)
 {
     RendererThreadPool *pool = &g_renderer_thread_pool;
     if (!pool->initialized || pool->worker_count <= 0 || pool->cpu_count <= 1) return 0;
     if (!state) return 0;
+    if (!zone_prepass) return 0;
 
     int width = g_renderer.width;
     if (width <= 0) return 0;
@@ -414,6 +433,7 @@ static int renderer_dispatch_threaded_world(GameState *state, uint32_t frame_idx
     }
 
     pool->job_state = state;
+    pool->world_zone_prepass = zone_prepass;
     pool->frame_idx = frame_idx;
     pool->trace_clip = trace_clip;
     pool->job_type = RENDERER_THREAD_JOB_WORLD;
@@ -468,6 +488,7 @@ static int renderer_dispatch_threaded_underwater_tint(int8_t fill_screen_water)
     }
 
     pool->job_state = NULL;
+    pool->world_zone_prepass = NULL;
     pool->frame_idx = 0;
     pool->trace_clip = 0;
     pool->job_type = RENDERER_THREAD_JOB_WATER_TINT;
@@ -491,10 +512,13 @@ static int renderer_dispatch_threaded_underwater_tint(int8_t fill_screen_water)
 #else
 static void renderer_threads_shutdown(void) { }
 static void renderer_threads_init(void) { }
-static int renderer_dispatch_threaded_world(GameState *state, uint32_t frame_idx,
+static int renderer_dispatch_threaded_world(GameState *state,
+                                            const RendererWorldZonePrepass *zone_prepass,
+                                            uint32_t frame_idx,
                                             int trace_clip, int8_t *out_fill_screen_water)
 {
     (void)state;
+    (void)zone_prepass;
     (void)frame_idx;
     (void)trace_clip;
     if (out_fill_screen_water) *out_fill_screen_water = 0;
@@ -4313,143 +4337,185 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
     renderer_draw_zone_ctx(&ctx, state, zone_id, use_upper);
 }
 
+static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
+                                           uint32_t frame_idx, int trace_clip,
+                                           int16_t *out_left_px, int16_t *out_right_px)
+{
+    RendererState *r = &g_renderer;
+    if (!state || !out_left_px || !out_right_px) return 0;
+
+    const uint8_t *lgr = state->view_list_of_graph_rooms;
+    if (!lgr || !state->level.clips) return 0;
+
+    const uint8_t *lgr_entry = NULL;
+    while (rd16(lgr) >= 0) {
+        if (rd16(lgr) == zone_id) {
+            lgr_entry = lgr;
+            break;
+        }
+        lgr += 8;
+    }
+
+    if (!lgr_entry) {
+        if (trace_clip) {
+            printf("[CLIP][frame %u] zone=%d SKIP not_in_lgr\n",
+                   (unsigned)frame_idx, (int)zone_id);
+        }
+        return 0;
+    }
+
+    int left_clip_px = 0;
+    int right_clip_px = g_renderer.width;
+    int16_t clip_off = rd16(lgr_entry + 2);
+    if (trace_clip) {
+        printf("[CLIP][frame %u] zone=%d clip_off=%d\n",
+               (unsigned)frame_idx, (int)zone_id, (int)clip_off);
+    }
+
+    if (clip_off >= 0) {
+        const uint8_t *connect_table = state->level.connect_table;
+        const uint8_t *clip_ptr = state->level.clips + clip_off * 2;
+
+        while (rd16(clip_ptr) >= 0) {
+            int16_t pt = rd16(clip_ptr);
+            clip_ptr += 2;
+            if (pt >= 0 && pt < MAX_POINTS) {
+                int16_t z = (int16_t)r->rotated[pt].z;
+                if (z > 0) {
+                    int sxpx = project_x_to_pixels(r->rotated[pt].x, r->rotated[pt].z);
+                    int allow = 1;
+                    if (connect_table) {
+                        int16_t cpt = rd16(connect_table + (size_t)pt * 4u + 2u);
+                        if (cpt >= 0 && cpt < MAX_POINTS) {
+                            int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
+                            if (csxpx > sxpx) allow = 0;
+                        } else if (trace_clip) {
+                            printf("[CLIP][frame %u] zone=%d left pt=%d bad cpt=%d\n",
+                                   (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
+                        }
+                    }
+                    if (allow && sxpx > left_clip_px) {
+                        left_clip_px = sxpx;
+                    }
+                }
+            }
+        }
+        clip_ptr += 2;
+
+        while (rd16(clip_ptr) >= 0) {
+            int16_t pt = rd16(clip_ptr);
+            clip_ptr += 2;
+            if (pt >= 0 && pt < MAX_POINTS) {
+                int16_t z = (int16_t)r->rotated[pt].z;
+                if (z > 0) {
+                    int sxpx = project_x_to_pixels(r->rotated[pt].x, r->rotated[pt].z);
+                    int allow = 1;
+                    if (connect_table) {
+                        int16_t cpt = rd16(connect_table + (size_t)pt * 4u);
+                        if (cpt >= 0 && cpt < MAX_POINTS) {
+                            int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
+                            if (csxpx < sxpx) allow = 0;
+                        } else if (trace_clip) {
+                            printf("[CLIP][frame %u] zone=%d right pt=%d bad cpt=%d\n",
+                                   (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
+                        }
+                    }
+                    if (allow && sxpx < right_clip_px) {
+                        right_clip_px = sxpx + RENDER_SCALE;
+                    }
+                }
+            }
+        }
+    }
+
+    if (left_clip_px >= g_renderer.width || right_clip_px <= 0 || left_clip_px >= right_clip_px) {
+        if (trace_clip) {
+            printf("[CLIP][frame %u] zone=%d SKIP invalid lpx=%d rpx=%d\n",
+                   (unsigned)frame_idx, (int)zone_id, left_clip_px, right_clip_px);
+        }
+        return 0;
+    }
+
+    if (left_clip_px < 0) left_clip_px = 0;
+    if (right_clip_px > g_renderer.width) right_clip_px = g_renderer.width;
+
+    *out_left_px = (int16_t)left_clip_px;
+    *out_right_px = (int16_t)right_clip_px;
+
+    if (trace_clip) {
+        printf("[CLIP][frame %u] zone=%d prepass_clip_px=[%d,%d)\n",
+               (unsigned)frame_idx, (int)zone_id, left_clip_px, right_clip_px);
+    }
+    return 1;
+}
+
+static void renderer_build_world_zone_prepass(GameState *state, uint32_t frame_idx,
+                                              int trace_clip, RendererWorldZonePrepass *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!state) return;
+
+    int count = state->zone_order_count;
+    if (count < 0) count = 0;
+    if (count > RENDERER_MAX_ZONE_ORDER) count = RENDERER_MAX_ZONE_ORDER;
+    out->count = count;
+
+    for (int i = 0; i < count; i++) {
+        int16_t zone_id = state->zone_order_zones[i];
+        out->zone_ids[i] = zone_id;
+        if (zone_id < 0) continue;
+
+        int16_t left_px = 0;
+        int16_t right_px = (int16_t)g_renderer.width;
+        if (renderer_compute_zone_clip_span(state, zone_id, frame_idx, trace_clip,
+                                            &left_px, &right_px)) {
+            out->valid[i] = 1;
+            out->left_px[i] = left_px;
+            out->right_px[i] = right_px;
+        }
+    }
+}
+
 static void renderer_draw_world_slice(GameState *state,
+                                      const RendererWorldZonePrepass *zone_prepass,
                                       int16_t slice_left, int16_t slice_right,
                                       uint32_t frame_idx, int trace_clip,
                                       int8_t *out_fill_screen_water)
 {
-    RendererState *r = &g_renderer;
-    if (!state || slice_left >= slice_right) {
+    RenderSliceContext frame_ctx;
+    if (!state || !zone_prepass || slice_left >= slice_right) {
         if (out_fill_screen_water) *out_fill_screen_water = 0;
         return;
     }
 
-    RenderSliceContext frame_ctx;
     render_slice_context_init(&frame_ctx, slice_left, slice_right, 0, (int16_t)(g_renderer.height - 1));
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
 
-    const uint8_t *lgr_base = state->view_list_of_graph_rooms;
-    for (int i = state->zone_order_count - 1; i >= 0; i--) {
-        int16_t zone_id = state->zone_order_zones[i];
-        if (zone_id < 0) continue;
+    int zone_count = zone_prepass->count;
+    if (zone_count < 0) zone_count = 0;
+    if (zone_count > RENDERER_MAX_ZONE_ORDER) zone_count = RENDERER_MAX_ZONE_ORDER;
+
+    for (int i = zone_count - 1; i >= 0; i--) {
+        int16_t zone_id = zone_prepass->zone_ids[i];
+        if (zone_id < 0 || !zone_prepass->valid[i]) continue;
 
         render_slice_context_reset(&frame_ctx, slice_left, slice_right,
                                    0, (int16_t)(g_renderer.height - 1));
 
-        {
-            const uint8_t *lgr = lgr_base;
-            if (!lgr || !state->level.clips) {
-                continue;
-            }
-            {
-                const uint8_t *connect_table = state->level.connect_table;
-                int left_clip_px = 0;
-                int right_clip_px = g_renderer.width;
+        int left_clip_px = (int)zone_prepass->left_px[i];
+        int right_clip_px = (int)zone_prepass->right_px[i];
+        if (left_clip_px < slice_left) left_clip_px = slice_left;
+        if (right_clip_px > slice_right) right_clip_px = slice_right;
+        if (left_clip_px >= right_clip_px) {
+            continue;
+        }
 
-                int found = 0;
-                while (rd16(lgr) >= 0) {
-                    if (rd16(lgr) == zone_id) {
-                        found = 1;
-                        break;
-                    }
-                    lgr += 8;
-                }
-
-                if (found) {
-                    int16_t clip_off = rd16(lgr + 2);
-                    if (trace_clip) {
-                        printf("[CLIP][frame %u] zone=%d clip_off=%d\n",
-                               (unsigned)frame_idx, (int)zone_id, (int)clip_off);
-                    }
-                    if (clip_off >= 0) {
-                        const uint8_t *clip_ptr = state->level.clips + clip_off * 2;
-
-                        while (rd16(clip_ptr) >= 0) {
-                            int16_t pt = rd16(clip_ptr);
-                            clip_ptr += 2;
-                            if (pt >= 0 && pt < MAX_POINTS) {
-                                int16_t z = (int16_t)r->rotated[pt].z;
-                                if (z > 0) {
-                                    int sxpx = project_x_to_pixels(r->rotated[pt].x, r->rotated[pt].z);
-                                    int allow = 1;
-                                    if (connect_table) {
-                                        int16_t cpt = rd16(connect_table + (size_t)pt * 4u + 2u);
-                                        if (cpt >= 0 && cpt < MAX_POINTS) {
-                                            int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
-                                            if (csxpx > sxpx) allow = 0;
-                                        } else if (trace_clip) {
-                                            printf("[CLIP][frame %u] zone=%d left pt=%d bad cpt=%d\n",
-                                                   (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
-                                        }
-                                    }
-                                    if (allow && sxpx > left_clip_px) {
-                                        left_clip_px = sxpx;
-                                    }
-                                }
-                            }
-                        }
-                        clip_ptr += 2;
-
-                        while (rd16(clip_ptr) >= 0) {
-                            int16_t pt = rd16(clip_ptr);
-                            clip_ptr += 2;
-                            if (pt >= 0 && pt < MAX_POINTS) {
-                                int16_t z = (int16_t)r->rotated[pt].z;
-                                if (z > 0) {
-                                    int sxpx = project_x_to_pixels(r->rotated[pt].x, r->rotated[pt].z);
-                                    int allow = 1;
-                                    if (connect_table) {
-                                        int16_t cpt = rd16(connect_table + (size_t)pt * 4u);
-                                        if (cpt >= 0 && cpt < MAX_POINTS) {
-                                            int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
-                                            if (csxpx < sxpx) allow = 0;
-                                        } else if (trace_clip) {
-                                            printf("[CLIP][frame %u] zone=%d right pt=%d bad cpt=%d\n",
-                                                   (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
-                                        }
-                                    }
-                                    if (allow && sxpx < right_clip_px) {
-                                        right_clip_px = sxpx + RENDER_SCALE;
-                                    }
-                                }
-                            }
-                        }
-
-                        if (left_clip_px >= g_renderer.width || right_clip_px <= 0 ||
-                            left_clip_px >= right_clip_px) {
-                            if (trace_clip) {
-                                printf("[CLIP][frame %u] zone=%d SKIP invalid lpx=%d rpx=%d\n",
-                                       (unsigned)frame_idx, (int)zone_id,
-                                       left_clip_px, right_clip_px);
-                            }
-                            continue;
-                        }
-
-                        if (left_clip_px < 0) left_clip_px = 0;
-                        if (right_clip_px > g_renderer.width) right_clip_px = g_renderer.width;
-
-                        if (left_clip_px < slice_left) left_clip_px = slice_left;
-                        if (right_clip_px > slice_right) right_clip_px = slice_right;
-                        if (left_clip_px >= right_clip_px) {
-                            continue;
-                        }
-
-                        frame_ctx.left_clip = (int16_t)left_clip_px;
-                        frame_ctx.right_clip = (int16_t)right_clip_px;
-                        if (trace_clip) {
-                            printf("[CLIP][frame %u] zone=%d clip_px=[%d,%d)\n",
-                                   (unsigned)frame_idx, (int)zone_id,
-                                   (int)frame_ctx.left_clip, (int)frame_ctx.right_clip);
-                        }
-                    }
-                } else {
-                    if (trace_clip) {
-                        printf("[CLIP][frame %u] zone=%d SKIP not_in_lgr\n",
-                               (unsigned)frame_idx, (int)zone_id);
-                    }
-                    continue;
-                }
-            }
+        frame_ctx.left_clip = (int16_t)left_clip_px;
+        frame_ctx.right_clip = (int16_t)right_clip_px;
+        if (trace_clip) {
+            printf("[CLIP][frame %u] zone=%d slice_clip_px=[%d,%d)\n",
+                   (unsigned)frame_idx, (int)zone_id, left_clip_px, right_clip_px);
         }
 
         if (state->level.zone_adds && state->level.zone_graph_adds) {
@@ -4596,12 +4662,16 @@ void renderer_draw_display(GameState *state)
     /* 4. Rotate geometry */
     renderer_rotate_level_pts(state);
     renderer_rotate_object_pts(state);
+    RendererWorldZonePrepass world_zone_prepass;
+    renderer_build_world_zone_prepass(state, frame_idx, trace_clip, &world_zone_prepass);
 
     int8_t fill_screen_water = 0;
     int used_threaded_world = 0;
 #ifndef AB3D_NO_THREADS
     if (state->cfg_render_threads) {
-        used_threaded_world = renderer_dispatch_threaded_world(state, frame_idx, trace_clip, &fill_screen_water);
+        used_threaded_world = renderer_dispatch_threaded_world(state, &world_zone_prepass,
+                                                               frame_idx, trace_clip,
+                                                               &fill_screen_water);
         if (!used_threaded_world) {
             static int s_thread_unavailable_logged = 0;
             if (!s_thread_unavailable_logged) {
@@ -4613,7 +4683,8 @@ void renderer_draw_display(GameState *state)
     }
 #endif
     if (!used_threaded_world) {
-        renderer_draw_world_slice(state, 0, (int16_t)g_renderer.width,
+        renderer_draw_world_slice(state, &world_zone_prepass,
+                                  0, (int16_t)g_renderer.width,
                                   frame_idx, trace_clip, &fill_screen_water);
     }
 
