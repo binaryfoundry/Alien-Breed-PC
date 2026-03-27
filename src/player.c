@@ -914,11 +914,19 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
     /* 4b. Teleport check (uses integer ctx) */
     if (plr->zone >= 0) {
         if (check_teleport(&ctx, &state->level, plr->zone)) {
-            /* Teleport destination is in integer coords; sync to 16.16 */
+            /* Teleport destination is in integer coords; sync to 16.16. */
             plr->xoff = (int32_t)ctx.newx << 16;
             plr->zoff = (int32_t)ctx.newz << 16;
+            /* Keep old/new in sync so MoveObject does not sweep between
+             * pre-teleport and post-teleport positions this frame. */
+            plr->oldxoff = plr->xoff;
+            plr->oldzoff = plr->zoff;
             plr->s_xoff = plr->xoff;
             plr->s_zoff = plr->zoff;
+            /* check_teleport adjusts ctx.newy by source/destination floor
+             * delta; carry that back into sim Y (without bob offset). */
+            plr->s_yoff = ctx.newy - bob_val;
+            plr->yoff = ctx.newy;
         }
     }
 
