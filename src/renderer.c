@@ -1405,20 +1405,18 @@ void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
         }
     }
 
+    /* Back-face cull (Amiga itsawalldraw/pastclip behavior):
+     * with z>0, front-facing walls project left->right and satisfy x1/z1 < x2/z2.
+     * Equivalent signed test in view space: (x1*z2 - z1*x2) < 0. */
+    {
+        int64_t face = (int64_t)cx1 * (int64_t)cz2 - (int64_t)cz1 * (int64_t)cx2;
+        if (face >= 0) return;
+    }
+
     /* Project in fine pixel space for smooth motion. */
     int center_x = (g_renderer.width * 47) / 96;
     int scr_x1 = (int)((int64_t)cx1 * (int64_t)RENDER_SCALE / cz1) + center_x;
     int scr_x2 = (int)((int64_t)cx2 * (int64_t)RENDER_SCALE / cz2) + center_x;
-
-    /* If endpoints project in reverse order, swap them for left-to-right drawing.
-     * This can happen after near-plane clipping. All endpoint data must stay in sync. */
-    if (scr_x1 > scr_x2) {
-        int tmp;
-        tmp = scr_x1; scr_x1 = scr_x2; scr_x2 = tmp;
-        { int32_t t32 = cx1; cx1 = cx2; cx2 = t32; }
-        { int32_t t32 = cz1; cz1 = cz2; cz2 = t32; }
-        tmp = ct1; ct1 = (int16_t)ct2; ct2 = (int16_t)tmp;
-    }
 
     if (scr_x2 < r->left_clip || scr_x1 >= r->right_clip) return;
 
