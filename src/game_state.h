@@ -215,6 +215,10 @@ typedef struct {
     bool            nasty;              /* NASTY - enemies active */
     bool            read_controls;      /* READCONTROLS */
 
+    /* F9 debug_save: load different level from file, then apply positions */
+    bool            debug_f9_need_level_reload;
+    bool            debug_f9_pending_apply_save;
+
     /* Multiplayer quit flags */
     bool            master_quitting;
     bool            slave_quitting;

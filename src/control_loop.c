@@ -239,135 +239,169 @@ int read_main_menu(GameState *state)
  */
 void play_the_game(GameState *state)
 {
-    printf("[GAME] === PlayTheGame: level %d ===\n", state->current_level);
+    /* Fresh session: do not carry F9 reload state from a prior play_the_game call */
+    state->debug_f9_need_level_reload = false;
+    state->debug_f9_pending_apply_save = false;
 
-    /* ---- Text screen ---- */
-    display_clear_text_screen();
+    bool copper_screen_ready = false;
 
-    /* ---- Allocate screen memory ---- */
-    display_alloc_copper_screen();
-    display_init_copper_screen();
+    for (;;) {
+        state->running = true;
 
-    /* ---- Load level data ---- */
-    io_load_level_data(&state->level, state->current_level);
-    io_load_level_graphics(&state->level, state->current_level);
-    io_load_level_clips(&state->level, state->current_level);
+        printf("[GAME] === PlayTheGame: level %d ===\n", state->current_level);
 
-    /* ---- Parse level data (blag:) ----
-     * Original resolves offsets in level data to absolute pointers:
-     *   DoorData, LiftData, SwitchData, ZoneGraphAdds, zoneAdds,
-     *   Points, FloorLines, ObjectData, PlayerShotData, NastyShotData,
-     *   ObjectPoints, PLR1_Obj, PLR2_Obj
-     * And assigns clip data to zone graph lists.
-     */
-    /* Parse when level was loaded from file (raw data): zone_adds/points are only set by parse or stub. */
-    if (state->level.data && state->level.graphics && !state->level.zone_adds) {
-        level_parse(&state->level);
+        /* ---- Text screen ---- */
+        display_clear_text_screen();
 
-        /* Assign clip data to zone graph lists */
-        if (state->level.clips && state->level.num_zones > 0) {
-            level_assign_clips(&state->level, state->level.num_zones);
+        if (!copper_screen_ready) {
+            display_alloc_copper_screen();
+            display_init_copper_screen();
+            copper_screen_ready = true;
         }
 
-        /* ListOfGraphRooms is now derived per-frame from the player's
-         * current zone data (at offset 48 = ToListOfGraph).  It is set
-         * in player.c (player_init_from_level and player_physics_and_collision).
-         * No global allocation needed here. */
+        /* ---- Load level data ---- */
+        io_load_level_data(&state->level, state->current_level);
+        io_load_level_graphics(&state->level, state->current_level);
+        io_load_level_clips(&state->level, state->current_level);
 
-        /* Allocate workspace (zone visibility bitmask) */
-        int zone_slots = level_zone_slot_count(&state->level);
-        if (zone_slots > 0 && !state->level.workspace) {
-            state->level.workspace = (uint8_t *)calloc(1,
-                (size_t)(zone_slots + 1));
-        }
+        /* ---- Parse level data (blag:) ----
+         * Original resolves offsets in level data to absolute pointers:
+         *   DoorData, LiftData, SwitchData, ZoneGraphAdds, zoneAdds,
+         *   Points, FloorLines, ObjectData, PlayerShotData, NastyShotData,
+         *   ObjectPoints, PLR1_Obj, PLR2_Obj
+         * And assigns clip data to zone graph lists.
+         */
+        /* Parse when level was loaded from file (raw data): zone_adds/points are only set by parse or stub. */
+        if (state->level.data && state->level.graphics && !state->level.zone_adds) {
+            level_parse(&state->level);
 
-        /* Initialize brightness animation state (Amiga brightAnimTable indices) */
-        memset(state->level.bright_anim_indices, 0, sizeof(state->level.bright_anim_indices));
-        state->level.bright_anim_values[0] = 0;
-        state->level.bright_anim_values[1] = 0;
-        state->level.bright_anim_values[2] = 0;
+            /* Assign clip data to zone graph lists */
+            if (state->level.clips && state->level.num_zones > 0) {
+                level_assign_clips(&state->level, state->level.num_zones);
+            }
 
-        printf("[GAME] Level parsed: %d zones\n", state->level.num_zones);
-    } else if (state->level.points) {
-        printf("[GAME] Level pointers already resolved by loader\n");
-    } else {
-        printf("[GAME] No level data loaded\n");
-    }
-    printf("[GAME] Shot pools: player=%d nasty=%d object_points=%d\n",
-           PLAYER_SHOT_SLOT_COUNT,
-           NASTY_SHOT_SLOT_COUNT,
-           (int)state->level.num_object_points);
-    /* Ensure each object has world size in its record (Amiga style), for file and test levels */
-    if (state->level.object_data && state->level.num_object_points > 0)
-        object_init_world_sizes_from_types(&state->level);
+            /* ListOfGraphRooms is now derived per-frame from the player's
+             * current zone data (at offset 48 = ToListOfGraph).  It is set
+             * in player.c (player_init_from_level and player_physics_and_collision).
+             * No global allocation needed here. */
 
-    /* ---- Setup control mode from prefs ---- */
-    /* Original checks Prefsfile[0] for 'k','m','n','j','p' */
-    printf("[GAME] Control mode: mouse+kbd (default)\n");
+            /* Allocate workspace (zone visibility bitmask) */
+            int zone_slots = level_zone_slot_count(&state->level);
+            if (zone_slots > 0 && !state->level.workspace) {
+                state->level.workspace = (uint8_t *)calloc(1,
+                    (size_t)(zone_slots + 1));
+            }
 
-    /* ---- Init player positions ---- */
-    player_init_from_level(state);
+            /* Initialize brightness animation state (Amiga brightAnimTable indices) */
+            memset(state->level.bright_anim_indices, 0, sizeof(state->level.bright_anim_indices));
+            state->level.bright_anim_values[0] = 0;
+            state->level.bright_anim_values[1] = 0;
+            state->level.bright_anim_values[2] = 0;
 
-    state->num_explosions = 0;
-    state->num_pending_blasts = 0;
-
-    /* ---- Audio setup ---- */
-    audio_mt_init();
-
-    /* ---- Clear keyboard ---- */
-    input_clear_keyboard(state->key_map);
-
-    /* ---- Set initial state ---- */
-    state->hitcol = 0;
-    state->hitcol2 = 0;
-    state->master_quitting = false;
-    state->slave_quitting = (state->mode == MODE_SINGLE);
-    state->do_anything = true;
-
-    if (state->mode != MODE_SINGLE) {
-        state->plr1.energy = PLAYER_MAX_ENERGY;
-    }
-    state->plr2.energy = PLAYER_MAX_ENERGY;
-
-    printf("[GAME] Entering main loop...\n");
-
-    /* ---- Main game loop ---- */
-    game_loop(state);
-
-    printf("[GAME] === Level ended ===\n");
-
-    /* ---- quitGame equivalent (AB3DI.s line ~4628-4731) ---- */
-    {
-        /* Update energy bar one last time */
-        int16_t final_energy;
-        if (state->mode == MODE_SLAVE) {
-            final_energy = state->plr2.energy;
+            printf("[GAME] Level parsed: %d zones\n", state->level.num_zones);
+        } else if (state->level.points) {
+            printf("[GAME] Level pointers already resolved by loader\n");
         } else {
-            final_energy = state->plr1.energy;
+            printf("[GAME] No level data loaded\n");
         }
-        state->energy = final_energy;
+        printf("[GAME] Shot pools: player=%d nasty=%d object_points=%d\n",
+               PLAYER_SHOT_SLOT_COUNT,
+               NASTY_SHOT_SLOT_COUNT,
+               (int)state->level.num_object_points);
+        /* Ensure each object has world size in its record (Amiga style), for file and test levels */
+        if (state->level.object_data && state->level.num_object_points > 0)
+            object_init_world_sizes_from_types(&state->level);
 
-        /* Stop background music */
-        audio_mt_end();
+        /* ---- Setup control mode from prefs ---- */
+        /* Original checks Prefsfile[0] for 'k','m','n','j','p' */
+        printf("[GAME] Control mode: mouse+kbd (default)\n");
 
-        /* Win/loss follows game_loop (end zone, death, ESC). Do not treat ESC as victory. */
-        if (state->finished_level == 1 && final_energy > 0) {
-            printf("[GAME] Level completed successfully!\n");
-            if (state->mode == MODE_SINGLE) {
-                if (state->max_level < MAX_LEVELS) {
-                    state->max_level = (int16_t)(state->current_level + 1);
+        /* ---- Init player positions from level header (skip when F9 will apply save after load) ---- */
+        if (!state->debug_f9_pending_apply_save) {
+            player_init_from_level(state);
+        }
+
+        state->num_explosions = 0;
+        state->num_pending_blasts = 0;
+
+        /* ---- Audio setup ---- */
+        audio_mt_init();
+
+        /* ---- Clear keyboard ---- */
+        input_clear_keyboard(state->key_map);
+
+        /* ---- Set initial state ---- */
+        state->hitcol = 0;
+        state->hitcol2 = 0;
+        state->master_quitting = false;
+        state->slave_quitting = (state->mode == MODE_SINGLE);
+        state->do_anything = true;
+
+        if (state->mode != MODE_SINGLE) {
+            state->plr1.energy = PLAYER_MAX_ENERGY;
+        }
+        state->plr2.energy = PLAYER_MAX_ENERGY;
+
+        /* F9 cross-level: apply position/orientation only after level + objects are ready */
+        if (state->debug_f9_pending_apply_save) {
+            state->debug_f9_pending_apply_save = false;
+            player_debug_apply_save_payload_after_level_load(state);
+            printf("[PLAYER] debug load: position/orientation restored from save (level %d)\n",
+                   (int)state->current_level);
+        }
+
+        printf("[GAME] Entering main loop...\n");
+
+        /* ---- Main game loop ---- */
+        game_loop(state);
+
+        if (state->debug_f9_need_level_reload) {
+            state->debug_f9_need_level_reload = false;
+            state->debug_f9_pending_apply_save = true;
+            printf("[GAME] F9: reloading level %d and applying save\n",
+                   (int)state->current_level);
+            audio_mt_end();
+            io_release_level_memory(&state->level);
+            continue;
+        }
+
+        printf("[GAME] === Level ended ===\n");
+
+        /* ---- quitGame equivalent (AB3DI.s line ~4628-4731) ---- */
+        {
+            /* Update energy bar one last time */
+            int16_t final_energy;
+            if (state->mode == MODE_SLAVE) {
+                final_energy = state->plr2.energy;
+            } else {
+                final_energy = state->plr1.energy;
+            }
+            state->energy = final_energy;
+
+            /* Stop background music */
+            audio_mt_end();
+
+            /* Win/loss follows game_loop (end zone, death, ESC). Do not treat ESC as victory. */
+            if (state->finished_level == 1 && final_energy > 0) {
+                printf("[GAME] Level completed successfully!\n");
+                if (state->mode == MODE_SINGLE) {
+                    if (state->max_level < MAX_LEVELS) {
+                        state->max_level = (int16_t)(state->current_level + 1);
+                    }
+                }
+                if (state->current_level >= MAX_LEVELS - 1) {
+                    printf("[GAME] Final level complete! %s\n", end_game_text);
+                    state->max_level = MAX_LEVELS - 1;
+                }
+            } else {
+                state->finished_level = 0;
+                if (final_energy <= 0) {
+                    printf("[GAME] Player died.\n");
                 }
             }
-            if (state->current_level >= MAX_LEVELS - 1) {
-                printf("[GAME] Final level complete! %s\n", end_game_text);
-                state->max_level = MAX_LEVELS - 1;
-            }
-        } else {
-            state->finished_level = 0;
-            if (final_energy <= 0) {
-                printf("[GAME] Player died.\n");
-            }
         }
+
+        break;
     }
 
     /* ---- Cleanup for main menu (AB3DI.s CleanupForMainMenu ~4774) ---- */

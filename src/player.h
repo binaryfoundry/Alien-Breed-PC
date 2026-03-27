@@ -37,7 +37,16 @@ void player2_snapshot(GameState *state);
 /* Debug: save current player position/orientation to data/debug_save.bin (F5). */
 void player_debug_save_position(GameState *state);
 
-/* Load F5 save file into live player state (F9 during play). */
-bool player_debug_load_save_from_file(GameState *state);
+typedef enum {
+    PLAYER_DEBUG_LOAD_FAILED = 0,
+    PLAYER_DEBUG_LOAD_APPLIED,
+    PLAYER_DEBUG_LOAD_NEED_LEVEL_RELOAD
+} PlayerDebugLoadResult;
+
+/* Read F5 save: applies positions if level matches; else sets current_level and NEED_LEVEL_RELOAD. */
+PlayerDebugLoadResult player_debug_load_save_from_file(GameState *state);
+
+/* After loading the level from save, apply xoff/zone/angpos from state (F9 cross-level path). */
+void player_debug_apply_save_payload_after_level_load(GameState *state);
 
 #endif /* PLAYER_H */

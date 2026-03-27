@@ -1391,17 +1391,54 @@ static void player_debug_sync_loaded_player(GameState *state, PlayerState *plr, 
     }
 }
 
-bool player_debug_load_save_from_file(GameState *state)
+static void player_debug_seed_facing_and_snapshots(GameState *state)
+{
+    PlayerState *plrs[2] = { &state->plr1, &state->plr2 };
+    for (int i = 0; i < 2; i++) {
+        PlayerState *plr = plrs[i];
+        int16_t ang = (int16_t)(plr->angpos & ANGLE_MASK);
+        plr->angpos = ang;
+        plr->s_angpos = ang;
+        plr->sinval = sin_lookup(ang);
+        plr->cosval = cos_lookup(ang);
+        plr->s_sinval = plr->sinval;
+        plr->s_cosval = plr->cosval;
+        plr->oldxoff = plr->xoff;
+        plr->oldzoff = plr->zoff;
+        plr->s_oldxoff = plr->s_xoff;
+        plr->s_oldzoff = plr->s_zoff;
+    }
+    player1_snapshot(state);
+    player2_snapshot(state);
+}
+
+void player_debug_apply_save_payload_after_level_load(GameState *state)
+{
+    state->plr1.s_xoff = state->plr1.xoff;
+    state->plr1.s_zoff = state->plr1.zoff;
+    state->plr1.s_yoff = state->plr1.yoff;
+    state->plr1.s_angpos = state->plr1.angpos;
+    state->plr2.s_xoff = state->plr2.xoff;
+    state->plr2.s_zoff = state->plr2.zoff;
+    state->plr2.s_yoff = state->plr2.yoff;
+    state->plr2.s_angpos = state->plr2.angpos;
+    player_debug_sync_loaded_player(state, &state->plr1, 1);
+    player_debug_sync_loaded_player(state, &state->plr2, 2);
+    /* View/collision use angpos + sin/cos; first frame may render before player_control */
+    player_debug_seed_facing_and_snapshots(state);
+}
+
+PlayerDebugLoadResult player_debug_load_save_from_file(GameState *state)
 {
     char path[512];
     io_make_data_path(path, sizeof(path), DEBUG_SAVE_SUBPATH);
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    if (!f) return PLAYER_DEBUG_LOAD_FAILED;
     char magic[4];
     if (fread(magic, 1, 4, f) != 4 || memcmp(magic, DEBUG_SAVE_MAGIC, 4) != 0) {
         fclose(f);
         printf("[PLAYER] debug load: invalid or missing magic in %s\n", path);
-        return false;
+        return PLAYER_DEBUG_LOAD_FAILED;
     }
     if (fread(&state->plr1.xoff, sizeof(state->plr1.xoff), 1, f) != 1) goto load_fail;
     if (fread(&state->plr1.zoff, sizeof(state->plr1.zoff), 1, f) != 1) goto load_fail;
@@ -1413,24 +1450,28 @@ bool player_debug_load_save_from_file(GameState *state)
     if (fread(&state->plr2.zone, sizeof(state->plr2.zone), 1, f) != 1) goto load_fail;
     if (fread(&state->plr2.angpos, sizeof(state->plr2.angpos), 1, f) != 1) goto load_fail;
     if (fread(&state->plr2.yoff, sizeof(state->plr2.yoff), 1, f) != 1) goto load_fail;
+
+    int16_t file_level = -1;
+    bool has_level = (fread(&file_level, sizeof(file_level), 1, f) == 1);
     fclose(f);
-    /* Sync sim position, angle and Y from saved */
-    state->plr1.s_xoff = state->plr1.xoff;
-    state->plr1.s_zoff = state->plr1.zoff;
-    state->plr1.s_yoff = state->plr1.yoff;
-    state->plr1.s_angpos = state->plr1.angpos;
-    state->plr2.s_xoff = state->plr2.xoff;
-    state->plr2.s_zoff = state->plr2.zoff;
-    state->plr2.s_yoff = state->plr2.yoff;
-    state->plr2.s_angpos = state->plr2.angpos;
-    player_debug_sync_loaded_player(state, &state->plr1, 1);
-    player_debug_sync_loaded_player(state, &state->plr2, 2);
+
+    if (has_level && file_level >= 0 && file_level < MAX_LEVELS &&
+        file_level != state->current_level) {
+        state->current_level = file_level;
+        printf("[PLAYER] debug load: save is level %d; reloading level, then applying position\n",
+               (int)file_level);
+        return PLAYER_DEBUG_LOAD_NEED_LEVEL_RELOAD;
+    }
+
+    /* Same level, or old save without level tail: apply immediately */
+    player_debug_apply_save_payload_after_level_load(state);
     printf("[PLAYER] debug load: position/orientation restored from %s\n", path);
-    return true;
+    return PLAYER_DEBUG_LOAD_APPLIED;
+
 load_fail:
     fclose(f);
     printf("[PLAYER] debug load: read failed (truncated %s?)\n", path);
-    return false;
+    return PLAYER_DEBUG_LOAD_FAILED;
 }
 
 void player_init_from_level(GameState *state)
