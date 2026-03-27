@@ -154,6 +154,8 @@ static size_t g_water_file_size = 0;
 static const uint8_t *g_water_brighten = NULL;
 static size_t g_water_brighten_size = 0;
 static const uint16_t g_water_src_offsets[8] = { 0, 2, 256, 258, 512, 514, 768, 770 };
+/* Debug view: show floor/ceiling Gouraud term without distance attenuation. */
+static int g_debug_floor_gouraud_only = 0;
 
 /* AB3DI.s DrawDisplay:
  *   watertouse = *waterpt++;
@@ -203,6 +205,19 @@ void renderer_step_water_anim_ms(uint32_t elapsed_ms)
         uint32_t interp = ((uint32_t)640u * frac_num) / 20u;
         g_water_wtan_draw = (uint16_t)((g_water_wtan + interp) & 8191u);
     }
+}
+
+int renderer_toggle_floor_gouraud_debug_view(void)
+{
+    g_debug_floor_gouraud_only = g_debug_floor_gouraud_only ? 0 : 1;
+    printf("[RENDER] Floor Gouraud-only visualization: %s (F6)\n",
+           g_debug_floor_gouraud_only ? "ON" : "OFF");
+    return g_debug_floor_gouraud_only;
+}
+
+int renderer_get_floor_gouraud_debug_view(void)
+{
+    return g_debug_floor_gouraud_only;
 }
 
 /* -----------------------------------------------------------------------
@@ -1983,6 +1998,28 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
         gour_zone_step = (span_w > 0) ? (((int64_t)(right_brightness - left_brightness) << 16) / span_w) : 0;
         gour_bright_fp = (int64_t)left_brightness << 16;
         gour_bright_step = (span_w > 0) ? (((int64_t)(right_brightness - left_brightness) << 16) / span_w) : 0;
+    }
+
+    if (g_debug_floor_gouraud_only && !is_water) {
+        for (int i = 0; i < span_len; i++) {
+            int g;
+            if (use_gour) {
+                int gour_bright = (int)(gour_bright_fp >> 16);
+                gour_bright_fp += gour_bright_step;
+                /* Raw Gouraud term only: map signed brightness around mid-gray. */
+                g = 128 + gour_bright * 4;
+                if (g < 0) g = 0;
+                if (g > 255) g = 255;
+            } else {
+                g = 96;
+            }
+            uint32_t argb = RENDER_RGB_RASTER_PIXEL(((uint32_t)g << 16) | ((uint32_t)g << 8) | (uint32_t)g);
+            *row8++ = 1;
+            *row32++ = argb;
+            *row16++ = argb_to_amiga12(argb);
+        }
+        floor_span_extend_horizontal_edges(y, xl, xr, w, buf, rgb, cwbuf);
+        return;
     }
 
     if (texture && pal_lut_src) {

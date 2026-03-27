@@ -116,6 +116,8 @@ void game_loop(GameState *state)
         input_update(state->key_map, &state->last_pressed);
         if (input_f5_save_requested())
             player_debug_save_position(state);
+        if (input_f6_gouraud_visualize_requested())
+            renderer_toggle_floor_gouraud_debug_view();
 
         /* ================================================================
          * Frame timing: accumulate 50Hz VBlanks from real elapsed time

@@ -306,6 +306,8 @@ void renderer_set_water_assets(const uint8_t *water_file, size_t water_file_size
                                const uint8_t *water_brighten, size_t water_brighten_size);
 void renderer_step_water_anim(int steps);
 void renderer_step_water_anim_ms(uint32_t elapsed_ms);
+int renderer_toggle_floor_gouraud_debug_view(void);
+int renderer_get_floor_gouraud_debug_view(void);
 
 /* Sub-routines (called by draw_display) */
 void renderer_rotate_level_pts(GameState *state);
