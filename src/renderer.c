@@ -1666,12 +1666,13 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     int32_t u_step = (int32_t)(d1 >> FLOOR_STEP_SHIFT);
     int32_t v_step = (int32_t)(d2 >> FLOOR_STEP_SHIFT);
 
-    /* Center UV at screen middle (pixel w/2): U_center = -d2, V_center = d1.
-     * So at pixel 0: start_u = -d2 - (w/2)*u_step, start_v = d1 - (w/2)*v_step.
+    /* Center UV at the same optical center used by wall/object projection (47/96 of width):
+     * U_center = -d2, V_center = d1.
+     * So at pixel 0: start_u = -d2 - center_x*u_step, start_v = d1 - center_x*v_step.
      * Compute in 64-bit to avoid overflow, then take low 32 bits (UV wraps for tiling). */
-    int half_w = w / 2;
-    int64_t start_u64 = -(int64_t)d2 - (int64_t)half_w * u_step;
-    int64_t start_v64 = (int64_t)d1 - (int64_t)half_w * v_step;
+    int center_x = (rs->width * 47) / 96;
+    int64_t start_u64 = -(int64_t)d2 - (int64_t)center_x * u_step;
+    int64_t start_v64 = (int64_t)d1 - (int64_t)center_x * v_step;
 
     /* Camera position offset: UV per world unit = FLOOR_CAM_UV_SCALE (matches fixed u_step). */
     int32_t cam_scale = FLOOR_CAM_UV_SCALE;
