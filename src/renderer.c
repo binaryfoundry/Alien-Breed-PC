@@ -100,10 +100,62 @@ static const uint8_t floor_bright_level_table[29] = {
     10, 11, 11, 12, 12, 13, 13, 14, 14
 };
 
+#define FLOOR_PAL_LEVEL_COUNT 15
+
+typedef struct {
+    int16_t left_clip;
+    int16_t right_clip;
+    int16_t top_clip;
+    int16_t bot_clip;
+    int16_t wall_top_clip;
+    int16_t wall_bot_clip;
+    int16_t slice_left;
+    int16_t slice_right;
+    const uint8_t *cur_wall_pal;
+    int8_t fill_screen_water;
+
+    /* Per-slice wall shade cache (replaces function-static mutable cache). */
+    const uint8_t *wall_cache_pal;
+    uint16_t wall_cache_block_off;
+    uint32_t wall_cache_argb[32];
+    uint16_t wall_cache_cw[32];
+    int wall_cache_valid;
+
+    /* Per-slice floor palette cache (replaces global mutable cache). */
+    const uint8_t *floor_pal_cache_src;
+    uint8_t  floor_pal_cache_valid[FLOOR_PAL_LEVEL_COUNT];
+    uint32_t floor_span_argb_cache[FLOOR_PAL_LEVEL_COUNT][256];
+    uint16_t floor_span_cw_cache[FLOOR_PAL_LEVEL_COUNT][256];
+} RenderSliceContext;
+
+static void render_slice_context_reset(RenderSliceContext *ctx,
+                                       int16_t left, int16_t right,
+                                       int16_t top, int16_t bot)
+{
+    ctx->left_clip = left;
+    ctx->right_clip = right;
+    ctx->top_clip = top;
+    ctx->bot_clip = bot;
+    ctx->wall_top_clip = -1;
+    ctx->wall_bot_clip = -1;
+    ctx->slice_left = left;
+    ctx->slice_right = right;
+    ctx->cur_wall_pal = NULL;
+    ctx->fill_screen_water = 0;
+}
+
+static void render_slice_context_init(RenderSliceContext *ctx,
+                                      int16_t left, int16_t right,
+                                      int16_t top, int16_t bot)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    render_slice_context_reset(ctx, left, right, top, bot);
+    ctx->wall_cache_block_off = 0xFFFFu;
+}
+
 /* Water animation / assets (Amiga: watertouse, wtan, wateroff, fillscrnwater). */
 static uint16_t g_water_wtan = 0;
 static uint8_t g_water_off = 0;
-static int8_t g_fill_screen_water = 0;
 static uint8_t g_water_anim_cursor = 0;
 static uint16_t g_water_src_off = 0;
 /* Interpolated per-display-frame refraction phase (smooths 50Hz step on 60Hz+ displays). */
@@ -313,13 +365,8 @@ static inline uint32_t blend_argb(uint32_t bg, uint32_t fg, uint32_t alpha_fg)
     return RENDER_RGB_RASTER_PIXEL((r << 16) | (g << 8) | b);
 }
 
-#define FLOOR_PAL_LEVEL_COUNT 15
-static const uint8_t *g_floor_span_pal_cache_src = NULL;
-static uint8_t  g_floor_span_pal_cache_valid[FLOOR_PAL_LEVEL_COUNT];
-static uint32_t g_floor_span_argb_cache[FLOOR_PAL_LEVEL_COUNT][256];
-static uint16_t g_floor_span_cw_cache[FLOOR_PAL_LEVEL_COUNT][256];
-
-static void floor_span_prepare_pal_cache(const uint8_t *pal_lut_src, int level,
+static void floor_span_prepare_pal_cache(RenderSliceContext *ctx,
+                                         const uint8_t *pal_lut_src, int level,
                                          const uint32_t **argb_out,
                                          const uint16_t **cw_out)
 {
@@ -329,23 +376,23 @@ static void floor_span_prepare_pal_cache(const uint8_t *pal_lut_src, int level,
         return;
     }
 
-    if (g_floor_span_pal_cache_src != pal_lut_src) {
-        g_floor_span_pal_cache_src = pal_lut_src;
-        memset(g_floor_span_pal_cache_valid, 0, sizeof(g_floor_span_pal_cache_valid));
+    if (ctx->floor_pal_cache_src != pal_lut_src) {
+        ctx->floor_pal_cache_src = pal_lut_src;
+        memset(ctx->floor_pal_cache_valid, 0, sizeof(ctx->floor_pal_cache_valid));
     }
 
-    if (!g_floor_span_pal_cache_valid[level]) {
+    if (!ctx->floor_pal_cache_valid[level]) {
         const uint8_t *lut = pal_lut_src + level * 512;
         for (int ti = 0; ti < 256; ti++) {
             uint16_t cw = (uint16_t)((lut[ti * 2] << 8) | lut[ti * 2 + 1]);
-            g_floor_span_argb_cache[level][ti] = amiga12_to_argb(cw);
-            g_floor_span_cw_cache[level][ti] = cw;
+            ctx->floor_span_argb_cache[level][ti] = amiga12_to_argb(cw);
+            ctx->floor_span_cw_cache[level][ti] = cw;
         }
-        g_floor_span_pal_cache_valid[level] = 1;
+        ctx->floor_pal_cache_valid[level] = 1;
     }
 
-    *argb_out = g_floor_span_argb_cache[level];
-    *cw_out = g_floor_span_cw_cache[level];
+    *argb_out = ctx->floor_span_argb_cache[level];
+    *cw_out = ctx->floor_span_cw_cache[level];
 }
 
 void renderer_set_water_assets(const uint8_t *water_file, size_t water_file_size,
@@ -1164,9 +1211,10 @@ void renderer_rotate_object_pts(GameState *state)
  *   texture   - pointer to wall pixel data (past 2048-byte LUT header)
  *   amiga_d6  - Amiga dimming index (0-32): 0=brightest (close), 32=dimmest (far)
  *
- * Uses g_renderer.cur_wall_pal as the per-texture 2048-byte LUT.
+ * Uses ctx->cur_wall_pal as the per-texture 2048-byte LUT.
  * ----------------------------------------------------------------------- */
-static void draw_wall_column(int x, int y_top, int y_bot,
+static void draw_wall_column(RenderSliceContext *ctx,
+                             int x, int y_top, int y_bot,
                              int y_top_tex,
                              int tex_col, const uint8_t *texture,
                              int amiga_d6,
@@ -1179,7 +1227,7 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     uint32_t *rgb = g_renderer.rgb_buffer;
     uint16_t *cw = g_renderer.cw_buffer;
     if (!buf || !rgb || !cw) return;
-    if (x < g_renderer.left_clip || x >= g_renderer.right_clip) return;
+    if (x < ctx->left_clip || x >= ctx->right_clip) return;
 
     int width = g_renderer.width;
 
@@ -1188,9 +1236,9 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     if (yb <= yt) yb = yt + 1;
 
     /* Clip to screen. wall_top_clip/wall_bot_clip (multi-floor) let walls extend to meet ceiling/floor. */
-    int effective_top = (g_renderer.wall_top_clip >= 0) ? (int)g_renderer.wall_top_clip : g_renderer.top_clip;
+    int effective_top = (ctx->wall_top_clip >= 0) ? (int)ctx->wall_top_clip : ctx->top_clip;
     int ct = (yt < effective_top) ? effective_top : yt;
-    int effective_bot = (g_renderer.wall_bot_clip >= 0) ? (int)g_renderer.wall_bot_clip : g_renderer.bot_clip;
+    int effective_bot = (ctx->wall_bot_clip >= 0) ? (int)ctx->wall_bot_clip : ctx->bot_clip;
     int cb = (yb > effective_bot) ? effective_bot : yb;
     if (ct > cb) return;
 
@@ -1208,7 +1256,7 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     uint16_t lut_block_off = wall_scale_table[amiga_d6];
 
     /* Pointer to the per-texture LUT (NULL if no palette loaded) */
-    const uint8_t *pal = g_renderer.cur_wall_pal;
+    const uint8_t *pal = ctx->cur_wall_pal;
 
     /* --- Packed texture addressing ---
      *
@@ -1251,26 +1299,19 @@ static void draw_wall_column(int x, int y_top, int y_bot,
     int32_t yoff = (int32_t)((unsigned)totalyoff & (unsigned)valand);
     int32_t tex_y = (ct - y_top_tex) * tex_step + ((int32_t)yoff << 16);
 
-    /* Cache 32-entry wall shade table by (palette pointer, LUT block). */
-    static const uint8_t *cache_pal = NULL;
-    static uint16_t cache_block_off = 0xFFFFu;
-    static uint32_t cache_argb[32];
-    static uint16_t cache_cw[32];
-    static int cache_valid = 0;
-
     uint32_t fallback = 0;
     uint16_t fallback_cw = 0;
     if (texture && pal) {
-        if (!cache_valid || cache_pal != pal || cache_block_off != lut_block_off) {
+        if (!ctx->wall_cache_valid || ctx->wall_cache_pal != pal || ctx->wall_cache_block_off != lut_block_off) {
             for (int ti = 0; ti < 32; ti++) {
                 int lut_off = lut_block_off + ti * 2;
                 uint16_t c12 = ((uint16_t)pal[lut_off] << 8) | pal[lut_off + 1];
-                cache_argb[ti] = amiga12_to_argb(c12);
-                cache_cw[ti] = c12;
+                ctx->wall_cache_argb[ti] = amiga12_to_argb(c12);
+                ctx->wall_cache_cw[ti] = c12;
             }
-            cache_pal = pal;
-            cache_block_off = lut_block_off;
-            cache_valid = 1;
+            ctx->wall_cache_pal = pal;
+            ctx->wall_cache_block_off = lut_block_off;
+            ctx->wall_cache_valid = 1;
         }
     } else {
         int gray = (64 - amiga_d6) * 255 / 64;
@@ -1289,8 +1330,8 @@ static void draw_wall_column(int x, int y_top, int y_bot,
                               | (uint16_t)texture[byte_off + 1];
                 uint8_t texel5 = (uint8_t)(word & 31u);
                 buf[pix] = 2; /* tag: wall */
-                rgb[pix] = cache_argb[texel5];
-                cw[pix] = cache_cw[texel5];
+                rgb[pix] = ctx->wall_cache_argb[texel5];
+                cw[pix] = ctx->wall_cache_cw[texel5];
                 pix += (size_t)width;
                 tex_y += tex_step;
             }
@@ -1301,8 +1342,8 @@ static void draw_wall_column(int x, int y_top, int y_bot,
                               | (uint16_t)texture[byte_off + 1];
                 uint8_t texel5 = (uint8_t)((word >> 5) & 31u);
                 buf[pix] = 2; /* tag: wall */
-                rgb[pix] = cache_argb[texel5];
-                cw[pix] = cache_cw[texel5];
+                rgb[pix] = ctx->wall_cache_argb[texel5];
+                cw[pix] = ctx->wall_cache_cw[texel5];
                 pix += (size_t)width;
                 tex_y += tex_step;
             }
@@ -1313,15 +1354,15 @@ static void draw_wall_column(int x, int y_top, int y_bot,
                               | (uint16_t)texture[byte_off + 1];
                 uint8_t texel5 = (uint8_t)((word >> 10) & 31u);
                 buf[pix] = 2; /* tag: wall */
-                rgb[pix] = cache_argb[texel5];
-                cw[pix] = cache_cw[texel5];
+                rgb[pix] = ctx->wall_cache_argb[texel5];
+                cw[pix] = ctx->wall_cache_cw[texel5];
                 pix += (size_t)width;
                 tex_y += tex_step;
             }
         }
     } else if (texture && pal) {
-        uint32_t argb0 = cache_argb[0];
-        uint16_t cw0 = cache_cw[0];
+        uint32_t argb0 = ctx->wall_cache_argb[0];
+        uint16_t cw0 = ctx->wall_cache_cw[0];
         for (int y = ct; y <= cb; y++) {
             buf[pix] = 2; /* tag: wall */
             rgb[pix] = argb0;
@@ -1367,13 +1408,13 @@ static void draw_wall_column(int x, int y_top, int y_bot,
             size_t mid = (size_t)row * (size_t)width + (size_t)x;
             uint32_t c = rgb[mid];
             uint16_t wv = cw[mid];
-            if (x > 0) {
+            if (x > ctx->slice_left) {
                 size_t L = mid - 1;
                 buf[L] = 2;
                 rgb[L] = c;
                 cw[L] = wv;
             }
-            if (x + 1 < width) {
+            if (x + 1 < ctx->slice_right) {
                 size_t R = mid + 1;
                 buf[R] = 2;
                 rgb[R] = c;
@@ -1420,17 +1461,16 @@ static int wall_proj_y_screen_invz(int16_t world_y, int64_t inv_z_fp, int32_t pr
  * Takes two endpoints in view space, projects them, and draws
  * columns from left to right with perspective-correct texturing.
  * ----------------------------------------------------------------------- */
-void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
-                        int16_t top, int16_t bot,
-                        const uint8_t *texture, int16_t tex_start,
-                        int16_t tex_end, int16_t left_brightness, int16_t right_brightness,
-                        uint8_t valand, uint8_t valshift, int16_t horand,
-                        int16_t totalyoff, int16_t fromtile,
-                        int16_t tex_id, int16_t wall_height_for_tex,
-                        int16_t d6_max)
+static void renderer_draw_wall_ctx(RenderSliceContext *ctx,
+                                   int32_t x1, int32_t z1, int32_t x2, int32_t z2,
+                                   int16_t top, int16_t bot,
+                                   const uint8_t *texture, int16_t tex_start,
+                                   int16_t tex_end, int16_t left_brightness, int16_t right_brightness,
+                                   uint8_t valand, uint8_t valshift, int16_t horand,
+                                   int16_t totalyoff, int16_t fromtile,
+                                   int16_t tex_id, int16_t wall_height_for_tex,
+                                   int16_t d6_max)
 {
-    RendererState *r = &g_renderer;
-
     /* Both behind camera - skip */
     if (z1 <= 0 && z2 <= 0) return;
 
@@ -1477,15 +1517,15 @@ void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
     int scr_x1 = (int)((int64_t)cx1 * (int64_t)RENDER_SCALE / cz1) + center_x;
     int scr_x2 = (int)((int64_t)cx2 * (int64_t)RENDER_SCALE / cz2) + center_x;
 
-    if (scr_x2 < r->left_clip || scr_x1 >= r->right_clip) return;
+    if (scr_x2 < ctx->left_clip || scr_x1 >= ctx->right_clip) return;
 
     /* Clamp drawn range to clip region so we only iterate over visible columns.
      * This avoids int32 overflow in interpolation when the wall extends far off the left
      * (col = left_clip - scr_x1 can be huge, and col * 65536 overflows). */
     int draw_start = scr_x1;
-    if (draw_start < r->left_clip) draw_start = r->left_clip;
+    if (draw_start < ctx->left_clip) draw_start = ctx->left_clip;
     int draw_end = scr_x2;
-    if (draw_end >= r->right_clip) draw_end = r->right_clip - 1;
+    if (draw_end >= ctx->right_clip) draw_end = ctx->right_clip - 1;
     if (draw_start > draw_end) return;
 
     /* Wall span for interpolation (use at least 1 to avoid division by zero) */
@@ -1534,14 +1574,35 @@ void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
         int32_t depth_z = col_z;
         if (tex_id == SWITCHES_WALL_TEX_ID && col_z > 16) depth_z = col_z - 16;
 
-        draw_wall_column(screen_x, y_top_draw, y_bot, y_top, tex_col, texture,
+        draw_wall_column(ctx, screen_x, y_top_draw, y_bot, y_top, tex_col, texture,
                          amiga_d6, valand, valshift, totalyoff, depth_z,
                          wall_height_for_tex, tex_id, d6_max);
     }
 }
 
+void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
+                        int16_t top, int16_t bot,
+                        const uint8_t *texture, int16_t tex_start,
+                        int16_t tex_end, int16_t left_brightness, int16_t right_brightness,
+                        uint8_t valand, uint8_t valshift, int16_t horand,
+                        int16_t totalyoff, int16_t fromtile,
+                        int16_t tex_id, int16_t wall_height_for_tex,
+                        int16_t d6_max)
+{
+    RenderSliceContext ctx;
+    render_slice_context_init(&ctx, g_renderer.left_clip, g_renderer.right_clip,
+                              g_renderer.top_clip, g_renderer.bot_clip);
+    ctx.wall_top_clip = g_renderer.wall_top_clip;
+    ctx.wall_bot_clip = g_renderer.wall_bot_clip;
+    ctx.cur_wall_pal = g_renderer.cur_wall_pal;
+    renderer_draw_wall_ctx(&ctx, x1, z1, x2, z2, top, bot, texture, tex_start, tex_end,
+                           left_brightness, right_brightness, valand, valshift, horand,
+                           totalyoff, fromtile, tex_id, wall_height_for_tex, d6_max);
+}
+
 /* Extend floor/ceiling span by one column left/right with edge colours (cf. draw_wall_column +1 row). */
-static void floor_span_extend_horizontal_edges(int16_t y, int xl, int xr, int width,
+static void floor_span_extend_horizontal_edges(const RenderSliceContext *ctx,
+                                               int16_t y, int xl, int xr, int width,
                                                 uint8_t *buf, uint32_t *rgb, uint16_t *cwbuf)
 {
     if (!buf || !rgb || !cwbuf || xl > xr || width < 1) return;
@@ -1555,13 +1616,13 @@ static void floor_span_extend_horizontal_edges(int16_t y, int xl, int xr, int wi
     uint16_t wR = cwbuf[ri];
     uint8_t tL = buf[li];
     uint8_t tR = buf[ri];
-    if (xl > 0) {
+    if (xl > ctx->slice_left) {
         size_t L = li - 1;
         buf[L] = tL;
         rgb[L] = cL;
         cwbuf[L] = wL;
     }
-    if (xr + 1 < width) {
+    if (xr + 1 < ctx->slice_right) {
         size_t R = ri + 1;
         buf[R] = tR;
         rgb[R] = cR;
@@ -1576,12 +1637,13 @@ static void floor_span_extend_horizontal_edges(int16_t y, int xl, int xr, int wi
  *
  * Draws a horizontal span of floor or ceiling at a given height.
  * ----------------------------------------------------------------------- */
-void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
-                              int32_t floor_height, const uint8_t *texture, const uint8_t *floor_pal,
-                              int16_t brightness, int16_t left_brightness, int16_t right_brightness,
-                              int16_t use_gouraud,
-                              int16_t scaleval, int is_water,
-                              int16_t water_rows_left)
+static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
+                                         int16_t y, int16_t x_left, int16_t x_right,
+                                         int32_t floor_height, const uint8_t *texture, const uint8_t *floor_pal,
+                                         int16_t brightness, int16_t left_brightness, int16_t right_brightness,
+                                         int16_t use_gouraud,
+                                         int16_t scaleval, int is_water,
+                                         int16_t water_rows_left)
 {
     /* Translated from AB3DI.s pastfloorbright (line 6657).
      *
@@ -1602,8 +1664,8 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     if (!buf || !rgb || !cwbuf) return;
     if (y < 0 || y >= rs->height) return;
 
-    int xl = (x_left < rs->left_clip) ? rs->left_clip : x_left;
-    int xr = (x_right >= rs->right_clip) ? rs->right_clip - 1 : x_right;
+    int xl = (x_left < ctx->left_clip) ? ctx->left_clip : x_left;
+    int xr = (x_right >= ctx->right_clip) ? ctx->right_clip - 1 : x_right;
     if (xl > xr) return;
 
     int center = rs->height / 2;  /* Match wall/floor projection center */
@@ -1730,7 +1792,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
     const uint16_t *span_cw = NULL;
     const int use_span_lut = (texture != NULL && pal_lut_src != NULL && !is_water && !use_gour);
     if (use_span_lut) {
-        floor_span_prepare_pal_cache(pal_lut_src, floor_pal_level, &span_argb, &span_cw);
+        floor_span_prepare_pal_cache(ctx, pal_lut_src, floor_pal_level, &span_argb, &span_cw);
     }
 
     /* UV accumulators: 32-bit wrapping is sufficient - we only need (fp>>16)&63 for tile coords.
@@ -1821,7 +1883,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             *p32++ = span_argb[texel];
             *p16++ = span_cw[texel];
         }
-        floor_span_extend_horizontal_edges(y, xl, xr, w, buf, rgb, cwbuf);
+        floor_span_extend_horizontal_edges(ctx, y, xl, xr, w, buf, rgb, cwbuf);
         return;
     }
 
@@ -1938,7 +2000,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             *p32++ = out;
             *p16++ = out_cw;
         }
-        floor_span_extend_horizontal_edges(y, xl, xr, w, buf, rgb, cwbuf);
+        floor_span_extend_horizontal_edges(ctx, y, xl, xr, w, buf, rgb, cwbuf);
         return;
     }
 
@@ -1982,7 +2044,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             *row32++ = argb;
             *row16++ = argb_to_amiga12(argb);
         }
-        floor_span_extend_horizontal_edges(y, xl, xr, w, buf, rgb, cwbuf);
+        floor_span_extend_horizontal_edges(ctx, y, xl, xr, w, buf, rgb, cwbuf);
         return;
     }
 
@@ -1995,7 +2057,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             const uint32_t *gour_argb_levels[FLOOR_PAL_LEVEL_COUNT];
             const uint16_t *gour_cw_levels[FLOOR_PAL_LEVEL_COUNT];
             for (int level = 0; level < FLOOR_PAL_LEVEL_COUNT; level++) {
-                floor_span_prepare_pal_cache(pal_lut_src, level,
+                floor_span_prepare_pal_cache(ctx, pal_lut_src, level,
                                              &gour_argb_levels[level],
                                              &gour_cw_levels[level]);
             }
@@ -2014,7 +2076,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 *p32++ = gour_argb_levels[gour_level][texel];
                 *p16++ = gour_cw_levels[gour_level][texel];
             }
-            floor_span_extend_horizontal_edges(y, xl, xr, w, buf, rgb, cwbuf);
+            floor_span_extend_horizontal_edges(ctx, y, xl, xr, w, buf, rgb, cwbuf);
             return;
         }
 
@@ -2030,7 +2092,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 *p32++ = amiga12_to_argb(out_cw);
                 *p16++ = out_cw;
             }
-            floor_span_extend_horizontal_edges(y, xl, xr, w, buf, rgb, cwbuf);
+            floor_span_extend_horizontal_edges(ctx, y, xl, xr, w, buf, rgb, cwbuf);
             return;
         }
     }
@@ -2059,7 +2121,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                 *p32++ = argb;
                 *p16++ = argb_to_amiga12(argb);
             }
-            floor_span_extend_horizontal_edges(y, xl, xr, w, buf, rgb, cwbuf);
+            floor_span_extend_horizontal_edges(ctx, y, xl, xr, w, buf, rgb, cwbuf);
             return;
         }
 
@@ -2073,7 +2135,7 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             *row32++ = argb;
             *row16++ = argb_to_amiga12(argb);
         }
-        floor_span_extend_horizontal_edges(y, xl, xr, w, buf, rgb, cwbuf);
+        floor_span_extend_horizontal_edges(ctx, y, xl, xr, w, buf, rgb, cwbuf);
         return;
     }
 
@@ -2099,7 +2161,22 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
             *row16++ = out_cw;
         }
     }
-    floor_span_extend_horizontal_edges(y, xl, xr, w, buf, rgb, cwbuf);
+    floor_span_extend_horizontal_edges(ctx, y, xl, xr, w, buf, rgb, cwbuf);
+}
+
+void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
+                              int32_t floor_height, const uint8_t *texture, const uint8_t *floor_pal,
+                              int16_t brightness, int16_t left_brightness, int16_t right_brightness,
+                              int16_t use_gouraud,
+                              int16_t scaleval, int is_water,
+                              int16_t water_rows_left)
+{
+    RenderSliceContext ctx;
+    render_slice_context_init(&ctx, g_renderer.left_clip, g_renderer.right_clip,
+                              g_renderer.top_clip, g_renderer.bot_clip);
+    renderer_draw_floor_span_ctx(&ctx, y, x_left, x_right, floor_height, texture, floor_pal,
+                                 brightness, left_brightness, right_brightness, use_gouraud,
+                                 scaleval, is_water, water_rows_left);
 }
 
 /* -----------------------------------------------------------------------
@@ -2125,15 +2202,16 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
  *
  * Uses painter's algorithm (drawn back-to-front by zone order).
  * ----------------------------------------------------------------------- */
-void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
-                          int16_t width, int16_t height, int16_t z,
-                          const uint8_t *wad, size_t wad_size,
-                          const uint8_t *ptr_data, size_t ptr_size,
-                          const uint8_t *pal, size_t pal_size,
-                          uint32_t ptr_offset, uint16_t down_strip,
-                          int src_cols, int src_rows,
-                          int16_t brightness, int sprite_type,
-                          int32_t clip_top_sy, int32_t clip_bot_sy)
+static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
+                                     int16_t screen_x, int16_t screen_y,
+                                     int16_t width, int16_t height, int16_t z,
+                                     const uint8_t *wad, size_t wad_size,
+                                     const uint8_t *ptr_data, size_t ptr_size,
+                                     const uint8_t *pal, size_t pal_size,
+                                     uint32_t ptr_offset, uint16_t down_strip,
+                                     int src_cols, int src_rows,
+                                     int16_t brightness, int sprite_type,
+                                     int32_t clip_top_sy, int32_t clip_bot_sy)
 {
     (void)sprite_type;
     uint8_t *buf = g_renderer.buffer;
@@ -2179,8 +2257,8 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
     sx = screen_x - width / 2;
     sy = screen_y - height / 2;
 
-    int clip_left = g_renderer.left_clip;
-    int clip_right = g_renderer.right_clip;
+    int clip_left = ctx->left_clip;
+    int clip_right = ctx->right_clip;
     if (clip_left < 0) clip_left = 0;
     if (clip_right > rw) clip_right = rw;
     int dx_start = 0;
@@ -2282,6 +2360,25 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
             }
         }
     }
+}
+
+void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
+                          int16_t width, int16_t height, int16_t z,
+                          const uint8_t *wad, size_t wad_size,
+                          const uint8_t *ptr_data, size_t ptr_size,
+                          const uint8_t *pal, size_t pal_size,
+                          uint32_t ptr_offset, uint16_t down_strip,
+                          int src_cols, int src_rows,
+                          int16_t brightness, int sprite_type,
+                          int32_t clip_top_sy, int32_t clip_bot_sy)
+{
+    RenderSliceContext ctx;
+    render_slice_context_init(&ctx, g_renderer.left_clip, g_renderer.right_clip,
+                              g_renderer.top_clip, g_renderer.bot_clip);
+    renderer_draw_sprite_ctx(&ctx, screen_x, screen_y, width, height, z,
+                             wad, wad_size, ptr_data, ptr_size, pal, pal_size,
+                             ptr_offset, down_strip, src_cols, src_rows, brightness,
+                             sprite_type, clip_top_sy, clip_bot_sy);
 }
 
 /* -----------------------------------------------------------------------
@@ -2595,8 +2692,8 @@ static inline int explosion_world_h_to_port(const RendererState *r, int world_h_
  * sorts by depth, and draws them back-to-front.
  * ----------------------------------------------------------------------- */
 /* level_filter: -1 = draw all (single-level zone), 0 = lower floor only, 1 = upper floor only (multi-floor). */
-static void draw_zone_objects(GameState *state, int16_t zone_id,
-                              int32_t top_of_room, int32_t bot_of_room, int level_filter)
+static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int16_t zone_id,
+                                  int32_t top_of_room, int32_t bot_of_room, int level_filter)
 {
     RendererState *r = &g_renderer;
     LevelState *level = &state->level;
@@ -2814,16 +2911,16 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
             int bright = (orp_z >> 7);
             const uint8_t *obj_pal = r->sprite_pal_data[expl_vect];
             size_t obj_pal_size = r->sprite_pal_size[expl_vect];
-            renderer_draw_sprite((int16_t)scr_x, (int16_t)scr_y,
-                                 (int16_t)sprite_w, (int16_t)sprite_h,
-                                 (int16_t)(orp_z > 32767 ? 32767 : orp_z),
-                                 r->sprite_wad[expl_vect], r->sprite_wad_size[expl_vect],
-                                 r->sprite_ptr[expl_vect], r->sprite_ptr_size[expl_vect],
-                                 obj_pal, obj_pal_size,
-                                 ptr_off, down_strip,
-                                 32, 32,
-                                 (int16_t)bright, expl_vect,
-                                 clip_top_y, clip_bot_y);
+            renderer_draw_sprite_ctx(ctx, (int16_t)scr_x, (int16_t)scr_y,
+                                     (int16_t)sprite_w, (int16_t)sprite_h,
+                                     (int16_t)(orp_z > 32767 ? 32767 : orp_z),
+                                     r->sprite_wad[expl_vect], r->sprite_wad_size[expl_vect],
+                                     r->sprite_ptr[expl_vect], r->sprite_ptr_size[expl_vect],
+                                     obj_pal, obj_pal_size,
+                                     ptr_off, down_strip,
+                                     32, 32,
+                                     (int16_t)bright, expl_vect,
+                                     clip_top_y, clip_bot_y);
             continue;
         }
 
@@ -2986,16 +3083,16 @@ static void draw_zone_objects(GameState *state, int16_t zone_id,
         const uint8_t *obj_pal = r->sprite_pal_data[vect_num];
         size_t obj_pal_size = r->sprite_pal_size[vect_num];
 
-        renderer_draw_sprite((int16_t)scr_x, (int16_t)scr_y,
-                             (int16_t)sprite_w, (int16_t)sprite_h,
-                             (int16_t)(orp->z > 32767 ? 32767 : orp->z),
-                             r->sprite_wad[vect_num], r->sprite_wad_size[vect_num],
-                             r->sprite_ptr[vect_num], r->sprite_ptr_size[vect_num],
-                             obj_pal, obj_pal_size,
-                             ptr_off, down_strip,
-                             src_cols, src_rows,
-                             (int16_t)bright, vect_num,
-                             clip_top_y, clip_bot_y);
+        renderer_draw_sprite_ctx(ctx, (int16_t)scr_x, (int16_t)scr_y,
+                                 (int16_t)sprite_w, (int16_t)sprite_h,
+                                 (int16_t)(orp->z > 32767 ? 32767 : orp->z),
+                                 r->sprite_wad[vect_num], r->sprite_wad_size[vect_num],
+                                 r->sprite_ptr[vect_num], r->sprite_ptr_size[vect_num],
+                                 obj_pal, obj_pal_size,
+                                 ptr_off, down_strip,
+                                 src_cols, src_rows,
+                                 (int16_t)bright, vect_num,
+                                 clip_top_y, clip_bot_y);
     }
 }
 
@@ -3079,7 +3176,7 @@ static int zone_has_lift(const uint8_t *lift_data, int16_t zone_id)
     return 0;
 }
 
-void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
+static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, int16_t zone_id, int use_upper)
 {
     RendererState *r = &g_renderer;
     LevelState *level = &state->level;
@@ -3282,19 +3379,19 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 int16_t eff_fromtile   = fromtile;
 
                 if (tex_id >= 0 && tex_id < MAX_WALL_TILES)
-                    r->cur_wall_pal = r->wall_palettes[tex_id];
+                    ctx->cur_wall_pal = r->wall_palettes[tex_id];
                 else
-                    r->cur_wall_pal = NULL;
+                    ctx->cur_wall_pal = NULL;
                 /* Amiga seethru path (type 13) clamps d6 to 32; normal walls clamp to 64. */
                 int16_t wall_d6_max = (entry_type == 13) ? 32 : 64;
                 if (!skip_this_wall)
-                    renderer_draw_wall(rx1, rz1, rx2, rz2,
-                                      wall_top, wall_bot,
-                                      wall_tex, leftend, rightend,
-                                      wall_bright_l, wall_bright_r,
-                                      use_valand, use_valshift, horand,
-                                      eff_totalyoff, eff_fromtile, tex_id,
-                                      wall_height_for_tex, wall_d6_max);
+                    renderer_draw_wall_ctx(ctx, rx1, rz1, rx2, rz2,
+                                           wall_top, wall_bot,
+                                           wall_tex, leftend, rightend,
+                                           wall_bright_l, wall_bright_r,
+                                           use_valand, use_valshift, horand,
+                                           eff_totalyoff, eff_fromtile, tex_id,
+                                           wall_height_for_tex, wall_d6_max);
             }
             ptr += 28;
             break;
@@ -3373,7 +3470,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             if (draw_h_world < zone_roof || draw_h_world > zone_floor) {
                 if (entry_type == 7 && !use_upper && zone_id == viewer_zone &&
                     poly_h_world < zone_roof) {
-                    g_fill_screen_water = 0x0F;
+                    ctx->fill_screen_water = 0x0F;
                 }
                 continue;
             }
@@ -3383,9 +3480,9 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             if (entry_type == 7 && !use_upper && zone_id == viewer_zone) {
                 int32_t rel_water = draw_h_world - y_off;
                 if (rel_water < 0) {
-                    g_fill_screen_water = 0x0F; /* strong underwater tint */
-                } else if (rel_water <= (1 << WORLD_Y_FRAC_BITS) && g_fill_screen_water == 0) {
-                    g_fill_screen_water = (int8_t)-1; /* weaker near-surface tint */
+                    ctx->fill_screen_water = 0x0F; /* strong underwater tint */
+                } else if (rel_water <= (1 << WORLD_Y_FRAC_BITS) && ctx->fill_screen_water == 0) {
+                    ctx->fill_screen_water = (int8_t)-1; /* weaker near-surface tint */
                 }
             }
 
@@ -3445,7 +3542,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
             /* Clamp Y range for floor vs ceiling. Multi-floor: also clamp to zone top_clip/bot_clip
              * so lower room does not draw above the split and upper room does not draw below it. */
             int y_min_clamp, y_max_clamp;
-            int top_clip_for_poly = r->top_clip;
+            int top_clip_for_poly = ctx->top_clip;
             if (entry_type == 8 || entry_type == 9) {
                 top_clip_for_poly -= CHUNKY_TOPCLIP_BIAS;
             }
@@ -3457,7 +3554,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 y_max_clamp = half_h - 1;
             }
             if (y_min_clamp < top_clip_for_poly) y_min_clamp = top_clip_for_poly;
-            if (y_max_clamp > r->bot_clip) y_max_clamp = r->bot_clip;
+            if (y_max_clamp > ctx->bot_clip) y_max_clamp = ctx->bot_clip;
 
             /* Walk each polygon edge and rasterize into edge tables (floor and ceiling/roof).
              * Near-plane clip edges so vertices behind the camera get proper
@@ -3547,8 +3644,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                         int hi = sx1 > sx2 ? sx1 : sx2;
                         int32_t lo_b = (sx1 <= sx2) ? eb1 : eb2;
                         int32_t hi_b = (sx1 <= sx2) ? eb2 : eb1;
-                        if (lo < r->left_clip) lo = r->left_clip;
-                        if (hi >= r->right_clip) hi = r->right_clip - 1;
+                        if (lo < ctx->left_clip) lo = ctx->left_clip;
+                        if (hi >= ctx->right_clip) hi = ctx->right_clip - 1;
                         if (lo < left_edge[row]) {
                             left_edge[row] = (int16_t)lo;
                             if (use_gour_floor) left_bright_tab[row] = (int16_t)lo_b;
@@ -3594,8 +3691,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     int32_t edge_bright = (int32_t)(b_fp >> 16);
                     int left_x = x;
                     int right_x = x;
-                    if (left_x < r->left_clip) left_x = r->left_clip;
-                    if (right_x >= r->right_clip) right_x = r->right_clip - 1;
+                    if (left_x < ctx->left_clip) left_x = ctx->left_clip;
+                    if (right_x >= ctx->right_clip) right_x = ctx->right_clip - 1;
                     if (left_x < left_edge[row]) {
                         left_edge[row] = (int16_t)left_x;
                         if (use_gour_floor) left_bright_tab[row] = (int16_t)edge_bright;
@@ -3662,12 +3759,12 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                  (row_step > 0) ? (row <= row_end) : (row >= row_end);
                  row += row_step) {
                 if (row < 0 || row >= h) continue;
-                if (row < r->top_clip || row > r->bot_clip) continue;  /* multi-floor: stay in zone band */
+                if (row < ctx->top_clip || row > ctx->bot_clip) continue;  /* multi-floor: stay in zone band */
                 int16_t le = left_edge[row];
                 int16_t re = right_edge_tab[row];
                 if (le >= g_renderer.width || re < 0) continue;
-                if (le < r->left_clip) le = (int16_t)r->left_clip;
-                if (re >= r->right_clip) re = (int16_t)(r->right_clip - 1);
+                if (le < ctx->left_clip) le = (int16_t)ctx->left_clip;
+                if (re >= ctx->right_clip) re = (int16_t)(ctx->right_clip - 1);
                 if (le > re) continue;
                 /* Water (entry_type 7) and floor drawn inline in stream order (Amiga itsafloordraw). */
                 int16_t water_rows_left = 0;
@@ -3685,11 +3782,11 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                     row_bright_r = right_bright_tab[row];
                     row_use_gour = 1;
                 }
-                renderer_draw_floor_span((int16_t)row, le, re,
-                                         rel_h, floor_tex, floor_pal,
-                                         bright, row_bright_l, row_bright_r, row_use_gour,
-                                         scaleval, (entry_type == 7) ? 1 : 0,
-                                         water_rows_left);
+                renderer_draw_floor_span_ctx(ctx, (int16_t)row, le, re,
+                                             rel_h, floor_tex, floor_pal,
+                                             bright, row_bright_l, row_bright_r, row_use_gour,
+                                             scaleval, (entry_type == 7) ? 1 : 0,
+                                             water_rows_left);
             }
             free(left_edge);
             free(right_edge_tab);
@@ -3725,8 +3822,8 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                 obj_bot = t;
             }
             int is_multi_floor = (rd32(level->zone_graph_adds + zone_id * 8 + 4) != 0);
-            draw_zone_objects(state, zone_id, obj_top, obj_bot,
-                             is_multi_floor ? use_upper : -1);
+            draw_zone_objects_ctx(ctx, state, zone_id, obj_top, obj_bot,
+                                  is_multi_floor ? use_upper : -1);
             break;
         }
 
@@ -3806,15 +3903,15 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                         int16_t wall_ht = (int16_t)((botwall - topwall) >> 8);
                         if (wall_ht < 1) wall_ht = 1;
                         if (tex_id >= 0 && tex_id < MAX_WALL_TILES)
-                            r->cur_wall_pal = r->wall_palettes[tex_id];
+                            ctx->cur_wall_pal = r->wall_palettes[tex_id];
                         else
-                            r->cur_wall_pal = NULL;
-                        renderer_draw_wall(prev_x, prev_z,
-                                          new_x, new_z,
-                                          (int16_t)(topwall >> 8), (int16_t)(botwall >> 8),
-                                          arc_tex, (int16_t)prev_t, (int16_t)new_t,
-                                          base_bright, base_bright, 63, 6, 255,
-                                          0, 0, tex_id, wall_ht, 64);
+                            ctx->cur_wall_pal = NULL;
+                        renderer_draw_wall_ctx(ctx, prev_x, prev_z,
+                                               new_x, new_z,
+                                               (int16_t)(topwall >> 8), (int16_t)(botwall >> 8),
+                                               arc_tex, (int16_t)prev_t, (int16_t)new_t,
+                                               base_bright, base_bright, 63, 6, 255,
+                                               0, 0, tex_id, wall_ht, 64);
                     }
                     
                     prev_x = new_x;
@@ -3850,15 +3947,25 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
     }
 }
 
-static void renderer_apply_underwater_tint(void)
+void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
 {
-    if (g_fill_screen_water == 0) return;
+    RenderSliceContext ctx;
+    render_slice_context_init(&ctx, g_renderer.left_clip, g_renderer.right_clip,
+                              g_renderer.top_clip, g_renderer.bot_clip);
+    ctx.wall_top_clip = g_renderer.wall_top_clip;
+    ctx.wall_bot_clip = g_renderer.wall_bot_clip;
+    renderer_draw_zone_ctx(&ctx, state, zone_id, use_upper);
+}
+
+static void renderer_apply_underwater_tint(int8_t fill_screen_water)
+{
+    if (fill_screen_water == 0) return;
     if (!g_renderer.rgb_buffer || !g_renderer.cw_buffer) return;
 
     /* AB3DI fillscrnwater post-pass:
      * AND #$00FF on copper color words. Strong applies to whole view (4*20 lines),
      * weak applies to bottom half only (2*20 lines). */
-    const int strong = (g_fill_screen_water > 0);
+    const int strong = (fill_screen_water > 0);
     const int w = g_renderer.width;
     const int h = g_renderer.height;
     int y0 = strong ? 0 : (h / 2);
@@ -3897,7 +4004,8 @@ void renderer_draw_display(GameState *state)
 
     /* 1. Clear framebuffer */
     renderer_clear(0);
-    g_fill_screen_water = 0; /* Amiga DrawDisplay: clr.b fillscrnwater */
+    RenderSliceContext frame_ctx;
+    render_slice_context_init(&frame_ctx, 0, (int16_t)g_renderer.width, 0, (int16_t)(g_renderer.height - 1));
 
     /* Sky backdrop first (Amiga Anims.s putinbackdrop / data/gfx/backfile), before world draw. */
     {
@@ -3971,12 +4079,8 @@ void renderer_draw_display(GameState *state)
         if (zone_id < 0) continue;
 
         /* Reset clip to full screen for each zone */
-        r->left_clip = 0;
-        r->right_clip = (int16_t)g_renderer.width;
-        r->top_clip = 0;
-        r->bot_clip = (int16_t)(g_renderer.height - 1);
-        r->wall_top_clip = -1;
-        r->wall_bot_clip = -1;
+        render_slice_context_reset(&frame_ctx, 0, (int16_t)g_renderer.width,
+                                   0, (int16_t)(g_renderer.height - 1));
 
         /* Apply zone clipping from ListOfGraphRooms + LEVELCLIPS (portal clipping).
          * Match Amiga NEWsetlclip/NEWsetrclip behavior:
@@ -4079,12 +4183,12 @@ void renderer_draw_display(GameState *state)
 
                     if (left_clip_px < 0) left_clip_px = 0;
                     if (right_clip_px > g_renderer.width) right_clip_px = g_renderer.width;
-                    r->left_clip = (int16_t)left_clip_px;
-                    r->right_clip = (int16_t)right_clip_px;
+                    frame_ctx.left_clip = (int16_t)left_clip_px;
+                    frame_ctx.right_clip = (int16_t)right_clip_px;
                     if (trace_clip) {
                         printf("[CLIP][frame %u] zone=%d clip_px=[%d,%d)\n",
                                (unsigned)frame_idx, (int)zone_id,
-                               (int)r->left_clip, (int)r->right_clip);
+                               (int)frame_ctx.left_clip, (int)frame_ctx.right_clip);
                     }
                 }
             } else {
@@ -4114,21 +4218,21 @@ void renderer_draw_display(GameState *state)
                 int draw_upper_first = (plr->yoff >= split_height);
 
                 if (draw_upper_first) {
-                    renderer_draw_zone(state, zone_id, 1);  /* upper */
-                    renderer_draw_zone(state, zone_id, 0);  /* lower */
+                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 1);  /* upper */
+                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);  /* lower */
                 } else {
-                    renderer_draw_zone(state, zone_id, 0);  /* lower */
-                    renderer_draw_zone(state, zone_id, 1);  /* upper */
+                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);  /* lower */
+                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 1);  /* upper */
                 }
                 continue;
             }
         }
-        renderer_draw_zone(state, zone_id, 0);
+        renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);
     }
 
     /* 6. Draw gun overlay */
     renderer_draw_gun(state);
-    renderer_apply_underwater_tint();
+    renderer_apply_underwater_tint(frame_ctx.fill_screen_water);
 
     /* 7. Swap buffers (the just-drawn buffer becomes the display buffer) */
     renderer_swap();
