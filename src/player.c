@@ -1293,9 +1293,38 @@ void player2_control(GameState *state)
 }
 
 /* Debug save file: debug_save.bin under data directory. Binary format: magic "AB3D", then per player:
- * xoff(int32), zoff(int32), zone(int16), angpos(int16), yoff(int32). Native byte order. */
+ * xoff(int32), zoff(int32), zone(int16), angpos(int16), yoff(int32) x2 = 32 bytes.
+ * Optional tail: current_level(int16) — present in saves written after this extension. */
 #define DEBUG_SAVE_MAGIC "AB3D"
 #define DEBUG_SAVE_SUBPATH "debug_save.bin"
+#define DEBUG_SAVE_PLAYER_PAYLOAD_BYTES 32
+
+void player_debug_apply_saved_level_before_load(GameState *state)
+{
+    char path[512];
+    io_make_data_path(path, sizeof(path), DEBUG_SAVE_SUBPATH);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char magic[4];
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, DEBUG_SAVE_MAGIC, 4) != 0) {
+        fclose(f);
+        return;
+    }
+    if (fseek(f, DEBUG_SAVE_PLAYER_PAYLOAD_BYTES, SEEK_CUR) != 0) {
+        fclose(f);
+        return;
+    }
+    int16_t lvl;
+    if (fread(&lvl, sizeof(lvl), 1, f) != 1) {
+        fclose(f);
+        return;
+    }
+    fclose(f);
+    if (lvl >= 0 && lvl < MAX_LEVELS) {
+        state->current_level = lvl;
+        printf("[PLAYER] debug save: will load level %d (from %s)\n", (int)lvl, path);
+    }
+}
 
 void player_debug_save_position(GameState *state)
 {
@@ -1317,8 +1346,10 @@ void player_debug_save_position(GameState *state)
     if (fwrite(&state->plr2.zone, sizeof(state->plr2.zone), 1, f) != 1) goto fail;
     if (fwrite(&state->plr2.angpos, sizeof(state->plr2.angpos), 1, f) != 1) goto fail;
     if (fwrite(&state->plr2.yoff, sizeof(state->plr2.yoff), 1, f) != 1) goto fail;
+    if (fwrite(&state->current_level, sizeof(state->current_level), 1, f) != 1) goto fail;
     fclose(f);
-    printf("[PLAYER] debug save: position/orientation written to %s\n", path);
+    printf("[PLAYER] debug save: position/orientation/level %d written to %s\n",
+           (int)state->current_level, path);
     return;
 fail:
     fclose(f);

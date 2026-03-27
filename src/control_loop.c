@@ -238,6 +238,8 @@ int read_main_menu(GameState *state)
  */
 void play_the_game(GameState *state)
 {
+    player_debug_apply_saved_level_before_load(state);
+
     printf("[GAME] === PlayTheGame: level %d ===\n", state->current_level);
 
     /* ---- Text screen ---- */
