@@ -1,5 +1,5 @@
-# POST_BUILD helper: create ab3d.ini from template only when the user has no local file.
-# Invoked with: cmake -DDEST_DIR=... -DSRC_FILE=... -P copy_ab3d_ini_if_missing.cmake
+# POST_BUILD: create ab3d.ini from template only when missing (incremental builds keep your file).
+# A full Clean removes ab3d.ini (see ADDITIONAL_CLEAN_FILES on ab3d1), so Rebuild seeds fresh.
 if(NOT DEST_DIR OR NOT SRC_FILE)
   message(FATAL_ERROR "copy_ab3d_ini_if_missing: DEST_DIR and SRC_FILE required")
 endif()

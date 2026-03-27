@@ -121,20 +121,18 @@ endif()
 # Link SDL2 (no SDL2main - we use CONSOLE subsystem for printf output)
 target_link_libraries(ab3d1 PRIVATE SDL2-static)
 
-# Ship template beside exe (safe to refresh every build). ab3d.ini is only created when missing
-# so local edits are not overwritten on rebuild.
-add_custom_command(TARGET ab3d1 POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${CMAKE_CURRENT_SOURCE_DIR}/data/ab3d.ini.template"
-    "$<TARGET_FILE_DIR:ab3d1>/ab3d.ini.template"
-  COMMENT "Copy ab3d.ini.template beside ab3d1"
-)
+# Incremental build: copy data/ab3d.ini.template -> ab3d.ini beside the exe only if ab3d.ini is missing
+# (so local edits next to the exe are kept). Full Clean/Rebuild: ab3d.ini is listed in ADDITIONAL_CLEAN_FILES,
+# so Clean deletes it and the next Build recreates it from the template.
 add_custom_command(TARGET ab3d1 POST_BUILD
   COMMAND ${CMAKE_COMMAND}
     -DDEST_DIR=$<TARGET_FILE_DIR:ab3d1>
     -DSRC_FILE=${CMAKE_CURRENT_SOURCE_DIR}/data/ab3d.ini.template
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_ab3d_ini_if_missing.cmake
-  COMMENT "Create ab3d.ini from template only if missing (keeps your config across builds)"
+  COMMENT "Ensure ab3d.ini beside ab3d1 (from template if missing)"
+)
+set_target_properties(ab3d1 PROPERTIES
+  ADDITIONAL_CLEAN_FILES "$<TARGET_FILE_DIR:ab3d1>/ab3d.ini"
 )
 
 # Release build: start fullscreen desktop with fixed renderer (see display.c)
