@@ -108,6 +108,9 @@ void game_loop(GameState *state)
     int pending_vblanks = 0;
     Uint32 vblank_remainder_ms = 0;
 
+    Uint32 fps_log_start_ms = SDL_GetTicks();
+    int fps_frames_in_period = 0;
+
     while (state->running) {
 
         /* ================================================================
@@ -394,6 +397,20 @@ void game_loop(GameState *state)
         display_energy_bar(state->energy);
         display_ammo_bar(state->ammo);
         display_draw_display(state);
+
+        fps_frames_in_period++;
+        {
+            Uint32 fps_now = SDL_GetTicks();
+            Uint32 fps_dt = fps_now - fps_log_start_ms;
+            if (fps_dt >= 10000u) {
+                double sec = fps_dt / 1000.0;
+                double fps = (double)fps_frames_in_period / sec;
+                printf("[FPS] %.2f Hz (%.1f s, %d frames)\n",
+                       fps, sec, fps_frames_in_period);
+                fps_log_start_ms = fps_now;
+                fps_frames_in_period = 0;
+            }
+        }
 
         /* ================================================================
          * Always: Quit / death / level-end checks
