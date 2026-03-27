@@ -77,6 +77,7 @@ set(SOURCES
     src/input.c
     src/audio.c
     src/io.c
+    src/settings.c
     src/sb_decompress.c
     src/sprite_palettes.c
 )
@@ -119,6 +120,14 @@ endif()
 
 # Link SDL2 (no SDL2main - we use CONSOLE subsystem for printf output)
 target_link_libraries(ab3d1 PRIVATE SDL2-static)
+
+# Copy default ab3d.ini next to executable (source is data/ab3d.ini.template in repo)
+add_custom_command(TARGET ab3d1 POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/ab3d.ini.template"
+    "$<TARGET_FILE_DIR:ab3d1>/ab3d.ini"
+  COMMENT "Copy ab3d.ini beside ab3d1"
+)
 
 # Release build: start fullscreen desktop with fixed renderer (see display.c)
 target_compile_definitions(ab3d1 PRIVATE $<$<CONFIG:Release>:AB3D_RELEASE>)

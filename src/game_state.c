@@ -50,6 +50,11 @@ void game_state_init(GameState *state)
 
     state->do_anything = true;
     state->nasty = true; /* enemies active in single player */
+
+    state->cfg_start_level = -1;
+    state->infinite_health = false;
+    state->infinite_ammo = false;
+    state->cfg_all_weapons = true;
 }
 
 /*

@@ -364,6 +364,11 @@ void game_loop(GameState *state)
                 }
             }
 
+            if (state->infinite_health) {
+                state->plr1.energy = PLAYER_MAX_ENERGY;
+                state->plr2.energy = PLAYER_MAX_ENERGY;
+            }
+
             logic_count++;
 
         } /* end if (run_logic) */

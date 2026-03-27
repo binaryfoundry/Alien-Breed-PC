@@ -13,7 +13,6 @@ static inline int ab3d_log_is_suppressed(const char *fmt)
     if (strncmp(fmt, "[SB]", 4) == 0) return 1;
     if (strncmp(fmt, "[LEVEL]", 7) == 0) return 1;
     if (strncmp(fmt, "[3DOBJ]", 7) == 0) return 1;
-    if (strncmp(fmt, "[CONTROL]", 9) == 0) return 1;
     if (strncmp(fmt, "SetupGame complete", 18) == 0) return 1;
     return 0;
 }

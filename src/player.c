@@ -1299,33 +1299,6 @@ void player2_control(GameState *state)
 #define DEBUG_SAVE_SUBPATH "debug_save.bin"
 #define DEBUG_SAVE_PLAYER_PAYLOAD_BYTES 32
 
-void player_debug_apply_saved_level_before_load(GameState *state)
-{
-    char path[512];
-    io_make_data_path(path, sizeof(path), DEBUG_SAVE_SUBPATH);
-    FILE *f = fopen(path, "rb");
-    if (!f) return;
-    char magic[4];
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, DEBUG_SAVE_MAGIC, 4) != 0) {
-        fclose(f);
-        return;
-    }
-    if (fseek(f, DEBUG_SAVE_PLAYER_PAYLOAD_BYTES, SEEK_CUR) != 0) {
-        fclose(f);
-        return;
-    }
-    int16_t lvl;
-    if (fread(&lvl, sizeof(lvl), 1, f) != 1) {
-        fclose(f);
-        return;
-    }
-    fclose(f);
-    if (lvl >= 0 && lvl < MAX_LEVELS) {
-        state->current_level = lvl;
-        printf("[PLAYER] debug save: will load level %d (from %s)\n", (int)lvl, path);
-    }
-}
-
 void player_debug_save_position(GameState *state)
 {
     char path[512];
@@ -1553,11 +1526,6 @@ void player_init_from_level(GameState *state)
             state->plr2.list_of_graph_rooms = zoff + 48;
         }
 
-#ifndef NDEBUG
-        /* In debug build: override start position/orientation from saved file if present */
-        player_debug_load_save_from_file(state);
-#endif
-
         printf("[PLAYER] init_from_level: PLR1 at (%d,%d) zone %d yoff=%d tyoff=%d, "
                "PLR2 at (%d,%d) zone %d\n",
                (int)(state->plr1.xoff >> 16), (int)(state->plr1.zoff >> 16), state->plr1.zone,
@@ -1617,15 +1585,15 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
 
     /* 3. Check ammo */
     int16_t ammo = plr->gun_data[gun_idx].ammo;
-    if (ammo < gun->ammo_per_shot) {
-        /* Click sound (empty) */
-        audio_play_sample(12, 300);
-        plr->time_to_shoot = 10; /* prevent spam */
-        return;
+    if (!state->infinite_ammo) {
+        if (ammo < gun->ammo_per_shot) {
+            /* Click sound (empty) */
+            audio_play_sample(12, 300);
+            plr->time_to_shoot = 10; /* prevent spam */
+            return;
+        }
+        plr->gun_data[gun_idx].ammo -= gun->ammo_per_shot;
     }
-
-    /* Consume ammo */
-    plr->gun_data[gun_idx].ammo -= gun->ammo_per_shot;
 
     /* Set fire rate delay */
     plr->time_to_shoot = gun->fire_delay;

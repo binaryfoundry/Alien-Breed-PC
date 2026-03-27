@@ -200,6 +200,12 @@ typedef struct {
     int16_t         max_level;          /* MAXLEVEL */
     int8_t          finished_level;     /* FINISHEDLEVEL */
 
+    /* ab3d.ini (see settings.c): -1 = use play_game defaults */
+    int16_t         cfg_start_level;
+    bool            infinite_health;
+    bool            infinite_ammo;
+    bool            cfg_all_weapons;    /* 1 = all guns visible + full ammo (plr1/plr2) */
+
     /* Frame timing */
     int16_t         frames_to_draw;     /* FramesToDraw */
     int16_t         temp_frames;        /* TempFrames */

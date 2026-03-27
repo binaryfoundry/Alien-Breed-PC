@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "logging.h"
+#include "settings.h"
 #define printf ab3d_log_printf
 
 /* -----------------------------------------------------------------------
@@ -392,6 +393,7 @@ void play_game(GameState *state)
     state->mode = MODE_SINGLE;
 
     printf("[CONTROL] PlayGame starting\n");
+    settings_log_recap(state);
 
     /* ---- Load shared assets ---- */
     io_load_walls();
@@ -406,18 +408,19 @@ void play_game(GameState *state)
     /* ---- Setup default game ---- */
     game_state_setup_default(state);
 
-    /* ---- Give player starting weapons and lots of ammo ----
-     * All weapons acquired with full ammo (999 display units each). */
-    for (int g = 0; g < MAX_GUNS; g++) {
-        state->plr1.gun_data[g].visible = -1;
-        state->plr1.gun_data[g].ammo = 999 * 8;
-        state->plr2.gun_data[g].visible = -1;
-        state->plr2.gun_data[g].ammo = 999 * 8;
-    }
     state->plr1.gun_selected = 0;
     state->plr2.gun_selected = 0;
 
-    /* ---- Bypass menu: go straight to level 1 (testing) ---- */
+    if (state->cfg_all_weapons) {
+        for (int g = 0; g < MAX_GUNS; g++) {
+            state->plr1.gun_data[g].visible = -1;
+            state->plr1.gun_data[g].ammo = 999 * 8;
+            state->plr2.gun_data[g].visible = -1;
+            state->plr2.gun_data[g].ammo = 999 * 8;
+        }
+    }
+
+    /* ---- Bypass menu: go straight to first level (testing) ---- */
     state->current_level = 0;
     state->max_level = 16;
     state->finished_level = 0;
@@ -425,12 +428,15 @@ void play_game(GameState *state)
     state->plr1.angpos = 0;
     state->plr2.angpos = 0;
 
-    printf("[CONTROL] Bypassing menu - starting level 3 directly\n");
+    if (state->cfg_start_level >= 0 && state->cfg_start_level < MAX_LEVELS) {
+        state->current_level = state->cfg_start_level;
+        state->max_level = state->cfg_start_level;
+        printf("[CONTROL] Start level from ab3d.ini: %d\n", (int)state->current_level);
+    } else {
+        printf("[CONTROL] Bypassing menu - default start level %d\n", (int)state->current_level);
+    }
 
     io_load_panel();
-
-    /* One-shot: optional debug_save.bin level override (do not apply between in-process transitions). */
-    player_debug_apply_saved_level_before_load(state);
 
     for (;;) {
         play_the_game(state);

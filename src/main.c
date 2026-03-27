@@ -40,6 +40,7 @@
 #include "audio.h"
 #include "io.h"
 #include "renderer_3dobj.h"
+#include "settings.h"
 
 /*
  * setup_game - Initialize all subsystems
@@ -71,6 +72,9 @@ static void setup_game(GameState *state)
 
     io_load_passwords();
     io_load_prefs(state->prefs_file, sizeof(state->prefs_file));
+
+    settings_load(state);
+    fflush(stdout);
 
     printf("SetupGame complete\n\n");
 }
