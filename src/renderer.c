@@ -33,6 +33,7 @@
 #include "game_types.h"
 #include "visibility.h"
 #include "audio.h"
+#include <SDL.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -65,6 +66,44 @@
  * Global renderer state
  * ----------------------------------------------------------------------- */
 RendererState g_renderer;
+
+static void renderer_draw_world_slice(GameState *state,
+                                      int16_t slice_left, int16_t slice_right,
+                                      uint32_t frame_idx, int trace_clip,
+                                      int8_t *out_fill_screen_water);
+
+#ifndef AB3D_NO_THREADS
+#define RENDERER_MAX_THREADS 64
+
+typedef struct {
+    SDL_Thread *thread;
+    int index;
+    int16_t slice_left;
+    int16_t slice_right;
+    int8_t fill_screen_water;
+} RendererThreadWorker;
+
+typedef struct {
+    int initialized;
+    int cpu_count;
+    int worker_count;
+    int stop;
+    uint32_t job_generation;
+    int pending_workers;
+    int active_workers;
+    GameState *job_state;
+    uint32_t frame_idx;
+    int trace_clip;
+    SDL_mutex *mutex;
+    SDL_cond *cond_start;
+    SDL_cond *cond_done;
+    RendererThreadWorker workers[RENDERER_MAX_THREADS];
+    int last_logged_width;
+    int last_logged_workers;
+} RendererThreadPool;
+
+static RendererThreadPool g_renderer_thread_pool;
+#endif
 
 /* -----------------------------------------------------------------------
  * Big-endian read helpers (level data is Amiga big-endian)
@@ -152,6 +191,224 @@ static void render_slice_context_init(RenderSliceContext *ctx,
     render_slice_context_reset(ctx, left, right, top, bot);
     ctx->wall_cache_block_off = 0xFFFFu;
 }
+
+#ifndef AB3D_NO_THREADS
+static int8_t merge_fill_screen_water(int8_t a, int8_t b)
+{
+    if (a > 0 || b > 0) return 0x0F;
+    if (a < 0 || b < 0) return (int8_t)-1;
+    return 0;
+}
+
+static int renderer_thread_worker_main(void *userdata)
+{
+    RendererThreadWorker *worker = (RendererThreadWorker*)userdata;
+    RendererThreadPool *pool = &g_renderer_thread_pool;
+    uint32_t seen_generation = 0;
+
+    if (!pool->mutex || !pool->cond_start || !pool->cond_done) return 0;
+
+    SDL_LockMutex(pool->mutex);
+    for (;;) {
+        while (!pool->stop && pool->job_generation == seen_generation) {
+            SDL_CondWait(pool->cond_start, pool->mutex);
+        }
+        if (pool->stop) {
+            SDL_UnlockMutex(pool->mutex);
+            return 0;
+        }
+
+        uint32_t gen = pool->job_generation;
+        const int active = (worker->index < pool->active_workers);
+        const int16_t slice_left = worker->slice_left;
+        const int16_t slice_right = worker->slice_right;
+        GameState *state = pool->job_state;
+        uint32_t frame_idx = pool->frame_idx;
+        int trace_clip = pool->trace_clip;
+
+        SDL_UnlockMutex(pool->mutex);
+
+        int8_t fill_screen_water = 0;
+        if (active && slice_left < slice_right && state) {
+            renderer_draw_world_slice(state, slice_left, slice_right,
+                                      frame_idx, trace_clip, &fill_screen_water);
+        }
+
+        SDL_LockMutex(pool->mutex);
+        worker->fill_screen_water = fill_screen_water;
+        seen_generation = gen;
+        if (active) {
+            pool->pending_workers--;
+            if (pool->pending_workers <= 0) {
+                SDL_CondSignal(pool->cond_done);
+            }
+        }
+    }
+}
+
+static void renderer_threads_shutdown(void)
+{
+    RendererThreadPool *pool = &g_renderer_thread_pool;
+
+    if (pool->mutex) {
+        SDL_LockMutex(pool->mutex);
+        pool->stop = 1;
+        if (pool->cond_start) SDL_CondBroadcast(pool->cond_start);
+        SDL_UnlockMutex(pool->mutex);
+    }
+
+    for (int i = 0; i < pool->worker_count; i++) {
+        if (pool->workers[i].thread) {
+            SDL_WaitThread(pool->workers[i].thread, NULL);
+            pool->workers[i].thread = NULL;
+        }
+    }
+
+    if (pool->cond_done) {
+        SDL_DestroyCond(pool->cond_done);
+        pool->cond_done = NULL;
+    }
+    if (pool->cond_start) {
+        SDL_DestroyCond(pool->cond_start);
+        pool->cond_start = NULL;
+    }
+    if (pool->mutex) {
+        SDL_DestroyMutex(pool->mutex);
+        pool->mutex = NULL;
+    }
+
+    pool->initialized = 0;
+    pool->worker_count = 0;
+    pool->cpu_count = 0;
+    pool->pending_workers = 0;
+    pool->active_workers = 0;
+}
+
+static void renderer_threads_init(void)
+{
+    RendererThreadPool *pool = &g_renderer_thread_pool;
+    memset(pool, 0, sizeof(*pool));
+    pool->last_logged_width = -1;
+    pool->last_logged_workers = -1;
+
+    int cpu_count = SDL_GetCPUCount();
+    if (cpu_count < 1) cpu_count = 1;
+    if (cpu_count > RENDERER_MAX_THREADS) cpu_count = RENDERER_MAX_THREADS;
+    pool->cpu_count = cpu_count;
+
+    if (cpu_count <= 1) {
+        printf("[RENDERER] threading: CPU count=%d (single-threaded runtime)\n", cpu_count);
+        pool->initialized = 1;
+        return;
+    }
+
+    pool->mutex = SDL_CreateMutex();
+    pool->cond_start = SDL_CreateCond();
+    pool->cond_done = SDL_CreateCond();
+    if (!pool->mutex || !pool->cond_start || !pool->cond_done) {
+        printf("[RENDERER] threading: disabled (failed to create SDL mutex/cond)\n");
+        renderer_threads_shutdown();
+        return;
+    }
+
+    pool->worker_count = cpu_count;
+    for (int i = 0; i < pool->worker_count; i++) {
+        pool->workers[i].index = i;
+        pool->workers[i].slice_left = 0;
+        pool->workers[i].slice_right = 0;
+        pool->workers[i].fill_screen_water = 0;
+        pool->workers[i].thread = SDL_CreateThread(renderer_thread_worker_main,
+                                                   "ab3d_render_worker",
+                                                   &pool->workers[i]);
+        if (!pool->workers[i].thread) {
+            printf("[RENDERER] threading: failed to create worker %d; falling back to single-threaded\n", i);
+            pool->worker_count = i;
+            renderer_threads_shutdown();
+            pool->initialized = 1;
+            return;
+        }
+    }
+
+    pool->initialized = 1;
+    printf("[RENDERER] threading: initialized %d worker thread(s), cpu_count=%d\n",
+           pool->worker_count, pool->cpu_count);
+}
+
+static int renderer_dispatch_threaded_world(GameState *state, uint32_t frame_idx,
+                                            int trace_clip, int8_t *out_fill_screen_water)
+{
+    RendererThreadPool *pool = &g_renderer_thread_pool;
+    if (!pool->initialized || pool->worker_count <= 0 || pool->cpu_count <= 1) return 0;
+    if (!state) return 0;
+
+    int width = g_renderer.width;
+    if (width <= 0) return 0;
+
+    int active_workers = pool->worker_count;
+    if (active_workers > width) active_workers = width;
+    if (active_workers <= 0) return 0;
+
+    SDL_LockMutex(pool->mutex);
+    for (int i = 0; i < active_workers; i++) {
+        int start = (i * width) / active_workers;
+        int end = ((i + 1) * width) / active_workers;
+        pool->workers[i].slice_left = (int16_t)start;
+        pool->workers[i].slice_right = (int16_t)end;
+        pool->workers[i].fill_screen_water = 0;
+    }
+    for (int i = active_workers; i < pool->worker_count; i++) {
+        pool->workers[i].slice_left = 0;
+        pool->workers[i].slice_right = 0;
+        pool->workers[i].fill_screen_water = 0;
+    }
+
+    if (pool->last_logged_width != width || pool->last_logged_workers != active_workers) {
+        printf("[RENDERER] threading: dispatch %d slice(s) over width=%d\n",
+               active_workers, width);
+        for (int i = 0; i < active_workers; i++) {
+            printf("[RENDERER] threading: slice %d = [%d,%d)\n",
+                   i, (int)pool->workers[i].slice_left, (int)pool->workers[i].slice_right);
+        }
+        pool->last_logged_width = width;
+        pool->last_logged_workers = active_workers;
+    }
+
+    pool->job_state = state;
+    pool->frame_idx = frame_idx;
+    pool->trace_clip = trace_clip;
+    pool->active_workers = active_workers;
+    pool->pending_workers = active_workers;
+    pool->job_generation++;
+
+    SDL_CondBroadcast(pool->cond_start);
+
+    /* Single barrier wait phase for this frame's world-render jobs. */
+    while (pool->pending_workers > 0) {
+        SDL_CondWait(pool->cond_done, pool->mutex);
+    }
+
+    int8_t fill_screen_water = 0;
+    for (int i = 0; i < active_workers; i++) {
+        fill_screen_water = merge_fill_screen_water(fill_screen_water, pool->workers[i].fill_screen_water);
+    }
+    SDL_UnlockMutex(pool->mutex);
+
+    if (out_fill_screen_water) *out_fill_screen_water = fill_screen_water;
+    return 1;
+}
+#else
+static void renderer_threads_shutdown(void) { }
+static void renderer_threads_init(void) { }
+static int renderer_dispatch_threaded_world(GameState *state, uint32_t frame_idx,
+                                            int trace_clip, int8_t *out_fill_screen_water)
+{
+    (void)state;
+    (void)frame_idx;
+    (void)trace_clip;
+    if (out_fill_screen_water) *out_fill_screen_water = 0;
+    return 0;
+}
+#endif
 
 /* Water animation / assets (Amiga: watertouse, wtan, wateroff, fillscrnwater). */
 static uint16_t g_water_wtan = 0;
@@ -517,6 +774,7 @@ void renderer_init(void)
     build_amiga12_lut();
     memset(&g_renderer, 0, sizeof(g_renderer));
     allocate_buffers(RENDER_WIDTH, RENDER_HEIGHT);
+    renderer_threads_init();
     printf("[RENDERER] Initialized: %dx%d\n", g_renderer.width, g_renderer.height);
 }
 
@@ -532,6 +790,7 @@ void renderer_resize(int w, int h)
 
 void renderer_shutdown(void)
 {
+    renderer_threads_shutdown();
     free_buffers();
     free(argb24_to_amiga12_lut);
     argb24_to_amiga12_lut = NULL;
@@ -3957,6 +4216,170 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
     renderer_draw_zone_ctx(&ctx, state, zone_id, use_upper);
 }
 
+static void renderer_draw_world_slice(GameState *state,
+                                      int16_t slice_left, int16_t slice_right,
+                                      uint32_t frame_idx, int trace_clip,
+                                      int8_t *out_fill_screen_water)
+{
+    RendererState *r = &g_renderer;
+    if (!state || slice_left >= slice_right) {
+        if (out_fill_screen_water) *out_fill_screen_water = 0;
+        return;
+    }
+
+    RenderSliceContext frame_ctx;
+    render_slice_context_init(&frame_ctx, slice_left, slice_right, 0, (int16_t)(g_renderer.height - 1));
+    PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
+
+    const uint8_t *lgr_base = state->view_list_of_graph_rooms;
+    for (int i = state->zone_order_count - 1; i >= 0; i--) {
+        int16_t zone_id = state->zone_order_zones[i];
+        if (zone_id < 0) continue;
+
+        render_slice_context_reset(&frame_ctx, slice_left, slice_right,
+                                   0, (int16_t)(g_renderer.height - 1));
+
+        {
+            const uint8_t *lgr = lgr_base;
+            if (!lgr || !state->level.clips) {
+                continue;
+            }
+            {
+                const uint8_t *connect_table = state->level.connect_table;
+                int left_clip_px = 0;
+                int right_clip_px = g_renderer.width;
+
+                int found = 0;
+                while (rd16(lgr) >= 0) {
+                    if (rd16(lgr) == zone_id) {
+                        found = 1;
+                        break;
+                    }
+                    lgr += 8;
+                }
+
+                if (found) {
+                    int16_t clip_off = rd16(lgr + 2);
+                    if (trace_clip) {
+                        printf("[CLIP][frame %u] zone=%d clip_off=%d\n",
+                               (unsigned)frame_idx, (int)zone_id, (int)clip_off);
+                    }
+                    if (clip_off >= 0) {
+                        const uint8_t *clip_ptr = state->level.clips + clip_off * 2;
+
+                        while (rd16(clip_ptr) >= 0) {
+                            int16_t pt = rd16(clip_ptr);
+                            clip_ptr += 2;
+                            if (pt >= 0 && pt < MAX_POINTS) {
+                                int16_t z = (int16_t)r->rotated[pt].z;
+                                if (z > 0) {
+                                    int sxpx = project_x_to_pixels(r->rotated[pt].x, r->rotated[pt].z);
+                                    int allow = 1;
+                                    if (connect_table) {
+                                        int16_t cpt = rd16(connect_table + (size_t)pt * 4u + 2u);
+                                        if (cpt >= 0 && cpt < MAX_POINTS) {
+                                            int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
+                                            if (csxpx > sxpx) allow = 0;
+                                        } else if (trace_clip) {
+                                            printf("[CLIP][frame %u] zone=%d left pt=%d bad cpt=%d\n",
+                                                   (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
+                                        }
+                                    }
+                                    if (allow && sxpx > left_clip_px) {
+                                        left_clip_px = sxpx;
+                                    }
+                                }
+                            }
+                        }
+                        clip_ptr += 2;
+
+                        while (rd16(clip_ptr) >= 0) {
+                            int16_t pt = rd16(clip_ptr);
+                            clip_ptr += 2;
+                            if (pt >= 0 && pt < MAX_POINTS) {
+                                int16_t z = (int16_t)r->rotated[pt].z;
+                                if (z > 0) {
+                                    int sxpx = project_x_to_pixels(r->rotated[pt].x, r->rotated[pt].z);
+                                    int allow = 1;
+                                    if (connect_table) {
+                                        int16_t cpt = rd16(connect_table + (size_t)pt * 4u);
+                                        if (cpt >= 0 && cpt < MAX_POINTS) {
+                                            int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
+                                            if (csxpx < sxpx) allow = 0;
+                                        } else if (trace_clip) {
+                                            printf("[CLIP][frame %u] zone=%d right pt=%d bad cpt=%d\n",
+                                                   (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
+                                        }
+                                    }
+                                    if (allow && sxpx < right_clip_px) {
+                                        right_clip_px = sxpx + RENDER_SCALE;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (left_clip_px >= g_renderer.width || right_clip_px <= 0 ||
+                            left_clip_px >= right_clip_px) {
+                            if (trace_clip) {
+                                printf("[CLIP][frame %u] zone=%d SKIP invalid lpx=%d rpx=%d\n",
+                                       (unsigned)frame_idx, (int)zone_id,
+                                       left_clip_px, right_clip_px);
+                            }
+                            continue;
+                        }
+
+                        if (left_clip_px < 0) left_clip_px = 0;
+                        if (right_clip_px > g_renderer.width) right_clip_px = g_renderer.width;
+
+                        if (left_clip_px < slice_left) left_clip_px = slice_left;
+                        if (right_clip_px > slice_right) right_clip_px = slice_right;
+                        if (left_clip_px >= right_clip_px) {
+                            continue;
+                        }
+
+                        frame_ctx.left_clip = (int16_t)left_clip_px;
+                        frame_ctx.right_clip = (int16_t)right_clip_px;
+                        if (trace_clip) {
+                            printf("[CLIP][frame %u] zone=%d clip_px=[%d,%d)\n",
+                                   (unsigned)frame_idx, (int)zone_id,
+                                   (int)frame_ctx.left_clip, (int)frame_ctx.right_clip);
+                        }
+                    }
+                } else {
+                    if (trace_clip) {
+                        printf("[CLIP][frame %u] zone=%d SKIP not_in_lgr\n",
+                               (unsigned)frame_idx, (int)zone_id);
+                    }
+                    continue;
+                }
+            }
+        }
+
+        if (state->level.zone_adds && state->level.zone_graph_adds) {
+            int32_t zone_off = rd32(state->level.zone_adds + zone_id * 4);
+            const uint8_t *zgraph = state->level.zone_graph_adds + zone_id * 8;
+            int32_t upper_gfx = rd32(zgraph + 4);
+            if (upper_gfx != 0 && zone_off >= 0 && state->level.data) {
+                const uint8_t *zd = state->level.data + zone_off;
+                int32_t split_height = rd32(zd + 6);
+                int draw_upper_first = (plr->yoff >= split_height);
+
+                if (draw_upper_first) {
+                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 1);
+                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);
+                } else {
+                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);
+                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 1);
+                }
+                continue;
+            }
+        }
+        renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);
+    }
+
+    if (out_fill_screen_water) *out_fill_screen_water = frame_ctx.fill_screen_water;
+}
+
 static void renderer_apply_underwater_tint(int8_t fill_screen_water)
 {
     if (fill_screen_water == 0) return;
@@ -4004,8 +4427,6 @@ void renderer_draw_display(GameState *state)
 
     /* 1. Clear framebuffer */
     renderer_clear(0);
-    RenderSliceContext frame_ctx;
-    render_slice_context_init(&frame_ctx, 0, (int16_t)g_renderer.width, 0, (int16_t)(g_renderer.height - 1));
 
     /* Sky backdrop first (Amiga Anims.s putinbackdrop / data/gfx/backfile), before world draw. */
     {
@@ -4061,178 +4482,29 @@ void renderer_draw_display(GameState *state)
     renderer_rotate_level_pts(state);
     renderer_rotate_object_pts(state);
 
-    /* 5. Amiga replication: painter's algorithm only, no depth buffer.
-     *
-     * Zones: drawn in OrderZones order (zone_order_zones[0]=farthest .. [n-1]=nearest),
-     * so far zones are drawn first, near zones overwrite (painter's).
-     *
-     * Within each zone (AB3DI.s polyloop / DoThisRoom): strict stream order.
-     * Each primitive is drawn as it appears (wall, floor, roof, arc, type-4 objects, etc.);
-     * no deferral. Objects are drawn when the type-4 entry is encountered (Amiga ObjDraw).
-     *
-     * For each zone: apply LEVELCLIPS, then renderer_draw_zone (stream parse + draw).
-     */
-    const uint8_t *lgr_base = state->view_list_of_graph_rooms;
-
-    for (int i = state->zone_order_count - 1; i >= 0; i--) {
-        int16_t zone_id = state->zone_order_zones[i];
-        if (zone_id < 0) continue;
-
-        /* Reset clip to full screen for each zone */
-        render_slice_context_reset(&frame_ctx, 0, (int16_t)g_renderer.width,
-                                   0, (int16_t)(g_renderer.height - 1));
-
-        /* Apply zone clipping from ListOfGraphRooms + LEVELCLIPS (portal clipping).
-         * Match Amiga NEWsetlclip/NEWsetrclip behavior:
-         * - test clip point z > 0
-         * - compare against CONNECT_TABLE paired point on screen
-         * - right clip uses sx + 1
-         * - skip zone when clip is invalid (no full-screen fallback) */
-        {
-            const uint8_t *lgr = lgr_base;
-        if (!lgr || !state->level.clips) {
-            continue;
-        }
-        {
-            const uint8_t *connect_table = state->level.connect_table;
-            int left_clip_px = 0;
-            int right_clip_px = g_renderer.width;
-
-            /* Find this zone's entry in ListOfGraphRooms */
-            int found = 0;
-            while (rd16(lgr) >= 0) {
-                if (rd16(lgr) == zone_id) {
-                    found = 1;
-                    break;
-                }
-                lgr += 8;
-            }
-
-            if (found) {
-                int16_t clip_off = rd16(lgr + 2);
-                if (trace_clip) {
-                    printf("[CLIP][frame %u] zone=%d clip_off=%d\n",
-                           (unsigned)frame_idx, (int)zone_id, (int)clip_off);
-                }
-                if (clip_off >= 0) {
-                    const uint8_t *clip_ptr = state->level.clips + clip_off * 2;
-
-                    /* Left clips (Amiga NEWsetlclip) */
-                    while (rd16(clip_ptr) >= 0) {
-                        int16_t pt = rd16(clip_ptr);
-                        clip_ptr += 2;
-                        if (pt >= 0 && pt < MAX_POINTS) {
-                            int16_t z = (int16_t)r->rotated[pt].z;
-                            if (z > 0) {
-                                int sxpx = project_x_to_pixels(r->rotated[pt].x, r->rotated[pt].z);
-                                int allow = 1;
-                                if (connect_table) {
-                                    int16_t cpt = rd16(connect_table + (size_t)pt * 4u + 2u);
-                                    if (cpt >= 0 && cpt < MAX_POINTS) {
-                                        int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
-                                        if (csxpx > sxpx) allow = 0;
-                                    } else if (trace_clip) {
-                                        printf("[CLIP][frame %u] zone=%d left pt=%d bad cpt=%d\n",
-                                               (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
-                                    }
-                                }
-                                if (allow && sxpx > left_clip_px) {
-                                    left_clip_px = sxpx;
-                                }
-                            }
-                        }
-                    }
-                    clip_ptr += 2; /* Skip -1 terminator */
-
-                    /* Right clips (Amiga NEWsetrclip) */
-                    while (rd16(clip_ptr) >= 0) {
-                        int16_t pt = rd16(clip_ptr);
-                        clip_ptr += 2;
-                        if (pt >= 0 && pt < MAX_POINTS) {
-                            int16_t z = (int16_t)r->rotated[pt].z;
-                            if (z > 0) {
-                                int sxpx = project_x_to_pixels(r->rotated[pt].x, r->rotated[pt].z);
-                                int allow = 1;
-                                if (connect_table) {
-                                    int16_t cpt = rd16(connect_table + (size_t)pt * 4u);
-                                    if (cpt >= 0 && cpt < MAX_POINTS) {
-                                        int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
-                                        if (csxpx < sxpx) allow = 0;
-                                    } else if (trace_clip) {
-                                        printf("[CLIP][frame %u] zone=%d right pt=%d bad cpt=%d\n",
-                                               (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
-                                    }
-                                }
-                                if (allow && sxpx < right_clip_px) {
-                                    right_clip_px = sxpx + RENDER_SCALE;
-                                }
-                            }
-                        }
-                    }
-
-                    /* Amiga dontbothercantseeit guard: skip this zone if clip is invalid. */
-                    if (left_clip_px >= g_renderer.width || right_clip_px <= 0 ||
-                        left_clip_px >= right_clip_px) {
-                        if (trace_clip) {
-                            printf("[CLIP][frame %u] zone=%d SKIP invalid lpx=%d rpx=%d\n",
-                                   (unsigned)frame_idx, (int)zone_id,
-                                   left_clip_px, right_clip_px);
-                        }
-                        continue;
-                    }
-
-                    if (left_clip_px < 0) left_clip_px = 0;
-                    if (right_clip_px > g_renderer.width) right_clip_px = g_renderer.width;
-                    frame_ctx.left_clip = (int16_t)left_clip_px;
-                    frame_ctx.right_clip = (int16_t)right_clip_px;
-                    if (trace_clip) {
-                        printf("[CLIP][frame %u] zone=%d clip_px=[%d,%d)\n",
-                               (unsigned)frame_idx, (int)zone_id,
-                               (int)frame_ctx.left_clip, (int)frame_ctx.right_clip);
-                    }
-                }
-            } else {
-                /* Zone not present in ListOfGraphRooms: do not draw it. */
-                if (trace_clip) {
-                    printf("[CLIP][frame %u] zone=%d SKIP not_in_lgr\n",
-                           (unsigned)frame_idx, (int)zone_id);
-                }
-                continue;
+    int8_t fill_screen_water = 0;
+    int used_threaded = 0;
+#ifndef AB3D_NO_THREADS
+    if (state->cfg_render_threads) {
+        used_threaded = renderer_dispatch_threaded_world(state, frame_idx, trace_clip, &fill_screen_water);
+        if (!used_threaded) {
+            static int s_thread_unavailable_logged = 0;
+            if (!s_thread_unavailable_logged) {
+                printf("[RENDERER] threading requested but unavailable (cpu_count=%d, workers=%d)\n",
+                       g_renderer_thread_pool.cpu_count, g_renderer_thread_pool.worker_count);
+                s_thread_unavailable_logged = 1;
             }
         }
-        }
-
-        /* Multi-floor zone ordering (Amiga DrawDisplay, AB3DI.s 3543-3630):
-         *   if (yoff >= ToZoneRoof): draw upper first, then lower
-         *   else:                    draw lower first, then upper
-         * No screen-space split clipping is applied in the original path. */
-        if (state->level.zone_adds && state->level.zone_graph_adds) {
-            int32_t zone_off = rd32(state->level.zone_adds + zone_id * 4);
-            const uint8_t *zgraph = state->level.zone_graph_adds + zone_id * 8;
-            int32_t upper_gfx = rd32(zgraph + 4);
-            if (upper_gfx != 0 && zone_off >= 0 && state->level.data) {
-                const uint8_t *zd = state->level.data + zone_off;
-                int32_t split_height = rd32(zd + 6);  /* ToZoneRoof */
-                /* Amiga compares SplitHeight against yoff that is loaded directly from PLR*_yoff.
-                 * Keep this compare in raw player space (no render-only view lift offset). */
-                int draw_upper_first = (plr->yoff >= split_height);
-
-                if (draw_upper_first) {
-                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 1);  /* upper */
-                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);  /* lower */
-                } else {
-                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);  /* lower */
-                    renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 1);  /* upper */
-                }
-                continue;
-            }
-        }
-        renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);
+    }
+#endif
+    if (!used_threaded) {
+        renderer_draw_world_slice(state, 0, (int16_t)g_renderer.width,
+                                  frame_idx, trace_clip, &fill_screen_water);
     }
 
     /* 6. Draw gun overlay */
     renderer_draw_gun(state);
-    renderer_apply_underwater_tint(frame_ctx.fill_screen_water);
+    renderer_apply_underwater_tint(fill_screen_water);
 
     /* 7. Swap buffers (the just-drawn buffer becomes the display buffer) */
     renderer_swap();
