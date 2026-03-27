@@ -84,28 +84,46 @@ static void apply_line(GameState *state, char *line)
         } else {
             printf("[SETTINGS] render_height ignored (use 80..4096): %s\n", val);
         }
+    } else if (strcmp(key, "render_threads") == 0) {
+        state->cfg_render_threads = parse_bool(val) ? true : false;
     }
+}
+
+static void apply_runtime_constraints(GameState *state)
+{
+#ifdef AB3D_NO_THREADS
+    static int logged = 0;
+    if (!logged) {
+        printf("[SETTINGS] AB3D_NO_THREADS build: render_threads is ignored; forcing single-threaded renderer\n");
+        logged = 1;
+    }
+    state->cfg_render_threads = false;
+#else
+    (void)state;
+#endif
 }
 
 static void log_effective_settings(const GameState *state, const char *source_label)
 {
     if (state->cfg_start_level >= 0) {
-        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d\n",
+        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d render_threads=%d\n",
                source_label,
                (int)state->cfg_start_level,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
                state->cfg_all_weapons ? 1 : 0,
                (int)state->cfg_render_width,
-               (int)state->cfg_render_height);
+               (int)state->cfg_render_height,
+               state->cfg_render_threads ? 1 : 0);
     } else {
-        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d\n",
+        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d render_threads=%d\n",
                source_label,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
                state->cfg_all_weapons ? 1 : 0,
                (int)state->cfg_render_width,
-               (int)state->cfg_render_height);
+               (int)state->cfg_render_height,
+               state->cfg_render_threads ? 1 : 0);
     }
 }
 
@@ -132,6 +150,7 @@ static int try_load_settings_file(GameState *state, const char *path, const char
     fclose(f);
     printf("[SETTINGS] Loading INI: %s%s\n", path, label ? label : "");
     parse_file(state, path);
+    apply_runtime_constraints(state);
     log_effective_settings(state, "Loaded");
     return 1;
 }
@@ -160,6 +179,7 @@ void settings_load(GameState *state)
     } else {
         printf("[SETTINGS] SDL_GetBasePath unavailable and no INI found in working directory fallbacks\n");
     }
+    apply_runtime_constraints(state);
     log_effective_settings(state, "Defaults");
 }
 

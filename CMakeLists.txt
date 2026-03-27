@@ -3,6 +3,7 @@ project(ab3d1 C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+option(AB3D_NO_THREADS "Build without renderer threading support (render_threads is ignored at runtime)" OFF)
 
 # -----------------------------------------------------------------------
 # Data: ensure data/pal exists and copy from amiga/pal and amiga/data/pal
@@ -88,6 +89,9 @@ file(GLOB_RECURSE PROJECT_HEADERS
 )
 
 add_executable(ab3d1 ${SOURCES})
+if(AB3D_NO_THREADS)
+  target_compile_definitions(ab3d1 PRIVATE AB3D_NO_THREADS)
+endif()
 
 target_sources(ab3d1 PRIVATE ${PROJECT_HEADERS})
 set_source_files_properties(${PROJECT_HEADERS} PROPERTIES HEADER_FILE_ONLY ON)
