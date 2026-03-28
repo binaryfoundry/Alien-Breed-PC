@@ -110,6 +110,7 @@ static void renderer_draw_world_slice(GameState *state,
                                       int16_t row_start, int16_t row_end,
                                       uint32_t frame_idx, int trace_clip,
                                       int8_t *out_fill_screen_water);
+static void renderer_draw_gun_rows(GameState *state, int row_start, int row_end);
 static void renderer_apply_underwater_tint_slice(int8_t fill_screen_water,
                                                   int16_t row_start, int16_t row_end,
                                                   const uint32_t *src_rgb, const uint16_t *src_cw,
@@ -480,6 +481,7 @@ static int renderer_thread_worker_main(void *userdata)
                 renderer_draw_world_slice(state, world_zone_prepass,
                                           draw_row_start, draw_row_end,
                                           frame_idx, trace_clip, &fill_screen_water);
+                renderer_draw_gun_rows(state, row_start, row_end);
                 renderer_set_thread_target(NULL);
 
                 if (g_renderer.buffer && g_renderer.rgb_buffer && g_renderer.cw_buffer &&
@@ -3232,14 +3234,18 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
  * Amiga: gun graphic from Objects+9, GUNYOFFS=20, 3 chunks x 32 = 96 wide,
  * 78-GUNYOFFS = 58 lines tall. If gun graphics are not loaded, nothing is drawn.
  * ----------------------------------------------------------------------- */
-void renderer_draw_gun(GameState *state)
+static void renderer_draw_gun_rows(GameState *state, int row_start, int row_end)
 {
-    uint8_t *buf = g_renderer.buffer;
-    uint32_t *rgb = g_renderer.rgb_buffer;
-    uint16_t *cw = g_renderer.cw_buffer;
+    uint8_t *buf = renderer_active_buf();
+    uint32_t *rgb = renderer_active_rgb();
+    uint16_t *cw = renderer_active_cw();
     if (!buf || !rgb || !cw) return;
+    if (!state) return;
 
     int rw = g_renderer.width, rh = g_renderer.height;
+    if (row_start < 0) row_start = 0;
+    if (row_end > rh) row_end = rh;
+    if (row_start >= row_end) return;
 
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
     if (plr->gun_selected < 0) return;
@@ -3282,6 +3288,7 @@ void renderer_draw_gun(GameState *state)
     /* Keep the weapon at the bottom of the view. */
     int gy = rh - gun_h_draw;
     if (gy < 0) gy = 0;
+    if (gy >= row_end || (gy + gun_h_draw) <= row_start) return;
     int gx = (rw - gun_w_draw) / 2;
     if (gun_type == ROCKET_LAUNCHER_GUN_IDX) {
         /* Port quirk: rocket launcher overlay is anchored to the right edge. */
@@ -3306,7 +3313,13 @@ void renderer_draw_gun(GameState *state)
 
         if (ptr_off != 0 || (gun_type != 5 && gun_type != 6)) {
             /* Draw scaled: map screen pixel to source by (draw size / source size) ratio */
-            for (int sy = gy; sy < gy + gun_h_draw && sy < rh; sy++) {
+            int draw_sy0 = gy;
+            int draw_sy1 = gy + gun_h_draw;
+            if (draw_sy0 < row_start) draw_sy0 = row_start;
+            if (draw_sy1 > row_end) draw_sy1 = row_end;
+            if (draw_sy0 < 0) draw_sy0 = 0;
+            if (draw_sy1 > rh) draw_sy1 = rh;
+            for (int sy = draw_sy0; sy < draw_sy1; sy++) {
                 if (sy < 0) continue;
                 int src_row = (int)((int64_t)(sy - gy) * (int64_t)gun_h_src / gun_h_draw);
                 if (src_row >= gun_h_src) continue;
@@ -3348,6 +3361,11 @@ void renderer_draw_gun(GameState *state)
     }
 
     /* Do not draw placeholder gun when real gun data is missing or slot unused */
+}
+
+void renderer_draw_gun(GameState *state)
+{
+    renderer_draw_gun_rows(state, 0, g_renderer.height);
 }
 
 /* -----------------------------------------------------------------------
@@ -5205,8 +5223,11 @@ void renderer_draw_display(GameState *state)
     }
     if (prof_on) t_after_tint = SDL_GetPerformanceCounter();
 
-    /* 7. Draw gun overlay (single-threaded after threaded barriers). */
-    renderer_draw_gun(state);
+    /* 7. Draw gun overlay.
+     * In threaded-world mode the gun is already drawn per worker slice. */
+    if (!used_threaded_world) {
+        renderer_draw_gun(state);
+    }
     if (prof_on) t_after_gun = SDL_GetPerformanceCounter();
 
     /* 8. Swap buffers (the just-drawn buffer becomes the display buffer) */
