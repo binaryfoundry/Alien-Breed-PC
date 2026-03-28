@@ -211,6 +211,7 @@ typedef struct {
     int16_t         cfg_render_height;
     int16_t         cfg_supersampling; /* internal render multiplier (recommended: 1, 2, 4) */
     bool            cfg_render_threads; /* 1 = enable threaded renderer path (if compiled in) */
+    int16_t         cfg_render_threads_max; /* 0 = auto, otherwise cap worker strips (1..64) */
 
     /* Frame timing */
     int16_t         frames_to_draw;     /* FramesToDraw */

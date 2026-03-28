@@ -133,6 +133,8 @@ typedef struct {
 #define RENDERER_ROW_STRIP_HALO_WATER_BOTTOM_EXTRA 2
 /* Keep strips reasonably tall to reduce overlap/synchronization overhead. */
 #define RENDERER_MIN_ROWS_PER_WORKER 32
+/* Auto worker cap tuned for current software renderer/memory bandwidth balance. */
+#define RENDERER_AUTO_MAX_WORKERS 12
 
 typedef enum {
     RENDERER_THREAD_JOB_WORLD = 0,
@@ -184,6 +186,7 @@ static SDL_TLSID g_renderer_target_tls_id = 0;
 static int g_renderer_target_tls_ready = 0;
 static int g_prof_last_world_workers = 0;
 static int g_prof_last_tint_workers = 0;
+static int g_renderer_thread_max_workers = 0; /* 0 = auto */
 #endif
 
 /* -----------------------------------------------------------------------
@@ -622,7 +625,13 @@ static int renderer_prepare_worker_rows_locked(RendererThreadPool *pool, int hei
                                                int weight_bottom_rows, int log_rows)
 {
     int active_workers = pool->worker_count;
+    int worker_cap = g_renderer_thread_max_workers;
+    if (worker_cap <= 0) worker_cap = RENDERER_AUTO_MAX_WORKERS;
+    if (worker_cap > RENDERER_MAX_THREADS) worker_cap = RENDERER_MAX_THREADS;
     if (active_workers > height) active_workers = height;
+    if (active_workers > worker_cap) {
+        active_workers = worker_cap;
+    }
     {
         int max_workers_by_rows = height / RENDERER_MIN_ROWS_PER_WORKER;
         if (max_workers_by_rows < 1) max_workers_by_rows = 1;
@@ -5084,6 +5093,16 @@ void renderer_draw_display(GameState *state)
     int h = (r->height > 0) ? r->height : 1;
     if (state) g_proj_base_width = renderer_clamp_base_width((int)state->cfg_render_width);
     else g_proj_base_width = renderer_clamp_base_width(RENDER_DEFAULT_WIDTH);
+#ifndef AB3D_NO_THREADS
+    if (state) {
+        int n = (int)state->cfg_render_threads_max;
+        if (n < 0) n = 0;
+        if (n > RENDERER_MAX_THREADS) n = RENDERER_MAX_THREADS;
+        g_renderer_thread_max_workers = n;
+    } else {
+        g_renderer_thread_max_workers = 0;
+    }
+#endif
 
     /* Vertical scale per frame: denominator scaled by screen aspect ratio (w/h vs default). */
     r->proj_y_scale = (int32_t)((int64_t)PROJ_Y_NUMERATOR / (int64_t)PROJ_Y_DENOM);
