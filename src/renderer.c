@@ -80,15 +80,16 @@ typedef struct {
 
 static void renderer_draw_world_slice(GameState *state,
                                       const RendererWorldZonePrepass *zone_prepass,
-                                      int16_t slice_left, int16_t slice_right,
+                                      int16_t row_start, int16_t row_end,
                                       uint32_t frame_idx, int trace_clip,
                                       int8_t *out_fill_screen_water);
 static void renderer_apply_underwater_tint_slice(int8_t fill_screen_water,
-                                                  int16_t slice_left, int16_t slice_right,
+                                                  int16_t row_start, int16_t row_end,
                                                   const uint32_t *src_rgb, const uint16_t *src_cw,
                                                   uint32_t *dst_rgb, uint16_t *dst_cw);
 static void renderer_build_world_zone_prepass(GameState *state, uint32_t frame_idx,
                                               int trace_clip, RendererWorldZonePrepass *out);
+static void renderer_draw_sky_pass_rows(int16_t angpos, int16_t row_start, int16_t row_end);
 
 #ifndef AB3D_NO_THREADS
 #define RENDERER_MAX_THREADS 64
@@ -101,8 +102,8 @@ typedef enum {
 typedef struct {
     SDL_Thread *thread;
     int index;
-    int16_t slice_left;
-    int16_t slice_right;
+    int16_t row_start;
+    int16_t row_end;
     int8_t fill_screen_water;
 } RendererThreadWorker;
 
@@ -117,6 +118,7 @@ typedef struct {
     RendererThreadJobType job_type;
     GameState *job_state;
     const RendererWorldZonePrepass *world_zone_prepass;
+    int16_t sky_angpos;
     uint32_t frame_idx;
     int trace_clip;
     int8_t tint_fill_screen_water;
@@ -128,7 +130,7 @@ typedef struct {
     SDL_cond *cond_start;
     SDL_cond *cond_done;
     RendererThreadWorker workers[RENDERER_MAX_THREADS];
-    int last_logged_width;
+    int last_logged_height;
     int last_logged_workers;
 } RendererThreadPool;
 
@@ -195,6 +197,7 @@ typedef struct {
     uint8_t  floor_pal_cache_valid[FLOOR_PAL_LEVEL_COUNT];
     uint32_t floor_span_argb_cache[FLOOR_PAL_LEVEL_COUNT][256];
     uint16_t floor_span_cw_cache[FLOOR_PAL_LEVEL_COUNT][256];
+    int update_column_clip;
 } RenderSliceContext;
 
 static void render_slice_context_reset(RenderSliceContext *ctx,
@@ -220,6 +223,7 @@ static void render_slice_context_init(RenderSliceContext *ctx,
     memset(ctx, 0, sizeof(*ctx));
     render_slice_context_reset(ctx, left, right, top, bot);
     ctx->wall_cache_block_off = 0xFFFFu;
+    ctx->update_column_clip = 1;
 }
 
 #ifndef AB3D_NO_THREADS
@@ -250,11 +254,12 @@ static int renderer_thread_worker_main(void *userdata)
 
         uint32_t gen = pool->job_generation;
         const int active = (worker->index < pool->active_workers);
-        const int16_t slice_left = worker->slice_left;
-        const int16_t slice_right = worker->slice_right;
+        const int16_t row_start = worker->row_start;
+        const int16_t row_end = worker->row_end;
         const RendererThreadJobType job_type = pool->job_type;
         GameState *state = pool->job_state;
         const RendererWorldZonePrepass *world_zone_prepass = pool->world_zone_prepass;
+        int16_t sky_angpos = pool->sky_angpos;
         uint32_t frame_idx = pool->frame_idx;
         int trace_clip = pool->trace_clip;
         int8_t tint_fill_screen_water = pool->tint_fill_screen_water;
@@ -266,14 +271,15 @@ static int renderer_thread_worker_main(void *userdata)
         SDL_UnlockMutex(pool->mutex);
 
         int8_t fill_screen_water = 0;
-        if (active && slice_left < slice_right) {
+        if (active && row_start < row_end) {
             if (job_type == RENDERER_THREAD_JOB_WORLD && state) {
+                renderer_draw_sky_pass_rows(sky_angpos, row_start, row_end);
                 renderer_draw_world_slice(state, world_zone_prepass,
-                                          slice_left, slice_right,
+                                          row_start, row_end,
                                           frame_idx, trace_clip, &fill_screen_water);
             } else if (job_type == RENDERER_THREAD_JOB_WATER_TINT) {
                 renderer_apply_underwater_tint_slice(tint_fill_screen_water,
-                                                     slice_left, slice_right,
+                                                     row_start, row_end,
                                                      post_src_rgb, post_src_cw,
                                                      post_dst_rgb, post_dst_cw);
             }
@@ -333,7 +339,7 @@ static void renderer_threads_init(void)
 {
     RendererThreadPool *pool = &g_renderer_thread_pool;
     memset(pool, 0, sizeof(*pool));
-    pool->last_logged_width = -1;
+    pool->last_logged_height = -1;
     pool->last_logged_workers = -1;
 
     int cpu_count = SDL_GetCPUCount();
@@ -359,8 +365,8 @@ static void renderer_threads_init(void)
     pool->worker_count = cpu_count;
     for (int i = 0; i < pool->worker_count; i++) {
         pool->workers[i].index = i;
-        pool->workers[i].slice_left = 0;
-        pool->workers[i].slice_right = 0;
+        pool->workers[i].row_start = 0;
+        pool->workers[i].row_end = 0;
         pool->workers[i].fill_screen_water = 0;
         pool->workers[i].thread = SDL_CreateThread(renderer_thread_worker_main,
                                                    "ab3d_render_worker",
@@ -379,33 +385,33 @@ static void renderer_threads_init(void)
            pool->worker_count, pool->cpu_count);
 }
 
-static int renderer_prepare_worker_slices_locked(RendererThreadPool *pool, int width, int log_slices)
+static int renderer_prepare_worker_rows_locked(RendererThreadPool *pool, int height, int log_rows)
 {
     int active_workers = pool->worker_count;
-    if (active_workers > width) active_workers = width;
+    if (active_workers > height) active_workers = height;
     if (active_workers <= 0) return 0;
 
     for (int i = 0; i < active_workers; i++) {
-        int start = (i * width) / active_workers;
-        int end = ((i + 1) * width) / active_workers;
-        pool->workers[i].slice_left = (int16_t)start;
-        pool->workers[i].slice_right = (int16_t)end;
+        int start = (i * height) / active_workers;
+        int end = ((i + 1) * height) / active_workers;
+        pool->workers[i].row_start = (int16_t)start;
+        pool->workers[i].row_end = (int16_t)end;
         pool->workers[i].fill_screen_water = 0;
     }
     for (int i = active_workers; i < pool->worker_count; i++) {
-        pool->workers[i].slice_left = 0;
-        pool->workers[i].slice_right = 0;
+        pool->workers[i].row_start = 0;
+        pool->workers[i].row_end = 0;
         pool->workers[i].fill_screen_water = 0;
     }
 
-    if (log_slices && (pool->last_logged_width != width || pool->last_logged_workers != active_workers)) {
-        printf("[RENDERER] threading: dispatch %d slice(s) over width=%d\n",
-               active_workers, width);
+    if (log_rows && (pool->last_logged_height != height || pool->last_logged_workers != active_workers)) {
+        printf("[RENDERER] threading: dispatch %d row strip(s) over height=%d\n",
+               active_workers, height);
         for (int i = 0; i < active_workers; i++) {
-            printf("[RENDERER] threading: slice %d = [%d,%d)\n",
-                   i, (int)pool->workers[i].slice_left, (int)pool->workers[i].slice_right);
+            printf("[RENDERER] threading: rows %d = [%d,%d)\n",
+                   i, (int)pool->workers[i].row_start, (int)pool->workers[i].row_end);
         }
-        pool->last_logged_width = width;
+        pool->last_logged_height = height;
         pool->last_logged_workers = active_workers;
     }
 
@@ -414,6 +420,7 @@ static int renderer_prepare_worker_slices_locked(RendererThreadPool *pool, int w
 
 static int renderer_dispatch_threaded_world(GameState *state,
                                             const RendererWorldZonePrepass *zone_prepass,
+                                            int16_t sky_angpos,
                                             uint32_t frame_idx,
                                             int trace_clip, int8_t *out_fill_screen_water)
 {
@@ -422,11 +429,11 @@ static int renderer_dispatch_threaded_world(GameState *state,
     if (!state) return 0;
     if (!zone_prepass) return 0;
 
-    int width = g_renderer.width;
-    if (width <= 0) return 0;
+    int height = g_renderer.height;
+    if (height <= 0) return 0;
 
     SDL_LockMutex(pool->mutex);
-    int active_workers = renderer_prepare_worker_slices_locked(pool, width, 1);
+    int active_workers = renderer_prepare_worker_rows_locked(pool, height, 1);
     if (active_workers <= 0) {
         SDL_UnlockMutex(pool->mutex);
         return 0;
@@ -434,6 +441,7 @@ static int renderer_dispatch_threaded_world(GameState *state,
 
     pool->job_state = state;
     pool->world_zone_prepass = zone_prepass;
+    pool->sky_angpos = sky_angpos;
     pool->frame_idx = frame_idx;
     pool->trace_clip = trace_clip;
     pool->job_type = RENDERER_THREAD_JOB_WORLD;
@@ -481,7 +489,7 @@ static int renderer_dispatch_threaded_underwater_tint(int8_t fill_screen_water)
     memcpy(r->cw_back_buffer, r->cw_buffer, count * sizeof(*r->cw_buffer));
 
     SDL_LockMutex(pool->mutex);
-    int active_workers = renderer_prepare_worker_slices_locked(pool, width, 0);
+    int active_workers = renderer_prepare_worker_rows_locked(pool, height, 0);
     if (active_workers <= 0) {
         SDL_UnlockMutex(pool->mutex);
         return 0;
@@ -489,6 +497,7 @@ static int renderer_dispatch_threaded_underwater_tint(int8_t fill_screen_water)
 
     pool->job_state = NULL;
     pool->world_zone_prepass = NULL;
+    pool->sky_angpos = 0;
     pool->frame_idx = 0;
     pool->trace_clip = 0;
     pool->job_type = RENDERER_THREAD_JOB_WATER_TINT;
@@ -514,11 +523,13 @@ static void renderer_threads_shutdown(void) { }
 static void renderer_threads_init(void) { }
 static int renderer_dispatch_threaded_world(GameState *state,
                                             const RendererWorldZonePrepass *zone_prepass,
+                                            int16_t sky_angpos,
                                             uint32_t frame_idx,
                                             int trace_clip, int8_t *out_fill_screen_water)
 {
     (void)state;
     (void)zone_prepass;
+    (void)sky_angpos;
     (void)frame_idx;
     (void)trace_clip;
     if (out_fill_screen_water) *out_fill_screen_water = 0;
@@ -1134,7 +1145,7 @@ void renderer_set_sky_assets(const uint8_t *chunky_pixels, int tex_w, int tex_h,
     sky_build_lut_default();
 }
 
-void renderer_draw_sky_pass(int16_t angpos)
+static void renderer_draw_sky_pass_rows(int16_t angpos, int16_t row_start, int16_t row_end)
 {
     uint8_t *buf = g_renderer.buffer;
     uint32_t *rgb = g_renderer.rgb_buffer;
@@ -1143,13 +1154,17 @@ void renderer_draw_sky_pass(int16_t angpos)
     int w = g_renderer.width;
     int h = g_renderer.height;
     if (w < 1 || h < 1) return;
+    int y0 = row_start;
+    int y1 = row_end;
+    if (y0 < 0) y0 = 0;
+    if (y1 > h) y1 = h;
+    if (y0 >= y1) return;
 
     /* Use sub-column pan precision so sky rotation does not quantize/judder at small turns. */
     const int64_t sky_pan_period_fp = ((int64_t)SKY_PAN_WIDTH << 16);
     int64_t u0_fp = ((int64_t)(angpos & 8191) * sky_pan_period_fp) / 8192;
-    /* Amiga puts backdrop in top 38 of 80 rows; keep same proportion at any output height. */
-    int sky_h = (h * 38) / 80;
-    if (sky_h < 1) sky_h = 1;
+    /* Full-screen sky background so each threaded row strip can clear itself. */
+    int sky_h = h;
     /* Match sky horizontal span to the renderer's actual projection FOV.
      * World projection uses: screen_x = center_x + (64*RENDER_SCALE)*tan(theta),
      * so derive FOV from the same center/focal values and convert it to sky columns. */
@@ -1175,7 +1190,7 @@ void renderer_draw_sky_pass(int16_t angpos)
         if (th > 1 && tw > 1 && w > 1 && sky_h > 1) {
             const int64_t sx_step_fp = (((int64_t)(sky_view_cols - 1)) << 16) / (int64_t)(w - 1);
             const int64_t v_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
-            for (int y = 0; y < sky_h; y++) {
+            for (int y = y0; y < y1 && y < sky_h; y++) {
                 int64_t v_fp = (((int64_t)y * (th - 1)) << 16) / v_den;
                 int v0 = (int)(v_fp >> 16);
                 int v1 = (v0 < th - 1) ? (v0 + 1) : v0;
@@ -1210,7 +1225,7 @@ void renderer_draw_sky_pass(int16_t angpos)
             size_t row_stride = (size_t)tw * 2u;
             const int64_t r_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
             const int64_t sx_step_fp = ((int64_t)sky_view_cols << 16) / (int64_t)w;
-            for (int y = 0; y < sky_h; y++) {
+            for (int y = y0; y < y1 && y < sky_h; y++) {
                 int rpix = (int)((int64_t)y * (th - 1) / r_den);
                 if (rpix < 0) rpix = 0;
                 if (rpix >= th) rpix = th - 1;
@@ -1244,7 +1259,7 @@ void renderer_draw_sky_pass(int16_t angpos)
         if (th > 1 && tw > 1 && w > 1 && sky_h > 1) {
             const int64_t sx_step_fp = (((int64_t)(sky_view_cols - 1)) << 16) / (int64_t)(w - 1);
             const int64_t v_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
-            for (int y = 0; y < sky_h; y++) {
+            for (int y = y0; y < y1 && y < sky_h; y++) {
                 int64_t v_fp = (((int64_t)y * (th - 1)) << 16) / v_den;
                 int v0 = (int)(v_fp >> 16);
                 int v1 = (v0 < th - 1) ? (v0 + 1) : v0;
@@ -1277,7 +1292,7 @@ void renderer_draw_sky_pass(int16_t angpos)
             /* Nearest-neighbour path (or filtering disabled). */
             const int64_t v_den = (int64_t)(sky_h > 1 ? sky_h - 1 : 1);
             const int64_t sx_step_fp = ((int64_t)sky_view_cols << 16) / (int64_t)w;
-            for (int y = 0; y < sky_h; y++) {
+            for (int y = y0; y < y1 && y < sky_h; y++) {
                 int v = (int)((int64_t)y * (th - 1) / v_den);
                 if (v < 0) v = 0;
                 if (v >= th) v = th - 1;
@@ -1303,7 +1318,7 @@ void renderer_draw_sky_pass(int16_t angpos)
         }
     } else {
         const int64_t sx_step_fp = ((int64_t)sky_view_cols << 16) / (int64_t)w;
-        for (int y = 0; y < sky_h; y++) {
+        for (int y = y0; y < y1 && y < sky_h; y++) {
             int t = (y * 255) / (sky_h > 1 ? sky_h - 1 : 1);
             size_t row = (size_t)y * (size_t)w;
             int64_t sx_fp = 0;
@@ -1353,6 +1368,11 @@ void renderer_draw_sky_pass(int16_t angpos)
             }
         }
     }
+}
+
+void renderer_draw_sky_pass(int16_t angpos)
+{
+    renderer_draw_sky_pass_rows(angpos, 0, (int16_t)g_renderer.height);
 }
 
 void renderer_swap(void)
@@ -1768,13 +1788,13 @@ static void draw_wall_column(RenderSliceContext *ctx,
         uint32_t edge_bot_rgb = rgb[last_pix];
         uint16_t edge_top_cw = cw[first_pix];
         uint16_t edge_bot_cw = cw[last_pix];
-        if (ct > 0) {
+        if (ct > ctx->top_clip) {
             size_t up = first_pix - (size_t)width;
             buf[up] = 2;
             rgb[up] = edge_top_rgb;
             cw[up] = edge_top_cw;
         }
-        if (cb + 1 < g_renderer.height) {
+        if (cb + 1 <= ctx->bot_clip) {
             size_t dn = last_pix + (size_t)width;
             buf[dn] = 2;
             rgb[dn] = edge_bot_rgb;
@@ -1805,14 +1825,16 @@ static void draw_wall_column(RenderSliceContext *ctx,
 
     /* Update column clip (walls occlude floor/ceiling/sprites behind).
      * Store wall depth so sprites only skip when actually behind the wall (sprite_z >= clip.z). */
-    if (y_top > g_renderer.clip.top[x]) {
-        g_renderer.clip.top[x] = (int16_t)y_top;
-    }
-    if (y_bot < g_renderer.clip.bot[x]) {
-        g_renderer.clip.bot[x] = (int16_t)y_bot;
-    }
-    if (g_renderer.clip.z) {
-        g_renderer.clip.z[x] = col_z;
+    if (ctx->update_column_clip && g_renderer.clip.top && g_renderer.clip.bot) {
+        if (y_top > g_renderer.clip.top[x]) {
+            g_renderer.clip.top[x] = (int16_t)y_top;
+        }
+        if (y_bot < g_renderer.clip.bot[x]) {
+            g_renderer.clip.bot[x] = (int16_t)y_bot;
+        }
+        if (g_renderer.clip.z) {
+            g_renderer.clip.z[x] = col_z;
+        }
     }
 }
 
@@ -4479,17 +4501,27 @@ static void renderer_build_world_zone_prepass(GameState *state, uint32_t frame_i
 
 static void renderer_draw_world_slice(GameState *state,
                                       const RendererWorldZonePrepass *zone_prepass,
-                                      int16_t slice_left, int16_t slice_right,
+                                      int16_t row_start, int16_t row_end,
                                       uint32_t frame_idx, int trace_clip,
                                       int8_t *out_fill_screen_water)
 {
     RenderSliceContext frame_ctx;
-    if (!state || !zone_prepass || slice_left >= slice_right) {
+    if (!state || !zone_prepass || row_start >= row_end) {
         if (out_fill_screen_water) *out_fill_screen_water = 0;
         return;
     }
 
-    render_slice_context_init(&frame_ctx, slice_left, slice_right, 0, (int16_t)(g_renderer.height - 1));
+    int16_t strip_top = row_start;
+    int16_t strip_bot = (int16_t)(row_end - 1);
+    if (strip_top < 0) strip_top = 0;
+    if (strip_bot >= g_renderer.height) strip_bot = (int16_t)(g_renderer.height - 1);
+    if (strip_top > strip_bot) {
+        if (out_fill_screen_water) *out_fill_screen_water = 0;
+        return;
+    }
+
+    render_slice_context_init(&frame_ctx, 0, (int16_t)g_renderer.width, strip_top, strip_bot);
+    frame_ctx.update_column_clip = (strip_top == 0 && strip_bot == (int16_t)(g_renderer.height - 1)) ? 1 : 0;
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
 
     int zone_count = zone_prepass->count;
@@ -4500,13 +4532,13 @@ static void renderer_draw_world_slice(GameState *state,
         int16_t zone_id = zone_prepass->zone_ids[i];
         if (zone_id < 0 || !zone_prepass->valid[i]) continue;
 
-        render_slice_context_reset(&frame_ctx, slice_left, slice_right,
-                                   0, (int16_t)(g_renderer.height - 1));
+        render_slice_context_reset(&frame_ctx, 0, (int16_t)g_renderer.width,
+                                   strip_top, strip_bot);
 
         int left_clip_px = (int)zone_prepass->left_px[i];
         int right_clip_px = (int)zone_prepass->right_px[i];
-        if (left_clip_px < slice_left) left_clip_px = slice_left;
-        if (right_clip_px > slice_right) right_clip_px = slice_right;
+        if (left_clip_px < 0) left_clip_px = 0;
+        if (right_clip_px > g_renderer.width) right_clip_px = g_renderer.width;
         if (left_clip_px >= right_clip_px) {
             continue;
         }
@@ -4544,7 +4576,7 @@ static void renderer_draw_world_slice(GameState *state,
 }
 
 static void renderer_apply_underwater_tint_slice(int8_t fill_screen_water,
-                                                  int16_t slice_left, int16_t slice_right,
+                                                  int16_t row_start, int16_t row_end,
                                                   const uint32_t *src_rgb, const uint16_t *src_cw,
                                                   uint32_t *dst_rgb, uint16_t *dst_cw)
 {
@@ -4555,23 +4587,22 @@ static void renderer_apply_underwater_tint_slice(int8_t fill_screen_water,
     const int h = g_renderer.height;
     if (w <= 0 || h <= 0) return;
 
-    int x0 = slice_left;
-    int x1 = slice_right;
-    if (x0 < 0) x0 = 0;
-    if (x1 > w) x1 = w;
-    if (x0 >= x1) return;
+    int y0 = row_start;
+    int y1 = row_end;
+    if (y0 < 0) y0 = 0;
+    if (y1 > h) y1 = h;
+    if (y0 >= y1) return;
 
     /* AB3DI fillscrnwater post-pass:
      * AND #$00FF on copper color words. Strong applies to whole view (4*20 lines),
      * weak applies to bottom half only (2*20 lines). */
     const int strong = (fill_screen_water > 0);
-    int y0 = strong ? 0 : (h / 2);
-    if (y0 < 0) y0 = 0;
-    if (y0 > h) y0 = h;
+    int tint_start = strong ? 0 : (h / 2);
+    if (y0 < tint_start) y0 = tint_start;
 
-    for (int y = y0; y < h; y++) {
+    for (int y = y0; y < y1; y++) {
         size_t row = (size_t)y * (size_t)w;
-        for (int x = x0; x < x1; x++) {
+        for (int x = 0; x < w; x++) {
             size_t i = row + (size_t)x;
             uint16_t c12 = (uint16_t)(src_cw[i] & 0x00FFu);
             dst_cw[i] = c12;
@@ -4584,7 +4615,7 @@ static void renderer_apply_underwater_tint(int8_t fill_screen_water)
 {
     if (!g_renderer.rgb_buffer || !g_renderer.cw_buffer) return;
     renderer_apply_underwater_tint_slice(fill_screen_water,
-                                         0, (int16_t)g_renderer.width,
+                                         0, (int16_t)g_renderer.height,
                                          g_renderer.rgb_buffer, g_renderer.cw_buffer,
                                          g_renderer.rgb_buffer, g_renderer.cw_buffer);
 }
@@ -4606,16 +4637,7 @@ void renderer_draw_display(GameState *state)
         printf("[CLIP][frame %u] begin\n", (unsigned)frame_idx);
     }
 
-    /* 1. Clear framebuffer */
-    renderer_clear(0);
-
-    /* Sky backdrop first (Amiga Anims.s putinbackdrop / data/gfx/backfile), before world draw. */
-    {
-        PlayerState *plr_sky = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
-        renderer_draw_sky_pass((int16_t)plr_sky->angpos);
-    }
-
-    /* Vertical scale per frame: denominator scaled by screen aspect ratio (w/h vs default). */
+    /* 1. Vertical scale per frame: denominator scaled by screen aspect ratio (w/h vs default). */
     int w = (r->width  > 0) ? r->width  : 1;
     int h = (r->height > 0) ? r->height : 1;
     r->proj_y_scale = (int32_t)((int64_t)PROJ_Y_NUMERATOR / (int64_t)PROJ_Y_DENOM);
@@ -4626,6 +4648,8 @@ void renderer_draw_display(GameState *state)
 
     /* 2. Setup view transform (from AB3DI.s DrawDisplay lines 3399-3438) */
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
+    PlayerState *plr_sky = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
+    int16_t sky_angpos = (int16_t)plr_sky->angpos;
 
     int16_t ang = (int16_t)(plr->angpos & 0x3FFF); /* 14-bit angle */
     r->sinval = sin_lookup(ang);
@@ -4670,6 +4694,7 @@ void renderer_draw_display(GameState *state)
 #ifndef AB3D_NO_THREADS
     if (state->cfg_render_threads) {
         used_threaded_world = renderer_dispatch_threaded_world(state, &world_zone_prepass,
+                                                               sky_angpos,
                                                                frame_idx, trace_clip,
                                                                &fill_screen_water);
         if (!used_threaded_world) {
@@ -4683,8 +4708,10 @@ void renderer_draw_display(GameState *state)
     }
 #endif
     if (!used_threaded_world) {
+        renderer_clear(0);
+        renderer_draw_sky_pass(sky_angpos);
         renderer_draw_world_slice(state, &world_zone_prepass,
-                                  0, (int16_t)g_renderer.width,
+                                  0, (int16_t)g_renderer.height,
                                   frame_idx, trace_clip, &fill_screen_water);
     }
 
@@ -4705,4 +4732,5 @@ void renderer_draw_display(GameState *state)
     /* 8. Swap buffers (the just-drawn buffer becomes the display buffer) */
     renderer_swap();
 }
+
 
