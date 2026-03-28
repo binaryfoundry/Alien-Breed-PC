@@ -57,6 +57,7 @@ void game_state_init(GameState *state)
     state->cfg_all_weapons = true;
     state->cfg_render_width = 1280;
     state->cfg_render_height = 720;
+    state->cfg_supersampling = 1;
     state->cfg_render_threads = false;
 }
 

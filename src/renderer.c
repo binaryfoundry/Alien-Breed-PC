@@ -67,6 +67,33 @@
  * Global renderer state
  * ----------------------------------------------------------------------- */
 RendererState g_renderer;
+/* Horizontal projection reference width from config (render_width before supersampling). */
+static int g_proj_base_width = RENDER_DEFAULT_WIDTH;
+
+static inline int renderer_clamp_base_width(int w)
+{
+    if (w < 96) w = 96;
+    if (w > 4096) w = 4096;
+    return w;
+}
+
+/* Horizontal focal scale in internal-render pixels.
+ * Keeps output FOV stable when supersampling changes internal width. */
+static inline int renderer_proj_x_scale_px(void)
+{
+    int base_w = renderer_clamp_base_width(g_proj_base_width);
+    int cur_w = (g_renderer.width > 0) ? g_renderer.width : base_w;
+    int64_t s = ((int64_t)RENDER_SCALE * (int64_t)cur_w + (int64_t)base_w / 2) / (int64_t)base_w;
+    if (s < 1) s = 1;
+    if (s > INT_MAX) s = INT_MAX;
+    return (int)s;
+}
+
+static inline int renderer_sprite_scale_x(void)
+{
+    /* Width path equivalent of SPRITE_SIZE_SCALE, but tied to runtime horizontal projection. */
+    return 128 * renderer_proj_x_scale_px();
+}
 
 #define RENDERER_MAX_ZONE_ORDER 256
 
@@ -932,7 +959,8 @@ static inline int project_x_to_pixels(int32_t vx, int32_t vz)
 {
     if (vz <= 0) return (vx >= 0) ? g_renderer.width : -g_renderer.width;
     int center_x = (g_renderer.width * 47) / 96;
-    return (int)((int64_t)vx * (int64_t)RENDER_SCALE / (int64_t)vz) + center_x;
+    int proj_x = renderer_proj_x_scale_px();
+    return (int)((int64_t)vx * (int64_t)proj_x / (int64_t)vz) + center_x;
 }
 
 /* Project world Y to current render pixel-space Y using nearest-pixel rounding.
@@ -1434,14 +1462,14 @@ static void renderer_draw_sky_pass_rows(int16_t angpos, int16_t row_start, int16
     /* Full-screen sky background so each threaded row strip can clear itself. */
     int sky_h = h;
     /* Match sky horizontal span to the renderer's actual projection FOV.
-     * World projection uses: screen_x = center_x + (64*RENDER_SCALE)*tan(theta),
+     * World projection uses: screen_x = center_x + (64*proj_x_scale)*tan(theta),
      * so derive FOV from the same center/focal values and convert it to sky columns. */
     int sky_view_cols;
     {
         int center_x = (w * 47) / 96;
         int left_px = center_x;
         int right_px = (w - 1) - center_x;
-        const double focal_px = (double)(64 * RENDER_SCALE);
+        const double focal_px = (double)(64 * renderer_proj_x_scale_px());
         const double hfov =
             atan((double)left_px / focal_px) +
             atan((double)right_px / focal_px);
@@ -2183,9 +2211,8 @@ static void renderer_draw_wall_ctx(RenderSliceContext *ctx,
     }
 
     /* Project in fine pixel space for smooth motion. */
-    int center_x = (g_renderer.width * 47) / 96;
-    int scr_x1 = (int)((int64_t)cx1 * (int64_t)RENDER_SCALE / cz1) + center_x;
-    int scr_x2 = (int)((int64_t)cx2 * (int64_t)RENDER_SCALE / cz2) + center_x;
+    int scr_x1 = project_x_to_pixels(cx1, cz1);
+    int scr_x2 = project_x_to_pixels(cx2, cz2);
 
     if (scr_x2 < ctx->left_clip || scr_x1 >= ctx->right_clip) return;
 
@@ -2406,12 +2433,26 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
         }
     }
 
-    /* Step per pixel: fixed so each pixel = same world extent at any width.
-     * No def_w/w scaling - in widescreen we show more tiles, texture scale stays correct. */
+    /* Step per pixel:
+     * - At base render width, keep the original mapping.
+     * - When supersampling increases internal width, scale step down so output FOV stays unchanged. */
     int w = rs->width;
     if (w < 1) w = 1;
-    int32_t u_step = (int32_t)(d1 >> FLOOR_STEP_SHIFT);
-    int32_t v_step = (int32_t)(d2 >> FLOOR_STEP_SHIFT);
+    int base_w = renderer_clamp_base_width(g_proj_base_width);
+    int32_t u_step;
+    int32_t v_step;
+    if (w == base_w) {
+        u_step = (int32_t)(d1 >> FLOOR_STEP_SHIFT);
+        v_step = (int32_t)(d2 >> FLOOR_STEP_SHIFT);
+    } else {
+        int64_t den = ((int64_t)w << FLOOR_STEP_SHIFT);
+        int64_t num_u = (int64_t)d1 * (int64_t)base_w;
+        int64_t num_v = (int64_t)d2 * (int64_t)base_w;
+        if (num_u >= 0) u_step = (int32_t)((num_u + den / 2) / den);
+        else            u_step = (int32_t)((num_u - den / 2) / den);
+        if (num_v >= 0) v_step = (int32_t)((num_v + den / 2) / den);
+        else            v_step = (int32_t)((num_v - den / 2) / den);
+    }
 
     /* Center UV at the same optical center used by wall/object projection (47/96 of width):
      * U_center = -d2, V_center = d1.
@@ -3554,15 +3595,14 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int32_t orp_z = (int32_t)vz16;
             if (orp_z <= SPRITE_NEAR_CLIP_Z) continue;
 
-            int center_x = (r->width * 47) / 96;
-            int scr_x = (int)(vx_fine * RENDER_SCALE / (int32_t)orp_z) + center_x;
+            int scr_x = project_x_to_pixels(vx_fine, (int32_t)orp_z);
             int32_t rel_y_8 = (state->explosions[ei].y_floor - y_off) >> WORLD_Y_FRAC_BITS;
             int center_y = r->height / 2;
             int scr_y = (int)((int64_t)rel_y_8 * (int64_t)r->proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp_z) + center_y;
             int z_for_size = orp_z;
             if (z_for_size < 1) z_for_size = 1;
             int expl_h_port = explosion_world_h_to_port(r, expl_h);
-            int sprite_w = (int)((int32_t)expl_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+            int sprite_w = (int)((int32_t)expl_w * renderer_sprite_scale_x() / z_for_size) * SPRITE_SIZE_MULTIPLIER;
             int sprite_h = (int)((int64_t)expl_h_port * (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
             sprite_w *= EXPLOSION_SIZE_CORRECTION;
             sprite_h *= EXPLOSION_SIZE_CORRECTION;
@@ -3631,8 +3671,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
 
         /* Project to screen X (PROJ_X_SCALE/2 = horizontal focal length). */
         int32_t obj_vx_fine = orp->x_fine;
-        int center_x = (g_renderer.width * 47) / 96;
-        int scr_x = (int)(obj_vx_fine * RENDER_SCALE / (int32_t)orp->z) + center_x;
+        int scr_x = project_x_to_pixels(obj_vx_fine, (int32_t)orp->z);
 
         /* Get brightness + distance attenuation
          * ASM: asr.w #7,d6 ; add.w (a0)+,d6 (distance>>7 + obj brightness) */
@@ -3710,7 +3749,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             }
         }
 
-        int sprite_w = (int)((int32_t)world_w * SPRITE_SIZE_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+        int sprite_w = (int)((int32_t)world_w * renderer_sprite_scale_x() / z_for_size) * SPRITE_SIZE_MULTIPLIER;
         int world_h_for_proj = world_h;
         if (explosion_billboard) {
             world_h_for_proj = explosion_world_h_to_port(&g_renderer, world_h);
@@ -4286,9 +4325,8 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                     ez2 = FLOOR_NEAR;
                 }
                 /* Project X from clipped (ex,ez) so values are consistent and safe (no division by zero or negative z). */
-                int center_x = (g_renderer.width * 47) / 96;
-                int sx1 = (int)((int64_t)ex1 * RENDER_SCALE / ez1) + center_x;
-                int sx2 = (int)((int64_t)ex2 * RENDER_SCALE / ez2) + center_x;
+                int sx1 = project_x_to_pixels(ex1, ez1);
+                int sx2 = project_x_to_pixels(ex2, ez2);
 
                 /* Project Y: same rule so X and Y stay consistent (no jump when z crosses FLOOR_NEAR). */
                 int32_t rel_h_8 = rel_h >> WORLD_Y_FRAC_BITS;
@@ -4711,7 +4749,7 @@ static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
                         }
                     }
                     if (allow && sxpx < right_clip_px) {
-                        right_clip_px = sxpx + RENDER_SCALE;
+                        right_clip_px = sxpx + renderer_proj_x_scale_px();
                     }
                 }
             }
@@ -4905,9 +4943,15 @@ void renderer_draw_display(GameState *state)
         printf("[CLIP][frame %u] begin\n", (unsigned)frame_idx);
     }
 
-    /* 1. Vertical scale per frame: denominator scaled by screen aspect ratio (w/h vs default). */
+    /* 1. Projection setup.
+     * Horizontal projection references the pre-supersample render width from settings,
+     * so changing supersampling only changes detail, not camera FOV. */
     int w = (r->width  > 0) ? r->width  : 1;
     int h = (r->height > 0) ? r->height : 1;
+    if (state) g_proj_base_width = renderer_clamp_base_width((int)state->cfg_render_width);
+    else g_proj_base_width = renderer_clamp_base_width(RENDER_DEFAULT_WIDTH);
+
+    /* Vertical scale per frame: denominator scaled by screen aspect ratio (w/h vs default). */
     r->proj_y_scale = (int32_t)((int64_t)PROJ_Y_NUMERATOR / (int64_t)PROJ_Y_DENOM);
     //if (r->proj_y_scale < 1) r->proj_y_scale = 1;
 
@@ -5000,5 +5044,3 @@ void renderer_draw_display(GameState *state)
     /* 8. Swap buffers (the just-drawn buffer becomes the display buffer) */
     renderer_swap();
 }
-
-

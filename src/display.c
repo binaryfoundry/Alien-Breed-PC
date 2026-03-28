@@ -5,9 +5,9 @@
  * Creates a window, takes the chunky buffer from the software renderer,
  * converts it through a palette to RGB, and presents it on screen.
  *
- * Internal render size comes from ab3d.ini (render_width/render_height).
- * The window is created at that size (1:1); if resized, the image is
- * letterboxed, centered, aspect preserved.
+ * Base window size comes from ab3d.ini (render_width/render_height).
+ * Internal render size is base size multiplied by supersampling.
+ * The final image is letterboxed, centered, aspect preserved.
  */
 
 #include "display.h"
@@ -212,16 +212,38 @@ static void display_log_display_mode_snapshot(const char *tag)
  * ----------------------------------------------------------------------- */
 void display_init(GameState *state)
 {
-    int rw = 1280;
-    int rh = 720;
+    int base_rw = 1280;
+    int base_rh = 720;
+    int supersampling = 1;
+    int rw, rh;
     if (state) {
-        rw = (int)state->cfg_render_width;
-        rh = (int)state->cfg_render_height;
+        base_rw = (int)state->cfg_render_width;
+        base_rh = (int)state->cfg_render_height;
+        supersampling = (int)state->cfg_supersampling;
     }
-    if (rw < 96) rw = 96;
-    if (rh < 80) rh = 80;
-    if (rw > 4096) rw = 4096;
-    if (rh > 4096) rh = 4096;
+    if (base_rw < 96) base_rw = 96;
+    if (base_rh < 80) base_rh = 80;
+    if (supersampling < 1) supersampling = 1;
+    if (supersampling > 4) supersampling = 4;
+
+    {
+        /* Keep aspect ratio if a requested supersampled target exceeds renderer max size. */
+        const double req_w = (double)base_rw * (double)supersampling;
+        const double req_h = (double)base_rh * (double)supersampling;
+        double fit = 1.0;
+        if (req_w > 4096.0 || req_h > 4096.0) {
+            const double fit_w = 4096.0 / req_w;
+            const double fit_h = 4096.0 / req_h;
+            fit = (fit_w < fit_h) ? fit_w : fit_h;
+            if (fit < 0.0) fit = 0.0;
+        }
+        rw = (int)(req_w * fit + 0.5);
+        rh = (int)(req_h * fit + 0.5);
+        if (rw < 96) rw = 96;
+        if (rh < 80) rh = 80;
+        if (rw > 4096) rw = 4096;
+        if (rh > 4096) rh = 4096;
+    }
 
     g_internal_w = rw;
     g_internal_h = rh;
@@ -235,18 +257,18 @@ void display_init(GameState *state)
     display_log_display_mode_snapshot("startup-before-window");
 
 #ifdef AB3D_RELEASE
-    printf("[DISPLAY] SDL2 init (internal render %dx%d, startup: borderless desktop window)\n",
-           g_internal_w, g_internal_h);
+    printf("[DISPLAY] SDL2 init (window=desktop, base=%dx%d, internal render=%dx%d, supersampling=%d)\n",
+           base_rw, base_rh, g_internal_w, g_internal_h, supersampling);
 #else
-    printf("[DISPLAY] SDL2 init (internal render %dx%d, window opens at that size; resize to letterbox)\n",
-           g_internal_w, g_internal_h);
+    printf("[DISPLAY] SDL2 init (window %dx%d, internal render %dx%d, supersampling=%d; resize to letterbox)\n",
+           base_rw, base_rh, g_internal_w, g_internal_h, supersampling);
 #endif
 
     renderer_init();
 
     const char *driver_override = SDL_getenv("AB3D_RENDER_DRIVER");
-    int window_w = rw;
-    int window_h = rh;
+    int window_w = base_rw;
+    int window_h = base_rh;
     Uint32 window_flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
     int window_x = SDL_WINDOWPOS_CENTERED;
     int window_y = SDL_WINDOWPOS_CENTERED;

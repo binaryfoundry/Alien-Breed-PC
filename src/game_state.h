@@ -209,6 +209,7 @@ typedef struct {
     /* ab3d.ini: internal software render resolution (window is scaled to fit, letterboxed) */
     int16_t         cfg_render_width;
     int16_t         cfg_render_height;
+    int16_t         cfg_supersampling; /* internal render multiplier (recommended: 1, 2, 4) */
     bool            cfg_render_threads; /* 1 = enable threaded renderer path (if compiled in) */
 
     /* Frame timing */

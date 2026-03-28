@@ -84,6 +84,13 @@ static void apply_line(GameState *state, char *line)
         } else {
             printf("[SETTINGS] render_height ignored (use 80..4096): %s\n", val);
         }
+    } else if (strcmp(key, "supersampling") == 0) {
+        int n = atoi(val);
+        if (n >= 1 && n <= 4) {
+            state->cfg_supersampling = (int16_t)n;
+        } else {
+            printf("[SETTINGS] supersampling ignored (use 1..4): %s\n", val);
+        }
     } else if (strcmp(key, "render_threads") == 0) {
         state->cfg_render_threads = parse_bool(val) ? true : false;
     }
@@ -106,7 +113,7 @@ static void apply_runtime_constraints(GameState *state)
 static void log_effective_settings(const GameState *state, const char *source_label)
 {
     if (state->cfg_start_level >= 0) {
-        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d render_threads=%d\n",
+        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d supersampling=%d render_threads=%d\n",
                source_label,
                (int)state->cfg_start_level,
                state->infinite_health ? 1 : 0,
@@ -114,15 +121,17 @@ static void log_effective_settings(const GameState *state, const char *source_la
                state->cfg_all_weapons ? 1 : 0,
                (int)state->cfg_render_width,
                (int)state->cfg_render_height,
+               (int)state->cfg_supersampling,
                state->cfg_render_threads ? 1 : 0);
     } else {
-        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d render_threads=%d\n",
+        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d supersampling=%d render_threads=%d\n",
                source_label,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
                state->cfg_all_weapons ? 1 : 0,
                (int)state->cfg_render_width,
                (int)state->cfg_render_height,
+               (int)state->cfg_supersampling,
                state->cfg_render_threads ? 1 : 0);
     }
 }
