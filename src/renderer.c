@@ -530,7 +530,8 @@ static void renderer_threads_init(void)
            pool->worker_count, pool->cpu_count);
 }
 
-static int renderer_prepare_worker_rows_locked(RendererThreadPool *pool, int height, int log_rows)
+static int renderer_prepare_worker_rows_locked(RendererThreadPool *pool, int height,
+                                               int weight_bottom_rows, int log_rows)
 {
     int active_workers = pool->worker_count;
     if (active_workers > height) active_workers = height;
@@ -541,11 +542,53 @@ static int renderer_prepare_worker_rows_locked(RendererThreadPool *pool, int hei
     }
     if (active_workers <= 0) return 0;
 
+    int32_t bounds[RENDERER_MAX_THREADS + 1];
+    if (weight_bottom_rows && active_workers > 1) {
+        const int horizon = height / 2;
+        const int bottom_rows = (height > horizon) ? (height - horizon) : 1;
+        int64_t total_weight = 0;
+        for (int y = 0; y < height; y++) {
+            int64_t row_weight = 256;
+            if (y >= horizon) {
+                row_weight += ((int64_t)(y - horizon) * 512) / bottom_rows;
+            }
+            total_weight += row_weight;
+        }
+
+        bounds[0] = 0;
+        bounds[active_workers] = height;
+        int next_boundary = 1;
+        int64_t running_weight = 0;
+        for (int y = 0; y < height && next_boundary < active_workers; y++) {
+            int64_t row_weight = 256;
+            if (y >= horizon) {
+                row_weight += ((int64_t)(y - horizon) * 512) / bottom_rows;
+            }
+            running_weight += row_weight;
+            while (next_boundary < active_workers &&
+                   running_weight * (int64_t)active_workers >= total_weight * (int64_t)next_boundary) {
+                bounds[next_boundary++] = y + 1;
+            }
+        }
+        while (next_boundary < active_workers) {
+            bounds[next_boundary++] = height;
+        }
+
+        for (int i = 1; i < active_workers; i++) {
+            int min_start = bounds[i - 1] + 1;
+            int max_start = height - (active_workers - i);
+            if (bounds[i] < min_start) bounds[i] = min_start;
+            if (bounds[i] > max_start) bounds[i] = max_start;
+        }
+    } else {
+        for (int i = 0; i <= active_workers; i++) {
+            bounds[i] = (int32_t)(((int64_t)i * (int64_t)height) / (int64_t)active_workers);
+        }
+    }
+
     for (int i = 0; i < active_workers; i++) {
-        int start = (i * height) / active_workers;
-        int end = ((i + 1) * height) / active_workers;
-        pool->workers[i].row_start = (int16_t)start;
-        pool->workers[i].row_end = (int16_t)end;
+        pool->workers[i].row_start = (int16_t)bounds[i];
+        pool->workers[i].row_end = (int16_t)bounds[i + 1];
         pool->workers[i].fill_screen_water = 0;
     }
     for (int i = active_workers; i < pool->worker_count; i++) {
@@ -583,7 +626,7 @@ static int renderer_dispatch_threaded_world(GameState *state,
     if (height <= 0) return 0;
 
     SDL_LockMutex(pool->mutex);
-    int active_workers = renderer_prepare_worker_rows_locked(pool, height, 1);
+    int active_workers = renderer_prepare_worker_rows_locked(pool, height, 0, 1);
     if (active_workers <= 0) {
         SDL_UnlockMutex(pool->mutex);
         return 0;
@@ -647,18 +690,14 @@ static int renderer_dispatch_threaded_underwater_tint(int8_t fill_screen_water)
     if (fill_screen_water == 0) return 0;
 
     RendererState *r = &g_renderer;
-    if (!r->rgb_buffer || !r->cw_buffer || !r->rgb_back_buffer || !r->cw_back_buffer) return 0;
+    if (!r->rgb_buffer || !r->cw_buffer) return 0;
 
     int width = r->width;
     int height = r->height;
     if (width <= 0 || height <= 0) return 0;
 
-    size_t count = (size_t)width * (size_t)height;
-    memcpy(r->rgb_back_buffer, r->rgb_buffer, count * sizeof(*r->rgb_buffer));
-    memcpy(r->cw_back_buffer, r->cw_buffer, count * sizeof(*r->cw_buffer));
-
     SDL_LockMutex(pool->mutex);
-    int active_workers = renderer_prepare_worker_rows_locked(pool, height, 0);
+    int active_workers = renderer_prepare_worker_rows_locked(pool, height, 0, 0);
     if (active_workers <= 0) {
         SDL_UnlockMutex(pool->mutex);
         return 0;
@@ -671,8 +710,8 @@ static int renderer_dispatch_threaded_underwater_tint(int8_t fill_screen_water)
     pool->trace_clip = 0;
     pool->job_type = RENDERER_THREAD_JOB_WATER_TINT;
     pool->tint_fill_screen_water = fill_screen_water;
-    pool->post_src_rgb = r->rgb_back_buffer;
-    pool->post_src_cw = r->cw_back_buffer;
+    pool->post_src_rgb = r->rgb_buffer;
+    pool->post_src_cw = r->cw_buffer;
     pool->post_dst_rgb = r->rgb_buffer;
     pool->post_dst_cw = r->cw_buffer;
     pool->active_workers = active_workers;
@@ -4886,7 +4925,15 @@ void renderer_draw_display(GameState *state)
     }
 
     /* 6. Keep underwater tint cue enabled. */
-    renderer_apply_underwater_tint(fill_screen_water);
+    int used_threaded_tint = 0;
+#ifndef AB3D_NO_THREADS
+    if (state->cfg_render_threads) {
+        used_threaded_tint = renderer_dispatch_threaded_underwater_tint(fill_screen_water);
+    }
+#endif
+    if (!used_threaded_tint) {
+        renderer_apply_underwater_tint(fill_screen_water);
+    }
 
     /* 7. Draw gun overlay (single-threaded after threaded barriers). */
     renderer_draw_gun(state);
