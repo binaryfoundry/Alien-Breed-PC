@@ -283,7 +283,7 @@ static void draw_filled_polygon(const int *sx, const int *sy, int n,
     }
 
     int W = g_renderer.width;
-    uint32_t *rgb = g_renderer.rgb_buffer;
+    uint32_t *rgb = renderer_get_active_rgb_target();
     for (int y = min_y; y <= max_y; y++) {
         int x0 = s_span_min[y - min_y];
         int x1 = s_span_max[y - min_y];
@@ -690,7 +690,7 @@ static void draw_textured_triangle(const int *sx, const int *sy,
 
     double inv_area = 1.0 / area;
     int W = g_renderer.width;
-    uint32_t *rgb = g_renderer.rgb_buffer;
+    uint32_t *rgb = renderer_get_active_rgb_target();
 
     for (int y = min_y; y <= max_y; y++) {
         uint32_t *row = rgb + (size_t)y * W;

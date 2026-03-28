@@ -91,8 +91,15 @@ static void renderer_build_world_zone_prepass(GameState *state, uint32_t frame_i
                                               int trace_clip, RendererWorldZonePrepass *out);
 static void renderer_draw_sky_pass_rows(int16_t angpos, int16_t row_start, int16_t row_end);
 
+typedef struct {
+    uint8_t *buf;
+    uint32_t *rgb;
+    uint16_t *cw;
+} RendererThreadTarget;
+
 #ifndef AB3D_NO_THREADS
 #define RENDERER_MAX_THREADS 64
+#define RENDERER_ROW_STRIP_HALO 2
 
 typedef enum {
     RENDERER_THREAD_JOB_WORLD = 0,
@@ -105,6 +112,11 @@ typedef struct {
     int16_t row_start;
     int16_t row_end;
     int8_t fill_screen_water;
+    uint8_t *local_buf;
+    uint32_t *local_rgb;
+    uint16_t *local_cw;
+    int local_w;
+    int local_h;
 } RendererThreadWorker;
 
 typedef struct {
@@ -135,6 +147,8 @@ typedef struct {
 } RendererThreadPool;
 
 static RendererThreadPool g_renderer_thread_pool;
+static SDL_TLSID g_renderer_target_tls_id = 0;
+static int g_renderer_target_tls_ready = 0;
 #endif
 
 /* -----------------------------------------------------------------------
@@ -226,12 +240,93 @@ static void render_slice_context_init(RenderSliceContext *ctx,
     ctx->update_column_clip = 1;
 }
 
+static inline RendererThreadTarget *renderer_get_thread_target(void)
+{
+#ifndef AB3D_NO_THREADS
+    if (g_renderer_target_tls_ready && g_renderer_target_tls_id != 0) {
+        return (RendererThreadTarget*)SDL_TLSGet(g_renderer_target_tls_id);
+    }
+#endif
+    return NULL;
+}
+
+static inline void renderer_set_thread_target(RendererThreadTarget *target)
+{
+#ifndef AB3D_NO_THREADS
+    if (g_renderer_target_tls_ready && g_renderer_target_tls_id != 0) {
+        SDL_TLSSet(g_renderer_target_tls_id, target, NULL);
+    }
+#else
+    (void)target;
+#endif
+}
+
+static inline uint8_t *renderer_active_buf(void)
+{
+    RendererThreadTarget *t = renderer_get_thread_target();
+    return (t && t->buf) ? t->buf : g_renderer.buffer;
+}
+
+static inline uint32_t *renderer_active_rgb(void)
+{
+    RendererThreadTarget *t = renderer_get_thread_target();
+    return (t && t->rgb) ? t->rgb : g_renderer.rgb_buffer;
+}
+
+static inline uint16_t *renderer_active_cw(void)
+{
+    RendererThreadTarget *t = renderer_get_thread_target();
+    return (t && t->cw) ? t->cw : g_renderer.cw_buffer;
+}
+
+uint32_t *renderer_get_active_rgb_target(void)
+{
+    return renderer_active_rgb();
+}
+
 #ifndef AB3D_NO_THREADS
 static int8_t merge_fill_screen_water(int8_t a, int8_t b)
 {
     if (a > 0 || b > 0) return 0x0F;
     if (a < 0 || b < 0) return (int8_t)-1;
     return 0;
+}
+
+static void renderer_release_worker_local_buffers(RendererThreadWorker *worker)
+{
+    if (!worker) return;
+    free(worker->local_buf);
+    free(worker->local_rgb);
+    free(worker->local_cw);
+    worker->local_buf = NULL;
+    worker->local_rgb = NULL;
+    worker->local_cw = NULL;
+    worker->local_w = 0;
+    worker->local_h = 0;
+}
+
+static int renderer_ensure_worker_local_buffers(RendererThreadWorker *worker, int w, int h)
+{
+    if (!worker || w <= 0 || h <= 0) return 0;
+    if (worker->local_buf && worker->local_rgb && worker->local_cw &&
+        worker->local_w == w && worker->local_h == h) {
+        return 1;
+    }
+
+    renderer_release_worker_local_buffers(worker);
+
+    size_t count = (size_t)w * (size_t)h;
+    worker->local_buf = (uint8_t*)malloc(count * sizeof(uint8_t));
+    worker->local_rgb = (uint32_t*)malloc(count * sizeof(uint32_t));
+    worker->local_cw = (uint16_t*)malloc(count * sizeof(uint16_t));
+    if (!worker->local_buf || !worker->local_rgb || !worker->local_cw) {
+        renderer_release_worker_local_buffers(worker);
+        return 0;
+    }
+
+    worker->local_w = w;
+    worker->local_h = h;
+    return 1;
 }
 
 static int renderer_thread_worker_main(void *userdata)
@@ -273,10 +368,39 @@ static int renderer_thread_worker_main(void *userdata)
         int8_t fill_screen_water = 0;
         if (active && row_start < row_end) {
             if (job_type == RENDERER_THREAD_JOB_WORLD && state) {
-                renderer_draw_sky_pass_rows(sky_angpos, row_start, row_end);
+                RendererThreadTarget target = { 0 };
+                target.buf = worker->local_buf;
+                target.rgb = worker->local_rgb;
+                target.cw = worker->local_cw;
+                renderer_set_thread_target(&target);
+
+                int16_t draw_row_start = row_start;
+                int16_t draw_row_end = row_end;
+                draw_row_start = (int16_t)(draw_row_start - RENDERER_ROW_STRIP_HALO);
+                draw_row_end = (int16_t)(draw_row_end + RENDERER_ROW_STRIP_HALO);
+                if (draw_row_start < 0) draw_row_start = 0;
+                if (draw_row_end > g_renderer.height) draw_row_end = (int16_t)g_renderer.height;
+                renderer_draw_sky_pass_rows(sky_angpos, draw_row_start, draw_row_end);
                 renderer_draw_world_slice(state, world_zone_prepass,
-                                          row_start, row_end,
+                                          draw_row_start, draw_row_end,
                                           frame_idx, trace_clip, &fill_screen_water);
+                renderer_set_thread_target(NULL);
+
+                if (g_renderer.buffer && g_renderer.rgb_buffer && g_renderer.cw_buffer &&
+                    worker->local_buf && worker->local_rgb && worker->local_cw) {
+                    const int w = g_renderer.width;
+                    if (w > 0) {
+                        size_t row_bytes_buf = (size_t)w * sizeof(uint8_t);
+                        size_t row_bytes_rgb = (size_t)w * sizeof(uint32_t);
+                        size_t row_bytes_cw = (size_t)w * sizeof(uint16_t);
+                        for (int y = row_start; y < row_end; y++) {
+                            size_t row = (size_t)y * (size_t)w;
+                            memcpy(g_renderer.buffer + row, worker->local_buf + row, row_bytes_buf);
+                            memcpy(g_renderer.rgb_buffer + row, worker->local_rgb + row, row_bytes_rgb);
+                            memcpy(g_renderer.cw_buffer + row, worker->local_cw + row, row_bytes_cw);
+                        }
+                    }
+                }
             } else if (job_type == RENDERER_THREAD_JOB_WATER_TINT) {
                 renderer_apply_underwater_tint_slice(tint_fill_screen_water,
                                                      row_start, row_end,
@@ -313,6 +437,7 @@ static void renderer_threads_shutdown(void)
             SDL_WaitThread(pool->workers[i].thread, NULL);
             pool->workers[i].thread = NULL;
         }
+        renderer_release_worker_local_buffers(&pool->workers[i]);
     }
 
     if (pool->cond_done) {
@@ -342,6 +467,16 @@ static void renderer_threads_init(void)
     pool->last_logged_height = -1;
     pool->last_logged_workers = -1;
 
+    if (!g_renderer_target_tls_ready) {
+        g_renderer_target_tls_id = SDL_TLSCreate();
+        g_renderer_target_tls_ready = 1;
+        if (g_renderer_target_tls_id == 0) {
+            printf("[RENDERER] threading: disabled (failed to create TLS key)\n");
+            pool->initialized = 1;
+            return;
+        }
+    }
+
     int cpu_count = SDL_GetCPUCount();
     if (cpu_count < 1) cpu_count = 1;
     if (cpu_count > RENDERER_MAX_THREADS) cpu_count = RENDERER_MAX_THREADS;
@@ -368,6 +503,11 @@ static void renderer_threads_init(void)
         pool->workers[i].row_start = 0;
         pool->workers[i].row_end = 0;
         pool->workers[i].fill_screen_water = 0;
+        pool->workers[i].local_buf = NULL;
+        pool->workers[i].local_rgb = NULL;
+        pool->workers[i].local_cw = NULL;
+        pool->workers[i].local_w = 0;
+        pool->workers[i].local_h = 0;
         pool->workers[i].thread = SDL_CreateThread(renderer_thread_worker_main,
                                                    "ab3d_render_worker",
                                                    &pool->workers[i]);
@@ -437,6 +577,25 @@ static int renderer_dispatch_threaded_world(GameState *state,
     if (active_workers <= 0) {
         SDL_UnlockMutex(pool->mutex);
         return 0;
+    }
+    {
+        int width = g_renderer.width;
+        int buffers_ok = 1;
+        for (int i = 0; i < active_workers; i++) {
+            if (!renderer_ensure_worker_local_buffers(&pool->workers[i], width, height)) {
+                buffers_ok = 0;
+                break;
+            }
+        }
+        if (!buffers_ok) {
+            static int s_worker_buffer_fail_logged = 0;
+            if (!s_worker_buffer_fail_logged) {
+                printf("[RENDERER] threading: failed to allocate per-worker strip buffers; falling back to single-threaded\n");
+                s_worker_buffer_fail_logged = 1;
+            }
+            SDL_UnlockMutex(pool->mutex);
+            return 0;
+        }
     }
 
     pool->job_state = state;
@@ -518,6 +677,7 @@ static int renderer_dispatch_threaded_underwater_tint(int8_t fill_screen_water)
 
     return 1;
 }
+
 #else
 static void renderer_threads_shutdown(void) { }
 static void renderer_threads_init(void) { }
@@ -1147,9 +1307,9 @@ void renderer_set_sky_assets(const uint8_t *chunky_pixels, int tex_w, int tex_h,
 
 static void renderer_draw_sky_pass_rows(int16_t angpos, int16_t row_start, int16_t row_end)
 {
-    uint8_t *buf = g_renderer.buffer;
-    uint32_t *rgb = g_renderer.rgb_buffer;
-    uint16_t *cw = g_renderer.cw_buffer;
+    uint8_t *buf = renderer_active_buf();
+    uint32_t *rgb = renderer_active_rgb();
+    uint16_t *cw = renderer_active_cw();
     if (!buf || !rgb || !cw) return;
     int w = g_renderer.width;
     int h = g_renderer.height;
@@ -1623,9 +1783,9 @@ static void draw_wall_column(RenderSliceContext *ctx,
                              int16_t wall_height_world, int16_t tex_id,
                              int16_t d6_max)
 {
-    uint8_t *buf = g_renderer.buffer;
-    uint32_t *rgb = g_renderer.rgb_buffer;
-    uint16_t *cw = g_renderer.cw_buffer;
+    uint8_t *buf = renderer_active_buf();
+    uint32_t *rgb = renderer_active_rgb();
+    uint16_t *cw = renderer_active_cw();
     if (!buf || !rgb || !cw) return;
     if (x < ctx->left_clip || x >= ctx->right_clip) return;
 
@@ -2060,9 +2220,9 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
      * Starting position involves centering with 3/4 factors plus camera pos.
      */
     RendererState *rs = &g_renderer;
-    uint8_t *buf = rs->buffer;
-    uint32_t *rgb = rs->rgb_buffer;
-    uint16_t *cwbuf = rs->cw_buffer;
+    uint8_t *buf = renderer_active_buf();
+    uint32_t *rgb = renderer_active_rgb();
+    uint16_t *cwbuf = renderer_active_cw();
     if (!buf || !rgb || !cwbuf) return;
     if (y < 0 || y >= rs->height) return;
 
@@ -2616,9 +2776,9 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                      int32_t clip_top_sy, int32_t clip_bot_sy)
 {
     (void)sprite_type;
-    uint8_t *buf = g_renderer.buffer;
-    uint32_t *rgb = g_renderer.rgb_buffer;
-    uint16_t *cw = g_renderer.cw_buffer;
+    uint8_t *buf = renderer_active_buf();
+    uint32_t *rgb = renderer_active_rgb();
+    uint16_t *cw = renderer_active_cw();
     if (!buf || !rgb || !cw) return;
     if (z <= SPRITE_NEAR_CLIP_Z) return;
     if (!wad || !ptr_data) return;

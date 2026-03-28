@@ -341,6 +341,7 @@ void renderer_draw_gun(GameState *state);
 /* Get pointer to the current rendered frame for display */
 const uint8_t *renderer_get_buffer(void);
 const uint32_t *renderer_get_rgb_buffer(void);
+uint32_t *renderer_get_active_rgb_target(void);
 int renderer_get_width(void);
 int renderer_get_height(void);
 int renderer_get_stride(void);
