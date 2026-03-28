@@ -182,6 +182,8 @@ typedef struct {
 static RendererThreadPool g_renderer_thread_pool;
 static SDL_TLSID g_renderer_target_tls_id = 0;
 static int g_renderer_target_tls_ready = 0;
+static int g_prof_last_world_workers = 0;
+static int g_prof_last_tint_workers = 0;
 #endif
 
 /* -----------------------------------------------------------------------
@@ -704,6 +706,7 @@ static int renderer_dispatch_threaded_world(GameState *state,
                                             int trace_clip, int8_t *out_fill_screen_water)
 {
     RendererThreadPool *pool = &g_renderer_thread_pool;
+    g_prof_last_world_workers = 0;
     if (!pool->initialized || pool->worker_count <= 0 || pool->cpu_count <= 1) return 0;
     if (!state) return 0;
     if (!zone_prepass) return 0;
@@ -763,6 +766,7 @@ static int renderer_dispatch_threaded_world(GameState *state,
     for (int i = 0; i < active_workers; i++) {
         fill_screen_water = merge_fill_screen_water(fill_screen_water, pool->workers[i].fill_screen_water);
     }
+    g_prof_last_world_workers = active_workers;
     SDL_UnlockMutex(pool->mutex);
 
     if (out_fill_screen_water) *out_fill_screen_water = fill_screen_water;
@@ -772,6 +776,7 @@ static int renderer_dispatch_threaded_world(GameState *state,
 static int renderer_dispatch_threaded_underwater_tint(int8_t fill_screen_water)
 {
     RendererThreadPool *pool = &g_renderer_thread_pool;
+    g_prof_last_tint_workers = 0;
     if (!pool->initialized || pool->worker_count <= 0 || pool->cpu_count <= 1) return 0;
     if (fill_screen_water == 0) return 0;
 
@@ -808,6 +813,7 @@ static int renderer_dispatch_threaded_underwater_tint(int8_t fill_screen_water)
     while (pool->pending_workers > 0) {
         SDL_CondWait(pool->cond_done, pool->mutex);
     }
+    g_prof_last_tint_workers = active_workers;
     SDL_UnlockMutex(pool->mutex);
 
     return 1;
@@ -935,6 +941,124 @@ static int argb24_to_amiga12_lut_ready = 0;
 #define DIV255_LUT_MAX 130050u
 static uint16_t div255_lut[DIV255_LUT_MAX + 1u];
 static uint32_t g_render_frame_counter = 0;
+
+typedef struct {
+    int initialized;
+    int enabled;
+    uint64_t perf_freq;
+    uint64_t report_interval_ticks;
+    uint64_t report_window_start;
+    uint64_t next_report_at;
+    uint64_t frames;
+    uint64_t threaded_world_frames;
+    uint64_t threaded_tint_frames;
+    uint64_t world_workers_total;
+    uint64_t world_workers_samples;
+    uint64_t tint_workers_total;
+    uint64_t tint_workers_samples;
+    uint64_t ticks_total;
+    uint64_t ticks_setup_prepass;
+    uint64_t ticks_world;
+    uint64_t ticks_tint;
+    uint64_t ticks_gun;
+    uint64_t ticks_swap;
+} RendererProfileState;
+
+static RendererProfileState g_renderer_profile;
+
+static int renderer_profile_enabled(void)
+{
+    if (!g_renderer_profile.initialized) {
+        uint64_t now = SDL_GetPerformanceCounter();
+        uint64_t freq = SDL_GetPerformanceFrequency();
+        if (freq == 0) freq = 1;
+        g_renderer_profile.initialized = 1;
+        g_renderer_profile.perf_freq = freq;
+        g_renderer_profile.report_window_start = now;
+
+        {
+            const char *env = SDL_getenv("AB3D_PROFILE_RENDER");
+            if (env && *env && atoi(env) > 0) {
+                g_renderer_profile.enabled = 1;
+            } else {
+                g_renderer_profile.enabled = 0;
+            }
+        }
+
+        {
+            int report_ms = 1000;
+            const char *env = SDL_getenv("AB3D_PROFILE_RENDER_EVERY_MS");
+            if (env && *env) {
+                int v = atoi(env);
+                if (v >= 100 && v <= 30000) report_ms = v;
+            }
+            g_renderer_profile.report_interval_ticks = (uint64_t)(((double)freq * (double)report_ms) / 1000.0);
+            if (g_renderer_profile.report_interval_ticks == 0) g_renderer_profile.report_interval_ticks = 1;
+        }
+        g_renderer_profile.next_report_at = now + g_renderer_profile.report_interval_ticks;
+
+        if (g_renderer_profile.enabled) {
+            printf("[RPROF] enabled (set AB3D_PROFILE_RENDER=0 to disable, interval=%llu ms)\n",
+                   (unsigned long long)((g_renderer_profile.report_interval_ticks * 1000ULL) / g_renderer_profile.perf_freq));
+        }
+    }
+    return g_renderer_profile.enabled;
+}
+
+static void renderer_profile_maybe_report(uint64_t now)
+{
+    if (!renderer_profile_enabled()) return;
+    if (now < g_renderer_profile.next_report_at) return;
+    if (g_renderer_profile.frames == 0) {
+        g_renderer_profile.report_window_start = now;
+        g_renderer_profile.next_report_at = now + g_renderer_profile.report_interval_ticks;
+        return;
+    }
+
+    {
+        double freq = (double)g_renderer_profile.perf_freq;
+        double frames = (double)g_renderer_profile.frames;
+        double elapsed_ms = ((double)(now - g_renderer_profile.report_window_start) * 1000.0) / freq;
+        double avg_total = ((double)g_renderer_profile.ticks_total * 1000.0) / (freq * frames);
+        double avg_setup = ((double)g_renderer_profile.ticks_setup_prepass * 1000.0) / (freq * frames);
+        double avg_world = ((double)g_renderer_profile.ticks_world * 1000.0) / (freq * frames);
+        double avg_tint = ((double)g_renderer_profile.ticks_tint * 1000.0) / (freq * frames);
+        double avg_gun = ((double)g_renderer_profile.ticks_gun * 1000.0) / (freq * frames);
+        double avg_swap = ((double)g_renderer_profile.ticks_swap * 1000.0) / (freq * frames);
+        double fps = (elapsed_ms > 0.0) ? (frames * 1000.0 / elapsed_ms) : 0.0;
+        double threaded_world_pct = (100.0 * (double)g_renderer_profile.threaded_world_frames) / frames;
+        double threaded_tint_pct = (100.0 * (double)g_renderer_profile.threaded_tint_frames) / frames;
+        double avg_world_workers = (g_renderer_profile.world_workers_samples > 0)
+            ? ((double)g_renderer_profile.world_workers_total / (double)g_renderer_profile.world_workers_samples)
+            : 0.0;
+        double avg_tint_workers = (g_renderer_profile.tint_workers_samples > 0)
+            ? ((double)g_renderer_profile.tint_workers_total / (double)g_renderer_profile.tint_workers_samples)
+            : 0.0;
+
+        printf("[RPROF] frames=%llu fps=%.1f ms(avg): total=%.3f setup=%.3f world=%.3f tint=%.3f gun=%.3f swap=%.3f threaded: world=%.0f%% tint=%.0f%% workers(avg): world=%.1f tint=%.1f\n",
+               (unsigned long long)g_renderer_profile.frames,
+               fps,
+               avg_total, avg_setup, avg_world, avg_tint, avg_gun, avg_swap,
+               threaded_world_pct, threaded_tint_pct,
+               avg_world_workers, avg_tint_workers);
+    }
+
+    g_renderer_profile.report_window_start = now;
+    g_renderer_profile.next_report_at = now + g_renderer_profile.report_interval_ticks;
+    g_renderer_profile.frames = 0;
+    g_renderer_profile.threaded_world_frames = 0;
+    g_renderer_profile.threaded_tint_frames = 0;
+    g_renderer_profile.world_workers_total = 0;
+    g_renderer_profile.world_workers_samples = 0;
+    g_renderer_profile.tint_workers_total = 0;
+    g_renderer_profile.tint_workers_samples = 0;
+    g_renderer_profile.ticks_total = 0;
+    g_renderer_profile.ticks_setup_prepass = 0;
+    g_renderer_profile.ticks_world = 0;
+    g_renderer_profile.ticks_tint = 0;
+    g_renderer_profile.ticks_gun = 0;
+    g_renderer_profile.ticks_swap = 0;
+}
 
 /* Debug helper:
  * Set AB3D_CLIP_TRACE_FRAMES=N to print portal clip windows for first N frames. */
@@ -4937,6 +5061,16 @@ void renderer_draw_display(GameState *state)
 {
     RendererState *r = &g_renderer;
     if (!r->buffer) return;
+    int prof_on = renderer_profile_enabled();
+    uint64_t t0 = 0;
+    uint64_t t_after_setup = 0;
+    uint64_t t_after_world = 0;
+    uint64_t t_after_tint = 0;
+    uint64_t t_after_gun = 0;
+    uint64_t t_after_swap = 0;
+    int world_workers = 0;
+    int tint_workers = 0;
+    if (prof_on) t0 = SDL_GetPerformanceCounter();
     uint32_t frame_idx = g_render_frame_counter++;
     int trace_clip = renderer_take_clip_trace_slot();
     if (trace_clip) {
@@ -5000,6 +5134,7 @@ void renderer_draw_display(GameState *state)
     renderer_rotate_object_pts(state);
     RendererWorldZonePrepass world_zone_prepass;
     renderer_build_world_zone_prepass(state, frame_idx, trace_clip, &world_zone_prepass);
+    if (prof_on) t_after_setup = SDL_GetPerformanceCounter();
 
     int8_t fill_screen_water = 0;
     int used_threaded_world = 0;
@@ -5019,13 +5154,20 @@ void renderer_draw_display(GameState *state)
         }
     }
 #endif
+    if (used_threaded_world) {
+#ifndef AB3D_NO_THREADS
+        world_workers = (g_prof_last_world_workers > 0) ? g_prof_last_world_workers : 0;
+#endif
+    }
     if (!used_threaded_world) {
         renderer_clear(0);
         renderer_draw_sky_pass(sky_angpos);
         renderer_draw_world_slice(state, &world_zone_prepass,
                                   0, (int16_t)g_renderer.height,
                                   frame_idx, trace_clip, &fill_screen_water);
+        world_workers = 1;
     }
+    if (prof_on) t_after_world = SDL_GetPerformanceCounter();
 
     /* 6. Keep underwater tint cue enabled. */
     int used_threaded_tint = 0;
@@ -5036,11 +5178,40 @@ void renderer_draw_display(GameState *state)
 #endif
     if (!used_threaded_tint) {
         renderer_apply_underwater_tint(fill_screen_water);
+        tint_workers = (fill_screen_water != 0) ? 1 : 0;
+    } else {
+#ifndef AB3D_NO_THREADS
+        tint_workers = (g_prof_last_tint_workers > 0) ? g_prof_last_tint_workers : 0;
+#endif
     }
+    if (prof_on) t_after_tint = SDL_GetPerformanceCounter();
 
     /* 7. Draw gun overlay (single-threaded after threaded barriers). */
     renderer_draw_gun(state);
+    if (prof_on) t_after_gun = SDL_GetPerformanceCounter();
 
     /* 8. Swap buffers (the just-drawn buffer becomes the display buffer) */
     renderer_swap();
+    if (prof_on) {
+        RendererProfileState *ps = &g_renderer_profile;
+        t_after_swap = SDL_GetPerformanceCounter();
+        ps->frames++;
+        if (used_threaded_world) ps->threaded_world_frames++;
+        if (used_threaded_tint) ps->threaded_tint_frames++;
+        if (world_workers > 0) {
+            ps->world_workers_total += (uint64_t)world_workers;
+            ps->world_workers_samples++;
+        }
+        if (tint_workers > 0) {
+            ps->tint_workers_total += (uint64_t)tint_workers;
+            ps->tint_workers_samples++;
+        }
+        ps->ticks_total += (t_after_swap - t0);
+        ps->ticks_setup_prepass += (t_after_setup - t0);
+        ps->ticks_world += (t_after_world - t_after_setup);
+        ps->ticks_tint += (t_after_tint - t_after_world);
+        ps->ticks_gun += (t_after_gun - t_after_tint);
+        ps->ticks_swap += (t_after_swap - t_after_gun);
+        renderer_profile_maybe_report(t_after_swap);
+    }
 }
