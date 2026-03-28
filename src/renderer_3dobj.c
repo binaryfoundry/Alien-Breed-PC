@@ -175,6 +175,28 @@ static int obj_bright_to_level(int raw_brightness)
     return level;
 }
 
+static inline int poly_clamp_base_width(int w)
+{
+    if (w < 96) w = 96;
+    if (w > 4096) w = 4096;
+    return w;
+}
+
+/* Match renderer.c horizontal projection behavior so supersampling changes
+ * detail only, not 3D polygon-object FOV. */
+static inline int poly_proj_x_scale_px(const RendererState *r, const GameState *state)
+{
+    int base_w = RENDER_DEFAULT_WIDTH;
+    if (state) base_w = poly_clamp_base_width((int)state->cfg_render_width);
+    else base_w = poly_clamp_base_width(base_w);
+
+    int cur_w = (r && r->width > 0) ? r->width : base_w;
+    int64_t s = ((int64_t)RENDER_SCALE * (int64_t)cur_w + (int64_t)base_w / 2) / (int64_t)base_w;
+    if (s < 1) s = 1;
+    if (s > INT_MAX) s = INT_MAX;
+    return (int)s;
+}
+
 /* -----------------------------------------------------------------------
  * Per-vertex screen coordinate cache (shared across all polygons in one
  * draw call, reset for each object).
@@ -471,6 +493,7 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
      * world-space drift at longer distances. */
     int center_x = (W * 47) / 96;
     int half_h = H / 2;
+    int proj_xs = poly_proj_x_scale_px(r, state);
     int32_t proj_ys = r->proj_y_scale;
     size_t pix_count = (size_t)W * (size_t)H;
     if (!ensure_poly_depth_buffer(thread_ctx, pix_count)) return;
@@ -619,7 +642,7 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
             for (int v = 0; v < clipped_n; v++) {
                 int32_t wz = clipped_poly[v].z;
                 if (wz <= 0) wz = 1;
-                sx[v] = (int)((clipped_poly[v].x * RENDER_SCALE) / wz) + center_x;
+                sx[v] = (int)(((int64_t)clipped_poly[v].x * (int64_t)proj_xs) / (int64_t)wz) + center_x;
                 sy[v] = (int)((int64_t)(clipped_poly[v].y >> WORLD_Y_FRAC_BITS) * proj_ys * RENDER_SCALE
                               / wz) + half_h;
                 sz[v] = wz;
