@@ -1618,6 +1618,7 @@ static bool player_debug_apply_pending_full_save_after_level_load(GameState *sta
     bool    ini_infinite_health = state->infinite_health;
     bool    ini_infinite_ammo = state->infinite_ammo;
     bool    ini_cfg_all_weapons = state->cfg_all_weapons;
+    bool    ini_cfg_all_keys = state->cfg_all_keys;
     int16_t ini_cfg_render_width = state->cfg_render_width;
     int16_t ini_cfg_render_height = state->cfg_render_height;
     int16_t ini_cfg_supersampling = state->cfg_supersampling;
@@ -1634,6 +1635,7 @@ static bool player_debug_apply_pending_full_save_after_level_load(GameState *sta
     state->infinite_health = ini_infinite_health;
     state->infinite_ammo = ini_infinite_ammo;
     state->cfg_all_weapons = ini_cfg_all_weapons;
+    state->cfg_all_keys = ini_cfg_all_keys;
     state->cfg_render_width = ini_cfg_render_width;
     state->cfg_render_height = ini_cfg_render_height;
     state->cfg_supersampling = ini_cfg_supersampling;

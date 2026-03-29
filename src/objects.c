@@ -1133,6 +1133,20 @@ static void enemy_update_flying_vertical(GameObject *obj, const GameState *state
     OBJ_SET_TD_W(obj, ENEMY_OBJ_YVEL_OFF, yvel);
     obj_sw(obj->raw + 4, y);
 }
+
+/* ab3d.ini all_keys: OR key bits from every key object slot (same as object_handle_key pickup). */
+static void game_apply_all_keys_from_level(const GameState *state)
+{
+    if (!state->cfg_all_keys || !state->level.object_data)
+        return;
+    const uint8_t *obj = state->level.object_data;
+    for (int i = 0; i < MAX_OBJECTS; i++) {
+        if ((int8_t)obj[16] == OBJ_NBR_KEY)
+            game_conditions |= (int8_t)obj[17];
+        obj += OBJECT_SIZE;
+    }
+}
+
 /* -----------------------------------------------------------------------
  * objects_update - Main per-frame object processing
  *
@@ -1148,6 +1162,7 @@ void objects_update(GameState *state)
     /* 2. Player shooting - called from game_loop */
 
     /* 3. Level mechanics */
+    game_apply_all_keys_from_level(state);
     switch_routine(state);
     door_routine(state);
 

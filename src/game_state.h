@@ -207,6 +207,7 @@ typedef struct {
     bool            infinite_health;
     bool            infinite_ammo;
     bool            cfg_all_weapons;    /* 1 = all guns visible + full ammo (plr1/plr2) */
+    bool            cfg_all_keys;       /* 1 = OR in key condition bits from level key objects (doors/lifts) */
 
     /* ab3d.ini: internal software render resolution (window is scaled to fit, letterboxed) */
     int16_t         cfg_render_width;
