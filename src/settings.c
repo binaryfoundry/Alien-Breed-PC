@@ -100,6 +100,13 @@ static void apply_line(GameState *state, char *line)
         } else {
             printf("[SETTINGS] render_threads_max ignored (use 0..64): %s\n", val);
         }
+    } else if (strcmp(key, "volume") == 0) {
+        int n = atoi(val);
+        if (n >= 0 && n <= 100) {
+            state->cfg_volume = (int16_t)n;
+        } else {
+            printf("[SETTINGS] volume ignored (use 0..100): %s\n", val);
+        }
     }
 }
 
@@ -121,7 +128,7 @@ static void apply_runtime_constraints(GameState *state)
 static void log_effective_settings(const GameState *state, const char *source_label)
 {
     if (state->cfg_start_level >= 0) {
-        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d\n",
+        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d\n",
                source_label,
                (int)state->cfg_start_level,
                state->infinite_health ? 1 : 0,
@@ -131,9 +138,10 @@ static void log_effective_settings(const GameState *state, const char *source_la
                (int)state->cfg_render_height,
                (int)state->cfg_supersampling,
                state->cfg_render_threads ? 1 : 0,
-               (int)state->cfg_render_threads_max);
+               (int)state->cfg_render_threads_max,
+               (int)state->cfg_volume);
     } else {
-        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d\n",
+        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d\n",
                source_label,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
@@ -142,7 +150,8 @@ static void log_effective_settings(const GameState *state, const char *source_la
                (int)state->cfg_render_height,
                (int)state->cfg_supersampling,
                state->cfg_render_threads ? 1 : 0,
-               (int)state->cfg_render_threads_max);
+               (int)state->cfg_render_threads_max,
+               (int)state->cfg_volume);
     }
 }
 

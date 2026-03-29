@@ -88,6 +88,7 @@ static SDL_AudioSpec     g_spec;
 static LoadedSample      g_samples[MAX_SAMPLES];
 static Channel           g_channels[MAX_CHANNELS];
 static int               g_audio_ready = 0;
+static int               g_master_volume = 100; /* 0..100, scales per-sample volume in audio_play_sample */
 
 static int channel_is_free(const Channel *ch)
 {
@@ -391,6 +392,15 @@ void audio_init(void)
     }
 }
 
+void audio_set_master_volume(int volume_0_to_100)
+{
+    if (volume_0_to_100 < 0)
+        volume_0_to_100 = 0;
+    else if (volume_0_to_100 > 100)
+        volume_0_to_100 = 100;
+    g_master_volume = volume_0_to_100;
+}
+
 void audio_shutdown(void)
 {
     if (g_device) {
@@ -440,6 +450,11 @@ void audio_play_sample(int sample_id, int volume)
     }
     if (volume < 0) volume = 0;
     if (volume > 255) volume = 255;
+    if (g_master_volume <= 0)
+        return;
+    volume = (volume * g_master_volume + 50) / 100;
+    if (volume <= 0)
+        return;
 
     SDL_LockAudioDevice(g_device);
 

@@ -75,6 +75,7 @@ static void setup_game(GameState *state)
     display_init(state);
     input_init();
     audio_init();
+    audio_set_master_volume((int)state->cfg_volume);
 
     display_alloc_text_screen();
 

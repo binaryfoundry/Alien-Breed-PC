@@ -11,6 +11,8 @@
 /* Lifecycle */
 void audio_init(void);
 void audio_shutdown(void);
+/* Master SFX gain from ab3d.ini (0 = mute, 100 = full). Call after settings_load, typically right after audio_init. */
+void audio_set_master_volume(int volume_0_to_100);
 
 /* Music (ProTracker module) */
 void audio_init_player(void);
