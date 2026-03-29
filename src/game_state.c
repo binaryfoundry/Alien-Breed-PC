@@ -61,6 +61,7 @@ void game_state_init(GameState *state)
     state->cfg_render_threads = false;
     state->cfg_render_threads_max = 0;
     state->cfg_volume = 100;
+    state->cfg_y_proj_scale = 100;
 }
 
 /*

@@ -1363,6 +1363,10 @@ static void allocate_buffers(int w, int h)
     g_renderer.wall_bot_clip = -1;
     g_renderer.left_clip = 0;
     g_renderer.right_clip = (int16_t)w;
+
+    /* Safe defaults before first renderer_draw_display sets y_proj_scale-based caps. */
+    g_renderer.floor_uv_dist_max = 30000;
+    g_renderer.floor_uv_dist_near = 32000;
 }
 
 void renderer_init(void)
@@ -2599,12 +2603,12 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
     int32_t fh_8 = floor_height >> (WORLD_Y_FRAC_BITS - 1);
     int32_t dist;
     if (abs_row_dist <= 3) {
-        dist = 32000;
+        dist = rs->floor_uv_dist_near;
     } else {
         dist = (int32_t)((int64_t)fh_8 * g_renderer.proj_y_scale * RENDER_SCALE / row_dist);
         if (dist < 0) dist = -dist;
         if (dist < 16) dist = 16;
-        if (dist > 30000) dist = 30000;
+        if (dist > rs->floor_uv_dist_max) dist = rs->floor_uv_dist_max;
     }
 
     /* Amiga formula: d6 = (dist >> 7) + zone_bright. Higher d6 = darker. */
@@ -5292,12 +5296,31 @@ void renderer_draw_display(GameState *state)
     }
 #endif
 
-    /* Vertical scale per frame: denominator scaled by screen aspect ratio (w/h vs default). */
-    r->proj_y_scale = (int32_t)((int64_t)PROJ_Y_NUMERATOR / (int64_t)PROJ_Y_DENOM);
-    //if (r->proj_y_scale < 1) r->proj_y_scale = 1;
+    /* Vertical scale per frame: same as (float)base / (640/h) but integer-only (avoid float
+     * rounding that could make 100% vs 150% collapse to the same proj_y_scale after multiply). */
+    {
+        int32_t base_py = (int32_t)((int64_t)PROJ_Y_NUMERATOR / (int64_t)PROJ_Y_DENOM);
+        r->proj_y_scale = (int32_t)(((int64_t)base_py * (int64_t)h) / 640);
+        if (r->proj_y_scale < 1)
+            r->proj_y_scale = 1;
+    }
 
-    float screen_rescsale = ((float)640 / (float)h);
-    r->proj_y_scale = (int32_t)((float)r->proj_y_scale / screen_rescsale);
+    /* ab3d.ini y_proj_scale: percent of computed proj_y_scale (100 = unchanged).
+     * Floor/ceiling UV clamps must scale the same way: raw dist grows with proj_y_scale,
+     * but pastfloorbright used fixed 30000/32000 caps tuned for 100% — without scaling
+     * those caps, values over 100% saturate dist and break floor/ceiling perspective. */
+    {
+        int ypct = 100;
+        if (state) {
+            ypct = (int)state->cfg_y_proj_scale;
+            if (ypct < 1) ypct = 1;
+            r->proj_y_scale = (int32_t)(((int64_t)r->proj_y_scale * (int64_t)ypct + 50) / 100);
+            if (r->proj_y_scale < 1)
+                r->proj_y_scale = 1;
+        }
+        r->floor_uv_dist_max = (int32_t)(((int64_t)30000 * (int64_t)ypct + 50) / 100);
+        r->floor_uv_dist_near = (int32_t)(((int64_t)32000 * (int64_t)ypct + 50) / 100);
+    }
 
     /* 2. Setup view transform (from AB3DI.s DrawDisplay lines 3399-3438) */
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;

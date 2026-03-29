@@ -157,6 +157,9 @@ typedef struct {
 
     /* Vertical projection scale: numerator / (PROJ_Y_DENOM * width/RENDER_DEFAULT_WIDTH) * height/RENDER_DEFAULT_HEIGHT, recomputed each frame. */
     int32_t proj_y_scale;
+    /* Floor/ceiling UV distance clamps (pastfloorbright): scale with ab3d.ini y_proj_scale so values >100% are not stuck at the default cap. */
+    int32_t floor_uv_dist_max;
+    int32_t floor_uv_dist_near;
 
     /* Framebuffer (double-buffered) */
     uint8_t *buffer;          /* Current render target (width * height bytes) */

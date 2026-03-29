@@ -1613,9 +1613,34 @@ static bool player_debug_apply_pending_full_save_after_level_load(GameState *sta
 
     hdr = &g_debug_full_save_pending.header;
     live_level = state->level;
+    /* Preserve ab3d.ini prefs from the running session (saved GameState may predate new fields). */
+    int16_t ini_cfg_start_level = state->cfg_start_level;
+    bool    ini_infinite_health = state->infinite_health;
+    bool    ini_infinite_ammo = state->infinite_ammo;
+    bool    ini_cfg_all_weapons = state->cfg_all_weapons;
+    int16_t ini_cfg_render_width = state->cfg_render_width;
+    int16_t ini_cfg_render_height = state->cfg_render_height;
+    int16_t ini_cfg_supersampling = state->cfg_supersampling;
+    bool    ini_cfg_render_threads = state->cfg_render_threads;
+    int16_t ini_cfg_render_threads_max = state->cfg_render_threads_max;
+    int16_t ini_cfg_volume = state->cfg_volume;
+    int16_t ini_cfg_y_proj_scale = state->cfg_y_proj_scale;
+
     *state = g_debug_full_save_pending.game_state;
     state->level = live_level;
     state->view_list_of_graph_rooms = NULL;
+
+    state->cfg_start_level = ini_cfg_start_level;
+    state->infinite_health = ini_infinite_health;
+    state->infinite_ammo = ini_infinite_ammo;
+    state->cfg_all_weapons = ini_cfg_all_weapons;
+    state->cfg_render_width = ini_cfg_render_width;
+    state->cfg_render_height = ini_cfg_render_height;
+    state->cfg_supersampling = ini_cfg_supersampling;
+    state->cfg_render_threads = ini_cfg_render_threads;
+    state->cfg_render_threads_max = ini_cfg_render_threads_max;
+    state->cfg_volume = ini_cfg_volume;
+    state->cfg_y_proj_scale = ini_cfg_y_proj_scale;
 
     door_data_dst = player_debug_table_size_with_sentinel(state->level.door_data, 22u);
     switch_data_dst = player_debug_table_size_with_sentinel(state->level.switch_data, 14u);

@@ -30,6 +30,7 @@
 #include "input.h"
 #include "audio.h"
 #include "io.h"
+#include "settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -427,6 +428,8 @@ void play_game(GameState *state)
     state->mode = MODE_SINGLE;
 
     printf("[CONTROL] PlayGame starting\n");
+    /* Re-read ab3d.ini so prefs match the file on disk (exe dir / fallbacks). */
+    settings_load(state);
     settings_log_recap(state);
 
     /* ---- Load shared assets ---- */
