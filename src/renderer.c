@@ -4376,12 +4376,9 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
 
             /* Polygon height in world coords (same scale as y_off: *256). */
             int32_t poly_h_world = (int32_t)ypos << 6; /* ASM: asl.l #6,d7 */
-            /* Keep floor/roof tied to live zone values so moving lifts/doors update each frame. */
+            /* Amiga itsafloordraw uses per-polygon ypos from the stream.
+             * Dynamic anim code (door/lift/water) patches those words in LEVELGRAPHICS. */
             int32_t draw_h_world = poly_h_world;
-            if (entry_type == 1)
-                draw_h_world = zone_floor;
-            else if (entry_type == 2)
-                draw_h_world = zone_roof;
             /* AB3DI itsafloordraw early reject:
              *   if (ypos_world < TOPOFROOM) skip (water path uses checkforwater)
              *   if (ypos_world > BOTOFROOM) skip */
