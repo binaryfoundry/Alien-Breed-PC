@@ -195,6 +195,10 @@ typedef struct {
     int16_t  num_zone_graph_entries; /* 8-byte rows at zone_graph_adds until next graphics section; 0 = unknown */
     int32_t  num_floor_lines;    /* Number of floor/wall line segments (for brute-force collision) */
 
+    /* O(1) byte offset into level->data -> zone_adds slot index (LOS / visibility). Built in level_parse. */
+    int16_t *zone_index_by_data_offset;
+    size_t   zone_index_by_data_offset_len;
+
     /* Automap: seen wall list + lookup set.
      * Single-threaded for now; updated from renderer wall draw. */
     AutomapSeenWall *automap_seen_walls;

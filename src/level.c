@@ -26,6 +26,8 @@ static int32_t read_long(const uint8_t *p)
     return (int32_t)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
 }
 
+static void level_build_zone_index_by_data_offset(LevelState *level);
+
 /* 0=static, 1=pulse, 2=flicker, 3=fire. Amiga uses high byte only (lsr.w #8,d3; tst.b d3). */
 static inline unsigned zone_bright_anim_type(int16_t word)
 {
@@ -806,6 +808,8 @@ int level_parse(LevelState *level)
 
     log_broken_floor_line_connects(level);
 
+    level_build_zone_index_by_data_offset(level);
+
     return 0;
 }
 
@@ -912,10 +916,56 @@ int level_connect_to_zone_index(const LevelState *level, int16_t connect)
     return -1;
 }
 
+/* Dense map: byte offset into level->data -> first matching zone_adds slot (int16_t -1 = unused). */
+static void level_build_zone_index_by_data_offset(LevelState *level)
+{
+    free(level->zone_index_by_data_offset);
+    level->zone_index_by_data_offset = NULL;
+    level->zone_index_by_data_offset_len = 0;
+
+    if (!level || !level->zone_adds || !level->data)
+        return;
+
+    size_t len = level->data_byte_count;
+    /* Skip if size unknown or map would be unreasonably large */
+    if (len == 0 || len > (size_t)16u * 1024u * 1024u)
+        return;
+
+    int zone_slots = level_zone_slot_count(level);
+    if (zone_slots <= 0)
+        return;
+
+    int16_t *map = (int16_t *)malloc(len * sizeof(int16_t));
+    if (!map)
+        return;
+
+    memset(map, 0xFF, len * sizeof(int16_t)); /* -1 */
+
+    for (int z = 0; z < zone_slots; z++) {
+        int32_t zoff = read_long(level->zone_adds + (size_t)z * 4u);
+        if (zoff < 0 || (size_t)zoff >= len)
+            continue;
+        if (map[(size_t)zoff] < 0)
+            map[(size_t)zoff] = (int16_t)z;
+    }
+
+    level->zone_index_by_data_offset = map;
+    level->zone_index_by_data_offset_len = len;
+}
+
 int level_zone_index_from_room_offset(const LevelState *level, int32_t room_offset)
 {
     if (!level || !level->zone_adds || room_offset < 0)
         return -1;
+
+    if (level->zone_index_by_data_offset &&
+        (size_t)room_offset < level->zone_index_by_data_offset_len) {
+        int16_t z = level->zone_index_by_data_offset[(size_t)room_offset];
+        if (z >= 0)
+            return (int)z;
+        return -1;
+    }
+
     {
         int zone_slots = level_zone_slot_count(level);
         for (int z = 0; z < zone_slots; z++) {

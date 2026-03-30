@@ -762,6 +762,10 @@ void io_release_level_memory(LevelState *level)
     level->automap_seen_hash = NULL;
     level->automap_seen_hash_cap = 0;
 
+    free(level->zone_index_by_data_offset);
+    level->zone_index_by_data_offset = NULL;
+    level->zone_index_by_data_offset_len = 0;
+
     /* player_shot_data and nasty_shot_data point into the data buffer
      * when loaded from real files (level_parse resolves them as offsets
      * into level->data). Only free them if they DON'T point into data. */

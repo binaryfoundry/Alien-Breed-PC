@@ -67,18 +67,10 @@ static inline int reg_btst32(uint32_t value, unsigned int bit_index)
 #define DOOR_TYPE_ALWAYS_OPEN  4
 #define DOOR_TYPE_NEVER_OPEN  5
 
-/* Return zone index whose zone data pointer equals room, or -1. */
+/* Return zone_adds slot index for room pointer, or -1. */
 static int16_t zone_index_from_room(const LevelState *level, const uint8_t *room)
 {
-    if (!level->zone_adds || !level->data || room < level->data) return -1;
-    int zone_slots = level_zone_slot_count(level);
-    if (zone_slots <= 0) return -1;
-    int32_t room_off = (int32_t)(room - level->data);
-    for (int16_t z = 0; z < zone_slots; z++) {
-        int32_t zoff = (int32_t)read_be32(level->zone_adds + (unsigned)z * 4u);
-        if (zoff == room_off) return z;
-    }
-    return -1;
+    return (int16_t)level_zone_index_from_room_ptr(level, room);
 }
 
 /* Return true if exit line_idx from zone current_zone_id is blocked by a closed door. */
@@ -209,6 +201,16 @@ void order_zones(ZoneOrder *out, const LevelState *level,
     next[num_zones - 1] = -1;
     int head = 0, tail = num_zones - 1;
 
+    /* zone_id (0..255) -> linked-list node index; -1 if not in this frame's visible set */
+    int zone_id_to_node[256];
+    for (int zi = 0; zi < 256; zi++)
+        zone_id_to_node[zi] = -1;
+    for (int i = 0; i < num_zones; i++) {
+        int16_t zid = node_zone[i];
+        if (zid >= 0 && zid < 256)
+            zone_id_to_node[zid] = i;
+    }
+
     /* RunThroughList: multiple passes, each pass walk list from tail to head.
      * Early-exit: if a pass made no reorderings the list is already stable. */
     enum { k_order_passes = 100 };
@@ -258,10 +260,9 @@ void order_zones(ZoneOrder *out, const LevelState *level,
                         }
 
                         /* mustdo: connected is further; if it's earlier in list, move current in front of it (Amiga iscloser). */
-                        int conn_node = -1;
-                        for (int k = 0; k < num_zones; k++) {
-                            if (node_zone[k] == connect_index) { conn_node = k; break; }
-                        }
+                        int conn_node = (connect_index >= 0 && connect_index < 256)
+                                            ? zone_id_to_node[connect_index]
+                                            : -1;
                         if (conn_node < 0) continue;
                         if (!node_before(head, conn_node, node, next)) continue;  /* connected not earlier, nothing to do */
                         if (node == head) head = (next[node] >= 0) ? next[node] : node;

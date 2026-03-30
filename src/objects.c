@@ -1406,9 +1406,6 @@ void objects_update(GameState *state)
             object_handle_bullet(bullet, state);
         }
     }
-
-    /* 5. Brightness animations */
-    bright_anim_handler(state);
 }
 
 /* -----------------------------------------------------------------------
@@ -4222,34 +4219,31 @@ void use_player2(GameState *state)
  * For each object, determine if it's in the player's field of view
  * and calculate its distance. Used by auto-aim and rendering.
  * ----------------------------------------------------------------------- */
-void calc_plr1_in_line(GameState *state)
+static void calc_plr_in_line_for(LevelState *level, const PlayerState *plr,
+                                 int8_t *obs_out, int16_t *dists_out)
 {
-    if (!state->level.object_data || !state->level.object_points) return;
-    memset(plr1_obs_in_line, 0, sizeof(plr1_obs_in_line));
-    memset(plr1_obj_dists, 0, sizeof(plr1_obj_dists));
+    int16_t sin_val = plr->sinval;
+    int16_t cos_val = plr->cosval;
+    int16_t plr_x = (int16_t)(plr->xoff >> 16);
+    int16_t plr_z = (int16_t)(plr->zoff >> 16);
 
-    int16_t sin_val = state->plr1.sinval;
-    int16_t cos_val = state->plr1.cosval;
-    int16_t plr_x = (int16_t)(state->plr1.xoff >> 16);
-    int16_t plr_z = (int16_t)(state->plr1.zoff >> 16);
-
-    int point_count = state->level.num_object_points;
+    int point_count = level->num_object_points;
     if (point_count < 0) point_count = 0;
     if (point_count > MAX_OBJECTS) point_count = MAX_OBJECTS;
 
     for (int i = 0; i < point_count; i++) {
-        GameObject *obj = get_object(&state->level, i);
+        GameObject *obj = get_object(level, i);
         if (!obj) break;
         if (OBJ_CID(obj) < 0) break;
 
         if (OBJ_ZONE(obj) < 0) {
-            plr1_obs_in_line[i] = 0;
-            plr1_obj_dists[i] = 0;
+            obs_out[i] = 0;
+            dists_out[i] = 0;
             continue;
         }
 
         /* Amiga CalcPLR1InLine walks ObjectPoints and ObjectData in slot order. */
-        const uint8_t *pt = state->level.object_points + (size_t)i * 8u;
+        const uint8_t *pt = level->object_points + (size_t)i * 8u;
         int16_t ox = obj_w(pt + 0);
         int16_t oz = obj_w(pt + 4);
         int16_t dx = (int16_t)(ox - plr_x);
@@ -4276,15 +4270,23 @@ void calc_plr1_in_line(GameState *state)
             if (half_perp <= box_width) in_line = -1;
         }
 
-        plr1_obs_in_line[i] = in_line;
-        plr1_obj_dists[i] = fwd;
+        obs_out[i] = in_line;
+        dists_out[i] = fwd;
 
         /* PlayerShoot reads ObjDists by CID; keep that mapping synced too. */
         {
             int16_t cid = OBJ_CID(obj);
-            if (cid >= 0 && cid < MAX_OBJECTS) plr1_obj_dists[cid] = fwd;
+            if (cid >= 0 && cid < MAX_OBJECTS) dists_out[cid] = fwd;
         }
     }
+}
+
+void calc_plr1_in_line(GameState *state)
+{
+    if (!state->level.object_data || !state->level.object_points) return;
+    memset(plr1_obs_in_line, 0, sizeof(plr1_obs_in_line));
+    memset(plr1_obj_dists, 0, sizeof(plr1_obj_dists));
+    calc_plr_in_line_for(&state->level, &state->plr1, plr1_obs_in_line, plr1_obj_dists);
 }
 
 void calc_plr2_in_line(GameState *state)
@@ -4292,61 +4294,6 @@ void calc_plr2_in_line(GameState *state)
     if (!state->level.object_data || !state->level.object_points) return;
     memset(plr2_obs_in_line, 0, sizeof(plr2_obs_in_line));
     memset(plr2_obj_dists, 0, sizeof(plr2_obj_dists));
-
-    int16_t sin_val = state->plr2.sinval;
-    int16_t cos_val = state->plr2.cosval;
-    int16_t plr_x = (int16_t)(state->plr2.xoff >> 16);
-    int16_t plr_z = (int16_t)(state->plr2.zoff >> 16);
-
-    int point_count = state->level.num_object_points;
-    if (point_count < 0) point_count = 0;
-    if (point_count > MAX_OBJECTS) point_count = MAX_OBJECTS;
-
-    for (int i = 0; i < point_count; i++) {
-        GameObject *obj = get_object(&state->level, i);
-        if (!obj) break;
-        if (OBJ_CID(obj) < 0) break;
-
-        if (OBJ_ZONE(obj) < 0) {
-            plr2_obs_in_line[i] = 0;
-            plr2_obj_dists[i] = 0;
-            continue;
-        }
-
-        const uint8_t *pt = state->level.object_points + (size_t)i * 8u;
-        int16_t ox = obj_w(pt + 0);
-        int16_t oz = obj_w(pt + 4);
-        int16_t dx = (int16_t)(ox - plr_x);
-        int16_t dz = (int16_t)(oz - plr_z);
-
-        int obj_type = (uint8_t)obj->obj.number;
-        int16_t box_width = 40;
-        if (obj_type >= 0 && obj_type <= 20) {
-            box_width = col_box_table[obj_type].width;
-        }
-
-        int32_t cross = (int32_t)(((int64_t)dx * cos_val) - ((int64_t)dz * sin_val));
-        cross = (int32_t)((uint32_t)cross << 1);
-        if (cross <= 0) cross = -cross;
-        int16_t perp = (int16_t)(((uint32_t)cross) >> 16);
-
-        int32_t dot = (int32_t)(((int64_t)dx * sin_val) + ((int64_t)dz * cos_val));
-        dot = (int32_t)((uint32_t)dot << 2);
-        int16_t fwd = (int16_t)(((uint32_t)dot) >> 16);
-
-        int8_t in_line = 0;
-        if (fwd > 0) {
-            int16_t half_perp = (int16_t)(perp >> 1);
-            if (half_perp <= box_width) in_line = -1;
-        }
-
-        plr2_obs_in_line[i] = in_line;
-        plr2_obj_dists[i] = fwd;
-
-        {
-            int16_t cid = OBJ_CID(obj);
-            if (cid >= 0 && cid < MAX_OBJECTS) plr2_obj_dists[cid] = fwd;
-        }
-    }
+    calc_plr_in_line_for(&state->level, &state->plr2, plr2_obs_in_line, plr2_obj_dists);
 }
 
