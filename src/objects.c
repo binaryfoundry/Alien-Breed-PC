@@ -66,6 +66,9 @@ static int16_t anim_timer = 2;
  * Amiga: alan[] has 8 copies of each value 0-3 → 32 entries, cycles at game tick rate. */
 static uint8_t walk_cycle = 0;
 
+/* Gib floor/wall splat (sample 13): only one per objects_update — many gibs can time out together. */
+static bool gib_impact_splat_sound_this_update;
+
 enum {
     ENEMY_OBJ_TIMER_OFF    = 16, /* ObjTimer   (raw+34) */
     ENEMY_SEC_TIMER_OFF    = 18, /* SecTimer   (raw+36) */
@@ -1155,6 +1158,8 @@ static void game_apply_all_keys_from_level(const GameState *state)
 void objects_update(GameState *state)
 {
     const int zone_slots = level_zone_slot_count(&state->level);
+
+    gib_impact_splat_sound_this_update = false;
 
     /* 1. Update player zones (from room pointer if available) */
     /* Zone is already maintained by player_full_control -> MoveObject */
@@ -2762,8 +2767,9 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             audio_play_sample(bullet_types[shot_size].hit_noise,
                               bullet_types[shot_size].hit_volume);
         }
-        /* Gibs: splatter sound when they hit floor/roof/wall */
-        if (shot_size >= 50) {
+        /* Gibs: splatter sound when they hit floor/roof/wall (one per logic tick max). */
+        if (shot_size >= 50 && !gib_impact_splat_sound_this_update) {
+            gib_impact_splat_sound_this_update = true;
             audio_play_sample(13, 64);  /* splotch */
         }
 
