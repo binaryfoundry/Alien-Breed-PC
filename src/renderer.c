@@ -41,6 +41,61 @@
 #include <limits.h>
 #include <math.h>
 
+#if defined(__SSE2__) || (defined(_MSC_VER) && (defined(_M_AMD64) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)))
+#include <emmintrin.h>
+#define AB3D_HAVE_SSE2 1
+#else
+#define AB3D_HAVE_SSE2 0
+#endif
+
+/* Non-temporal blit: reduces RFO/cache pollution when writing cold global framebuffers from workers. */
+#if AB3D_HAVE_SSE2
+static void nt_blit_u8(uint8_t *dst, const uint8_t *src, size_t count)
+{
+    size_t i = 0;
+    while (i < count && (((uintptr_t)(dst + i)) & 15u) != 0) {
+        dst[i] = src[i];
+        i++;
+    }
+    for (; i + 16 <= count; i += 16) {
+        __m128i v = _mm_loadu_si128((const __m128i *)(src + i));
+        _mm_stream_si128((__m128i *)(dst + i), v);
+    }
+    for (; i < count; i++)
+        dst[i] = src[i];
+}
+
+static void nt_blit_u16(uint16_t *dst, const uint16_t *src, size_t count)
+{
+    size_t i = 0;
+    while (i < count && (((uintptr_t)(dst + i)) & 15u) != 0) {
+        dst[i] = src[i];
+        i++;
+    }
+    for (; i + 8 <= count; i += 8) {
+        __m128i v = _mm_loadu_si128((const __m128i *)(src + i));
+        _mm_stream_si128((__m128i *)(dst + i), v);
+    }
+    for (; i < count; i++)
+        dst[i] = src[i];
+}
+#else
+#define nt_blit_u8(d, s, n)  memcpy((d), (s), (n))
+#define nt_blit_u16(d, s, n) memcpy((d), (s), (n) * sizeof(uint16_t))
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#define AB3D_PREFETCH_READ(p)  __builtin_prefetch((p), 0, 0)
+#define AB3D_PREFETCH_WRITE(p) __builtin_prefetch((p), 1, 0)
+#elif AB3D_HAVE_SSE2
+#include <xmmintrin.h>
+#define AB3D_PREFETCH_READ(p)  _mm_prefetch((const char *)(p), _MM_HINT_T0)
+#define AB3D_PREFETCH_WRITE(p) _mm_prefetch((const char *)(p), _MM_HINT_T1)
+#else
+#define AB3D_PREFETCH_READ(p)  ((void)0)
+#define AB3D_PREFETCH_WRITE(p) ((void)0)
+#endif
+
 /* Floor/ceiling UV step per pixel: d1>>FLOOR_STEP_SHIFT (same at any width so texture scale is correct). */
 #define FLOOR_STEP_SHIFT  (6 + RENDER_SCALE_LOG2)  /* d1>>9 at RENDER_SCALE=8 */
 /* Camera UV scale in fixed-point, matching Amiga sxoff/szoff setup in pastsides:
@@ -1057,14 +1112,15 @@ static int renderer_thread_worker_main(void *userdata)
                     if (w > 0 && copy_rows > 0) {
                         size_t row0 = (size_t)row_start * (size_t)w;
                         size_t pix_count = (size_t)copy_rows * (size_t)w;
-                        memcpy(g_renderer.buffer + row0, worker->local_buf + row0,
-                               pix_count * sizeof(uint8_t));
+                        nt_blit_u8(g_renderer.buffer + row0, worker->local_buf + row0, pix_count);
                         if (g_renderer_rgb_raster_expand) {
                             memcpy(g_renderer.rgb_buffer + row0, worker->local_rgb + row0,
                                    pix_count * sizeof(uint32_t));
                         }
-                        memcpy(g_renderer.cw_buffer + row0, worker->local_cw + row0,
-                               pix_count * sizeof(uint16_t));
+                        nt_blit_u16(g_renderer.cw_buffer + row0, worker->local_cw + row0, pix_count);
+#if AB3D_HAVE_SSE2
+                        _mm_sfence();
+#endif
                     }
                 }
             } else if (job_type == RENDERER_THREAD_JOB_WATER_TINT) {
@@ -1305,7 +1361,7 @@ static int renderer_dispatch_threaded_world(GameState *state,
     int height = g_renderer.height;
     if (height <= 0) return 0;
 
-    int active_workers = renderer_prepare_worker_rows(pool, height, 0, 1);
+    int active_workers = renderer_prepare_worker_rows(pool, height, 1, 1);
     if (active_workers <= 0) {
         return 0;
     }
@@ -2683,6 +2739,7 @@ static void draw_wall_column(RenderSliceContext *ctx,
     uint32_t *rgb = renderer_active_rgb();
     uint16_t *cw = renderer_active_cw();
     if (!buf || !rgb || !cw) return;
+    const int expand = g_renderer_rgb_raster_expand;
     if (x < ctx->left_clip || x >= ctx->right_clip) return;
 
     int width = g_renderer.width;
@@ -2762,7 +2819,7 @@ static void draw_wall_column(RenderSliceContext *ctx,
             for (int ti = 0; ti < 32; ti++) {
                 int lut_off = lut_block_off + ti * 2;
                 uint16_t c12 = ((uint16_t)pal[lut_off] << 8) | pal[lut_off + 1];
-                if (g_renderer_rgb_raster_expand)
+                if (expand)
                     ctx->wall_cache_argb[ti] = amiga12_to_argb(c12);
                 ctx->wall_cache_cw[ti] = c12;
             }
@@ -2781,64 +2838,126 @@ static void draw_wall_column(RenderSliceContext *ctx,
     size_t pix = (size_t)ct * (size_t)width + (size_t)x;
     if (texture && pal && strip_offset >= 0) {
         if (pack_mode == 0) {
-            for (int y = ct; y <= cb; y++) {
-                int byte_off = strip_offset + (((int)(tex_y >> 16) & valand) << 1);
-                uint16_t word = ((uint16_t)texture[byte_off] << 8)
-                              | (uint16_t)texture[byte_off + 1];
-                uint8_t texel5 = (uint8_t)(word & 31u);
-                buf[pix] = 2; /* tag: wall */
-                if (g_renderer_rgb_raster_expand)
+            if (expand) {
+                for (int y = ct; y <= cb; y++) {
+                    AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
+                    int byte_off = strip_offset + (((int)(tex_y >> 16) & valand) << 1);
+                    uint16_t word = ((uint16_t)texture[byte_off] << 8)
+                                  | (uint16_t)texture[byte_off + 1];
+                    uint8_t texel5 = (uint8_t)(word & 31u);
+                    buf[pix] = 2; /* tag: wall */
                     rgb[pix] = ctx->wall_cache_argb[texel5];
-                cw[pix] = ctx->wall_cache_cw[texel5];
-                pix += (size_t)width;
-                tex_y += tex_step;
+                    cw[pix] = ctx->wall_cache_cw[texel5];
+                    pix += (size_t)width;
+                    tex_y += tex_step;
+                }
+            } else {
+                for (int y = ct; y <= cb; y++) {
+                    AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
+                    int byte_off = strip_offset + (((int)(tex_y >> 16) & valand) << 1);
+                    uint16_t word = ((uint16_t)texture[byte_off] << 8)
+                                  | (uint16_t)texture[byte_off + 1];
+                    uint8_t texel5 = (uint8_t)(word & 31u);
+                    buf[pix] = 2; /* tag: wall */
+                    cw[pix] = ctx->wall_cache_cw[texel5];
+                    pix += (size_t)width;
+                    tex_y += tex_step;
+                }
             }
         } else if (pack_mode == 1) {
-            for (int y = ct; y <= cb; y++) {
-                int byte_off = strip_offset + (((int)(tex_y >> 16) & valand) << 1);
-                uint16_t word = ((uint16_t)texture[byte_off] << 8)
-                              | (uint16_t)texture[byte_off + 1];
-                uint8_t texel5 = (uint8_t)((word >> 5) & 31u);
-                buf[pix] = 2; /* tag: wall */
-                if (g_renderer_rgb_raster_expand)
+            if (expand) {
+                for (int y = ct; y <= cb; y++) {
+                    AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
+                    int byte_off = strip_offset + (((int)(tex_y >> 16) & valand) << 1);
+                    uint16_t word = ((uint16_t)texture[byte_off] << 8)
+                                  | (uint16_t)texture[byte_off + 1];
+                    uint8_t texel5 = (uint8_t)((word >> 5) & 31u);
+                    buf[pix] = 2; /* tag: wall */
                     rgb[pix] = ctx->wall_cache_argb[texel5];
-                cw[pix] = ctx->wall_cache_cw[texel5];
-                pix += (size_t)width;
-                tex_y += tex_step;
+                    cw[pix] = ctx->wall_cache_cw[texel5];
+                    pix += (size_t)width;
+                    tex_y += tex_step;
+                }
+            } else {
+                for (int y = ct; y <= cb; y++) {
+                    AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
+                    int byte_off = strip_offset + (((int)(tex_y >> 16) & valand) << 1);
+                    uint16_t word = ((uint16_t)texture[byte_off] << 8)
+                                  | (uint16_t)texture[byte_off + 1];
+                    uint8_t texel5 = (uint8_t)((word >> 5) & 31u);
+                    buf[pix] = 2; /* tag: wall */
+                    cw[pix] = ctx->wall_cache_cw[texel5];
+                    pix += (size_t)width;
+                    tex_y += tex_step;
+                }
             }
         } else {
-            for (int y = ct; y <= cb; y++) {
-                int byte_off = strip_offset + (((int)(tex_y >> 16) & valand) << 1);
-                uint16_t word = ((uint16_t)texture[byte_off] << 8)
-                              | (uint16_t)texture[byte_off + 1];
-                uint8_t texel5 = (uint8_t)((word >> 10) & 31u);
-                buf[pix] = 2; /* tag: wall */
-                if (g_renderer_rgb_raster_expand)
+            if (expand) {
+                for (int y = ct; y <= cb; y++) {
+                    AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
+                    int byte_off = strip_offset + (((int)(tex_y >> 16) & valand) << 1);
+                    uint16_t word = ((uint16_t)texture[byte_off] << 8)
+                                  | (uint16_t)texture[byte_off + 1];
+                    uint8_t texel5 = (uint8_t)((word >> 10) & 31u);
+                    buf[pix] = 2; /* tag: wall */
                     rgb[pix] = ctx->wall_cache_argb[texel5];
-                cw[pix] = ctx->wall_cache_cw[texel5];
-                pix += (size_t)width;
-                tex_y += tex_step;
+                    cw[pix] = ctx->wall_cache_cw[texel5];
+                    pix += (size_t)width;
+                    tex_y += tex_step;
+                }
+            } else {
+                for (int y = ct; y <= cb; y++) {
+                    AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
+                    int byte_off = strip_offset + (((int)(tex_y >> 16) & valand) << 1);
+                    uint16_t word = ((uint16_t)texture[byte_off] << 8)
+                                  | (uint16_t)texture[byte_off + 1];
+                    uint8_t texel5 = (uint8_t)((word >> 10) & 31u);
+                    buf[pix] = 2; /* tag: wall */
+                    cw[pix] = ctx->wall_cache_cw[texel5];
+                    pix += (size_t)width;
+                    tex_y += tex_step;
+                }
             }
         }
     } else if (texture && pal) {
         uint32_t argb0 = ctx->wall_cache_argb[0];
         uint16_t cw0 = ctx->wall_cache_cw[0];
-        for (int y = ct; y <= cb; y++) {
-            buf[pix] = 2; /* tag: wall */
-            if (g_renderer_rgb_raster_expand)
+        if (expand) {
+            for (int y = ct; y <= cb; y++) {
+                AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
+                buf[pix] = 2; /* tag: wall */
                 rgb[pix] = argb0;
-            cw[pix] = cw0;
-            pix += (size_t)width;
-            tex_y += tex_step;
+                cw[pix] = cw0;
+                pix += (size_t)width;
+                tex_y += tex_step;
+            }
+        } else {
+            for (int y = ct; y <= cb; y++) {
+                AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
+                buf[pix] = 2; /* tag: wall */
+                cw[pix] = cw0;
+                pix += (size_t)width;
+                tex_y += tex_step;
+            }
         }
     } else {
-        for (int y = ct; y <= cb; y++) {
-            buf[pix] = 2; /* tag: wall */
-            if (g_renderer_rgb_raster_expand)
+        if (expand) {
+            for (int y = ct; y <= cb; y++) {
+                AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
+                buf[pix] = 2; /* tag: wall */
                 rgb[pix] = fallback;
-            cw[pix] = fallback_cw;
-            pix += (size_t)width;
-            tex_y += tex_step;
+                cw[pix] = fallback_cw;
+                pix += (size_t)width;
+                tex_y += tex_step;
+            }
+        } else {
+            for (int y = ct; y <= cb; y++) {
+                AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
+                buf[pix] = 2; /* tag: wall */
+                cw[pix] = fallback_cw;
+                pix += (size_t)width;
+                tex_y += tex_step;
+            }
         }
     }
 
@@ -2848,19 +2967,19 @@ static void draw_wall_column(RenderSliceContext *ctx,
         size_t last_pix = (size_t)cb * (size_t)width + (size_t)x;
         uint16_t edge_top_cw = cw[first_pix];
         uint16_t edge_bot_cw = cw[last_pix];
-        uint32_t edge_top_rgb = g_renderer_rgb_raster_expand ? rgb[first_pix] : amiga12_to_argb(edge_top_cw);
-        uint32_t edge_bot_rgb = g_renderer_rgb_raster_expand ? rgb[last_pix] : amiga12_to_argb(edge_bot_cw);
+        uint32_t edge_top_rgb = expand ? rgb[first_pix] : amiga12_to_argb(edge_top_cw);
+        uint32_t edge_bot_rgb = expand ? rgb[last_pix] : amiga12_to_argb(edge_bot_cw);
         if (ct > ctx->top_clip) {
             size_t up = first_pix - (size_t)width;
             buf[up] = 2;
-            if (g_renderer_rgb_raster_expand)
+            if (expand)
                 rgb[up] = edge_top_rgb;
             cw[up] = edge_top_cw;
         }
         if (cb + 1 <= ctx->bot_clip) {
             size_t dn = last_pix + (size_t)width;
             buf[dn] = 2;
-            if (g_renderer_rgb_raster_expand)
+            if (expand)
                 rgb[dn] = edge_bot_rgb;
             cw[dn] = edge_bot_cw;
         }
@@ -2871,18 +2990,18 @@ static void draw_wall_column(RenderSliceContext *ctx,
         for (int row = ct; row <= cb; row++) {
             size_t mid = (size_t)row * (size_t)width + (size_t)x;
             uint16_t wv = cw[mid];
-            uint32_t c = g_renderer_rgb_raster_expand ? rgb[mid] : amiga12_to_argb(wv);
+            uint32_t c = expand ? rgb[mid] : amiga12_to_argb(wv);
             if (x > ctx->slice_left) {
                 size_t L = mid - 1;
                 buf[L] = 2;
-                if (g_renderer_rgb_raster_expand)
+                if (expand)
                     rgb[L] = c;
                 cw[L] = wv;
             }
             if (x + 1 < ctx->slice_right) {
                 size_t R = mid + 1;
                 buf[R] = 2;
-                if (g_renderer_rgb_raster_expand)
+                if (expand)
                     rgb[R] = c;
                 cw[R] = wv;
             }
@@ -3140,6 +3259,8 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
     int xr = (x_right >= ctx->right_clip) ? ctx->right_clip - 1 : x_right;
     if (xl > xr) return;
 
+    const int expand = g_renderer_rgb_raster_expand;
+
     int center = rs->height / 2;  /* Match wall/floor projection center */
     int row_dist = y - center;
     if (row_dist == 0) row_dist = (y < center) ? -1 : 1;
@@ -3357,17 +3478,40 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
 
     /* Fast non-water textured path: no per-pixel branching. */
     if (use_span_lut && span_argb && span_cw) {
-        uint8_t *p8 = row8;
-        uint32_t *p32 = row32;
-        uint16_t *p16 = row16;
-        for (int i = 0; i < span_len; i++) {
-            uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
-            u_fp += (uint32_t)u_step;
-            v_fp += (uint32_t)v_step;
+        if (expand) {
+            uint8_t *p8 = row8;
+            uint32_t *p32 = row32;
+            uint16_t *p16 = row16;
+            for (int i = 0; i < span_len; i++) {
+                if (i + 8 < span_len) {
+                    uint32_t ua = u_fp + (uint32_t)u_step * 8u;
+                    uint32_t va = v_fp + (uint32_t)v_step * 8u;
+                    AB3D_PREFETCH_READ(&texture[((((ua >> 16) & 63u)) << 2) | ((((va >> 16) & 63u)) << 10)]);
+                }
+                uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
+                u_fp += (uint32_t)u_step;
+                v_fp += (uint32_t)v_step;
 
-            *p8++ = 1;
-            RASTER_PUT_PP(&p32, span_argb[texel]);
-            *p16++ = span_cw[texel];
+                *p8++ = 1;
+                *p32++ = span_argb[texel];
+                *p16++ = span_cw[texel];
+            }
+        } else {
+            uint8_t *p8 = row8;
+            uint16_t *p16 = row16;
+            for (int i = 0; i < span_len; i++) {
+                if (i + 8 < span_len) {
+                    uint32_t ua = u_fp + (uint32_t)u_step * 8u;
+                    uint32_t va = v_fp + (uint32_t)v_step * 8u;
+                    AB3D_PREFETCH_READ(&texture[((((ua >> 16) & 63u)) << 2) | ((((va >> 16) & 63u)) << 10)]);
+                }
+                uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
+                u_fp += (uint32_t)u_step;
+                v_fp += (uint32_t)v_step;
+
+                *p8++ = 1;
+                *p16++ = span_cw[texel];
+            }
         }
         /* Water: keep top/bottom strip overlap, but skip left/right span halo. */
         return;
@@ -3568,15 +3712,37 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
 
         {
             const uint8_t *lut = pal_lut_src + floor_pal_level * 512;
-            for (int i = 0; i < span_len; i++) {
-                uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
-                u_fp += (uint32_t)u_step;
-                v_fp += (uint32_t)v_step;
-                uint16_t out_cw = (uint16_t)((lut[texel * 2] << 8) | lut[texel * 2 + 1]);
+            if (expand) {
+                for (int i = 0; i < span_len; i++) {
+                    if (i + 8 < span_len) {
+                        uint32_t ua = u_fp + (uint32_t)u_step * 8u;
+                        uint32_t va = v_fp + (uint32_t)v_step * 8u;
+                        AB3D_PREFETCH_READ(&texture[((((ua >> 16) & 63u)) << 2) | ((((va >> 16) & 63u)) << 10)]);
+                    }
+                    uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
+                    u_fp += (uint32_t)u_step;
+                    v_fp += (uint32_t)v_step;
+                    uint16_t out_cw = (uint16_t)((lut[texel * 2] << 8) | lut[texel * 2 + 1]);
 
-                *p8++ = 1;
-                RASTER_PUT_PP(&p32, amiga12_to_argb(out_cw));
-                *p16++ = out_cw;
+                    *p8++ = 1;
+                    *p32++ = amiga12_to_argb(out_cw);
+                    *p16++ = out_cw;
+                }
+            } else {
+                for (int i = 0; i < span_len; i++) {
+                    if (i + 8 < span_len) {
+                        uint32_t ua = u_fp + (uint32_t)u_step * 8u;
+                        uint32_t va = v_fp + (uint32_t)v_step * 8u;
+                        AB3D_PREFETCH_READ(&texture[((((ua >> 16) & 63u)) << 2) | ((((va >> 16) & 63u)) << 10)]);
+                    }
+                    uint8_t texel = texture[((((u_fp >> 16) & 63u)) << 2) | ((((v_fp >> 16) & 63u)) << 10)];
+                    u_fp += (uint32_t)u_step;
+                    v_fp += (uint32_t)v_step;
+                    uint16_t out_cw = (uint16_t)((lut[texel * 2] << 8) | lut[texel * 2 + 1]);
+
+                    *p8++ = 1;
+                    *p16++ = out_cw;
+                }
             }
             floor_span_extend_horizontal_edges(ctx, y, xl, xr, w, buf, rgb, cwbuf);
             return;
