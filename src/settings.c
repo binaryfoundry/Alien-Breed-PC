@@ -213,7 +213,6 @@ void settings_load(GameState *state)
     if (try_load_settings_file(state, "ab3d.ini", " (from working directory)")) return;
     if (try_load_settings_file(state, "ab3d.ini.template", " (from working directory)")) return;
     if (try_load_settings_file(state, "data/ab3d.ini", " (from working directory data/)")) return;
-    if (try_load_settings_file(state, "data/ab3d.ini.template", " (from working directory data/)")) return;
 
     if (base && *base) {
         printf("[SETTINGS] No ab3d.ini or ab3d.ini.template in %s (or working directory fallbacks)\n", base);

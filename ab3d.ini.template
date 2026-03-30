@@ -1,0 +1,48 @@
+# Alien Breed 3D I — PC port settings
+#
+# Source at repository root (ab3d.ini.template). Incremental builds keep ab3d.ini
+# next to ab3d1.exe if it already exists. After a full Clean (or Rebuild), that
+# file is removed and the next Build copies this template to ab3d.ini. The game
+# loads ab3d.ini first, then ab3d.ini.template in the same folder only if ab3d.ini is missing.
+
+# Starting level index: 0 = first level, 15 = last (16 levels total).
+start_level=0
+
+# 1 = health stays at maximum (no damage from enemies/environment).
+infinite_health=0
+
+# 1 = weapons do not consume ammo.
+infinite_ammo=0
+
+# 1 = start with every weapon unlocked and full ammo (both players).
+all_weapons=1
+
+# 1 = treat every key in the level as collected (door/lift condition bits only; switches unchanged).
+all_keys=0
+
+# Master sound effects volume: 0 = silent, 100 = full (linear scale).
+volume=100
+
+# Vertical projection scale (affects wall/floor/sprite vertical size vs depth).
+# 100 = default engine behavior; lower = flatter / wider vertical FOV feel, higher = taller.
+# Allowed range: 25..1000 (percent of engine default vertical scale).
+# Edit ab3d.ini next to ab3d1.exe (or this template if no ini exists there yet); repo-only edits are ignored.
+y_proj_scale=100
+
+# Internal software render resolution (game draws at this size). The window is
+# scaled to fit, centered, preserving aspect ratio (letterboxing as needed).
+render_width=1280
+render_height=720
+
+# Internal renderer multiplier.
+# 1 = normal internal size, 2 = 2x, 4 = 4x (supersampled, then downscaled).
+# Note: internal renderer size is capped to 4096x4096 and scales uniformly to keep aspect ratio.
+supersampling=1
+
+# 1 = split each zone across column slices (one SDL thread per slice, up to SDL_GetCPUCount).
+# 0 = single-threaded raster (also used if the build has threads disabled: AB3D_NO_THREADS).
+render_threads=1
+
+# Worker strip cap for threaded renderer:
+# 0 = auto (currently uses up to 12 strips), otherwise use at most this many strips (1..64).
+render_threads_max=0
