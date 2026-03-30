@@ -2359,10 +2359,13 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
     uint32_t enemy_flags = (plr_num == 1) ? 0x003FFDC1u : 0x003FF5E1u;
     uint8_t player_can_see_bit = (plr_num == 1) ? 0x01u : 0x02u;
 
-    /* Find closest target in line of fire */
+    /* Find closest target in line of fire; barrels win over other types (explosive priority). */
     int closest_idx = -1;
     int32_t closest_dist = 32767;
     int32_t closest_target_ydiff = 0;
+    int closest_barrel_idx = -1;
+    int32_t closest_barrel_dist = 32767;
+    int32_t closest_barrel_ydiff = 0;
     bool has_target = false;
 
     if (state->level.object_data) {
@@ -2396,11 +2399,24 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             int32_t abs_ydiff = (ydiff < 0) ? -ydiff : ydiff;
             if ((abs_ydiff / 44) > dist) continue;
 
-            if (dist <= closest_dist) {
-                closest_dist = dist;
-                closest_idx = i;
-                closest_target_ydiff = ydiff;
+            if (obj_type == OBJ_NBR_BARREL) {
+                if (dist <= closest_barrel_dist) {
+                    closest_barrel_dist = dist;
+                    closest_barrel_idx = i;
+                    closest_barrel_ydiff = ydiff;
+                }
+            } else {
+                if (dist <= closest_dist) {
+                    closest_dist = dist;
+                    closest_idx = i;
+                    closest_target_ydiff = ydiff;
+                }
             }
+        }
+        if (closest_barrel_idx >= 0) {
+            closest_idx = closest_barrel_idx;
+            closest_dist = closest_barrel_dist;
+            closest_target_ydiff = closest_barrel_ydiff;
         }
     }
     has_target = (closest_idx >= 0 && closest_dist > 0 && state->level.object_data);
