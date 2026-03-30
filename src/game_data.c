@@ -259,7 +259,7 @@ const CollisionBox col_box_table[21] = {
     /*  7: ?                     */ { 40,  20,  40, 0 },
     /*  8: Flying Nasty          */ { 80,  60, 120, 0 },
     /*  9: Ammo                  */ { 40,  20,  40, 0 },
-    /* 10: Barrel                */ { 40,  30,  60, 0 },
+    /* 10: Barrel (+45% height vs Amiga ColBox for port) */ { 40,  44,  87, 0 },
     /* 11: Player2               */ { 40,  40,  80, 0 },
     /* 12: Mutant Marine          */ { 40,  40,  80, 0 },
     /* 13: Worm                  */ { 80,  60, 120, 0 },
