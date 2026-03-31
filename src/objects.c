@@ -4074,15 +4074,45 @@ int pickup_distance_check(GameObject *obj, GameState *state, int player_num)
         return 0;
     }
 
-    int idx = (int)(((uint8_t*)obj - state->level.object_data) / OBJECT_SIZE);
+    int16_t cid = OBJ_CID(obj);
+    if (cid < 0 || !state->level.object_points ||
+        cid >= state->level.num_object_points) {
+        return 0;
+    }
+
     int16_t ox, oz;
-    get_object_pos(&state->level, idx, &ox, &oz);
+    get_object_pos(&state->level, (int)cid, &ox, &oz);
 
-    int32_t dx = plr->p_xoff - ox;
-    int32_t dz = plr->p_zoff - oz;
+    int32_t dx = (plr->xoff >> 16) - ox;
+    int32_t dz = (plr->zoff >> 16) - oz;
     int32_t dist_sq = dx * dx + dz * dz;
+    if (dist_sq >= PICKUP_DISTANCE_SQ) {
+        return 0;
+    }
 
-    return dist_sq < PICKUP_DISTANCE_SQ;
+    int16_t pickup_half_height = 20;
+    int obj_type = (int8_t)obj->obj.number;
+    if (obj_type >= 0 && obj_type < 21) {
+        pickup_half_height = col_box_table[obj_type].half_height;
+    }
+
+    int16_t obj_y = obj_w(obj->raw + 4);
+    int16_t obj_bot = obj_y - pickup_half_height;
+    int16_t obj_top = obj_y + pickup_half_height;
+
+    int16_t plr_bot = (int16_t)(plr->yoff >> 7);
+    int16_t plr_top = (int16_t)((plr->yoff + plr->height) >> 7);
+    if (plr_top < plr_bot) {
+        int16_t tmp = plr_top;
+        plr_top = plr_bot;
+        plr_bot = tmp;
+    }
+
+    if (plr_top < obj_bot || plr_bot > obj_top) {
+        return 0;
+    }
+
+    return 1;
 }
 
 /* -----------------------------------------------------------------------
