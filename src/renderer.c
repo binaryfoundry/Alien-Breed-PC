@@ -109,22 +109,34 @@ static inline int renderer_clamp_base_width(int w)
     return w;
 }
 
-/* Horizontal focal scale in internal-render pixels.
- * Keeps output FOV stable when supersampling changes internal width. */
-static inline int renderer_proj_x_scale_px(void)
+static inline int renderer_proj_x_scale_px_for_state(const RendererState *r, const GameState *state)
 {
-    int base_w = renderer_clamp_base_width(g_proj_base_width);
-    int cur_w = (g_renderer.width > 0) ? g_renderer.width : base_w;
+    int base_w = RENDER_DEFAULT_WIDTH;
+    if (state) base_w = renderer_clamp_base_width((int)state->cfg_render_width);
+    else base_w = renderer_clamp_base_width(g_proj_base_width);
+    int cur_w = (r && r->width > 0) ? r->width : base_w;
     int64_t s = ((int64_t)RENDER_SCALE * (int64_t)cur_w + (int64_t)base_w / 2) / (int64_t)base_w;
     if (s < 1) s = 1;
     if (s > INT_MAX) s = INT_MAX;
     return (int)s;
 }
 
+/* Horizontal focal scale in internal-render pixels.
+ * Keeps output FOV stable when supersampling changes internal width. */
+static inline int renderer_proj_x_scale_px(void)
+{
+    return renderer_proj_x_scale_px_for_state(&g_renderer, NULL);
+}
+
+static inline int renderer_sprite_scale_x_for_state(const RendererState *r, const GameState *state)
+{
+    return 128 * renderer_proj_x_scale_px_for_state(r, state);
+}
+
 static inline int renderer_sprite_scale_x(void)
 {
     /* Width path equivalent of SPRITE_SIZE_SCALE, but tied to runtime horizontal projection. */
-    return 128 * renderer_proj_x_scale_px();
+    return renderer_sprite_scale_x_for_state(&g_renderer, NULL);
 }
 
 #define RENDERER_MAX_ZONE_ORDER 256
@@ -4510,6 +4522,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
     const int expl_vect = 8;
     const SpriteFrame *expl_ft = sprite_frames_table[expl_vect].frames;
     const int expl_ft_count = sprite_frames_table[expl_vect].count;
+    const int explosion_sprite_scale_x = renderer_sprite_scale_x_for_state(r, state);
     for (int oi = 0; oi < obj_count; oi++) {
         int entry_src = objs[oi].src;
         if (entry_src == DRAW_SRC_EXPLOSION) {
@@ -4559,7 +4572,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int z_for_size = orp_z;
             if (z_for_size < 1) z_for_size = 1;
             int expl_h_port = explosion_world_h_to_port(r, expl_h);
-            int sprite_w = (int)((int32_t)expl_w * renderer_sprite_scale_x() / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+            int sprite_w = (int)((int32_t)expl_w * explosion_sprite_scale_x / z_for_size) * SPRITE_SIZE_MULTIPLIER;
             int sprite_h = (int)((int64_t)expl_h_port * (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
             sprite_w *= EXPLOSION_SIZE_CORRECTION;
             sprite_h *= EXPLOSION_SIZE_CORRECTION;
@@ -4706,11 +4719,13 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             }
         }
 
-        int sprite_w = (int)((int32_t)world_w * renderer_sprite_scale_x() / z_for_size) * SPRITE_SIZE_MULTIPLIER;
+        int sprite_scale_x = renderer_sprite_scale_x();
         int world_h_for_proj = world_h;
         if (explosion_billboard) {
+            sprite_scale_x = explosion_sprite_scale_x;
             world_h_for_proj = explosion_world_h_to_port(&g_renderer, world_h);
         }
+        int sprite_w = (int)((int32_t)world_w * sprite_scale_x / z_for_size) * SPRITE_SIZE_MULTIPLIER;
         int sprite_h = (int)((int64_t)world_h_for_proj * (int64_t)g_renderer.proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
         if (explosion_billboard) {
             sprite_w *= EXPLOSION_SIZE_CORRECTION;
