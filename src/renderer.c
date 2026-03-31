@@ -1721,6 +1721,7 @@ static void init_clear_rows(void)
 
 void renderer_clear(uint8_t color)
 {
+#if RENDER_CLEAR
     int w = g_renderer.width, h = g_renderer.height;
     if (g_renderer.buffer) {
         memset(g_renderer.buffer, color, (size_t)w * h);
@@ -1751,6 +1752,9 @@ void renderer_clear(uint8_t color)
             }
         }
     }
+#else
+    (void)color;
+#endif
 }
 
 /* Amiga Anims.s putinbackdrop: pan u0 = (ang & 8191) * 432 / 8192 into cylindrical sky map (432 px wrap). */
@@ -1954,6 +1958,39 @@ static void renderer_draw_sky_pass_rows(int16_t angpos, int16_t row_start, int16
     if (x1 > w) x1 = w;
     if (x0 >= x1) return;
 
+#if !RENDER_SKY
+    (void)angpos;
+#if RENDER_CLEAR
+    {
+        init_clear_rows();
+        size_t row_bytes_rgb = (size_t)(x1 - x0) * sizeof(uint32_t);
+        size_t row_bytes_cw = (size_t)(x1 - x0) * sizeof(uint16_t);
+        if (w <= CLEAR_ROW_MAX) {
+            for (int y = y0; y < y1; y++) {
+                size_t row = (size_t)y * (size_t)w + (size_t)x0;
+                memset(buf + row, 0, (size_t)(x1 - x0));
+                if (g_renderer_rgb_raster_expand)
+                    memcpy(rgb + row, s_clear_sky_row + (size_t)x0, row_bytes_rgb);
+                memcpy(cw + row, s_clear_sky_cw_row + (size_t)x0, row_bytes_cw);
+            }
+        } else {
+            const uint32_t below_px = RENDER_RGB_CLEAR_SKY_PIXEL;
+            const uint16_t below_cw = 0x0EEEu;
+            for (int y = y0; y < y1; y++) {
+                size_t row = (size_t)y * (size_t)w;
+                for (int x = x0; x < x1; x++) {
+                    size_t p = row + (size_t)x;
+                    buf[p] = 0;
+                    if (g_renderer_rgb_raster_expand)
+                        rgb[p] = below_px;
+                    cw[p] = below_cw;
+                }
+            }
+        }
+    }
+#endif
+#else
+
     /* Use sub-column pan precision so sky rotation does not quantize/judder at small turns. */
     const int32_t sky_pan_period_fp = SKY_PAN_WIDTH << 16;
     int32_t u0_fp = (int32_t)(((int64_t)(angpos & 8191) * ((int64_t)SKY_PAN_WIDTH << 16)) / 8192);
@@ -2145,6 +2182,7 @@ static void renderer_draw_sky_pass_rows(int16_t angpos, int16_t row_start, int16
         }
     }
 
+#if RENDER_CLEAR
     /* Below sky band: same clear as renderer_clear (empty canvas for world draw). */
     {
         init_clear_rows();
@@ -2173,6 +2211,8 @@ static void renderer_draw_sky_pass_rows(int16_t angpos, int16_t row_start, int16
             }
         }
     }
+#endif
+#endif
 }
 
 void renderer_draw_sky_pass(int16_t angpos)

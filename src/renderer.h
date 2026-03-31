@@ -35,6 +35,14 @@
 #ifndef SKY_BILINEAR_FILTER
 #define SKY_BILINEAR_FILTER 1
 #endif
+/* 1 = draw sky backdrop (backfile / procedural); 0 = skip sky. */
+#ifndef RENDER_SKY
+#define RENDER_SKY 0
+#endif
+/* 1 = clear framebuffer (renderer_clear) and empty-canvas fills when sky is off; 0 = leave buffer. */
+#ifndef RENDER_CLEAR
+#define RENDER_CLEAR 0
+#endif
 
 /* Wall vertical texture: divisor so one world-space wall height maps to one texture repeat at any resolution. */
 #define WALL_VERTICAL_TEX_DIVISOR  ((int32_t)PROJ_Y_SCALE * (int32_t)RENDER_SCALE)
