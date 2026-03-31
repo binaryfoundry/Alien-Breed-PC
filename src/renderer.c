@@ -5237,12 +5237,15 @@ static void renderer_tessellate_sky_ceiling_ctx(RenderSliceContext *ctx,
     free(right_edge);
 }
 
-static void renderer_build_zone_stream_backdrop_sky_cache(const uint8_t *floor_stream_gfx_data,
+static void renderer_build_zone_stream_backdrop_sky_cache(int use_upper,
                                                           const uint8_t *lower_stream_gfx_data,
                                                           const uint8_t *upper_stream_gfx_data,
                                                           RendererSkyBuildDebug *dbg)
 {
+    const uint8_t *floor_stream_gfx_data = use_upper ? upper_stream_gfx_data : lower_stream_gfx_data;
     if (!floor_stream_gfx_data) return;
+    const uint8_t *roof_stream_primary = floor_stream_gfx_data;
+    const uint8_t *roof_stream_secondary = use_upper ? NULL : upper_stream_gfx_data;
 
     const uint8_t *scan = floor_stream_gfx_data + 2; /* skip gfx zone id word */
     int scan_iter = 500;
@@ -5266,8 +5269,11 @@ static void renderer_build_zone_stream_backdrop_sky_cache(const uint8_t *floor_s
                 if (dbg) dbg->floor_polys_seen++;
 
                 int has_matching_roof =
-                    zone_stream_has_matching_roof_polygon(lower_stream_gfx_data, pt_indices, sides) ||
-                    zone_stream_has_matching_roof_polygon(upper_stream_gfx_data, pt_indices, sides);
+                    zone_stream_has_matching_roof_polygon(roof_stream_primary, pt_indices, sides);
+                if (!has_matching_roof && roof_stream_secondary) {
+                    has_matching_roof =
+                        zone_stream_has_matching_roof_polygon(roof_stream_secondary, pt_indices, sides);
+                }
                 if (has_matching_roof) {
                     if (dbg) dbg->floor_polys_with_matching_roof++;
                 } else {
@@ -5377,7 +5383,7 @@ void renderer_build_level_sky_cache(const LevelState *level)
             RendererSkyBuildDebug dbg = {0};
 
             if (synth_enabled) {
-                renderer_build_zone_stream_backdrop_sky_cache(gfx_data,
+                renderer_build_zone_stream_backdrop_sky_cache(use_upper,
                                                               lower_gfx_data,
                                                               upper_gfx_data,
                                                               &dbg);
