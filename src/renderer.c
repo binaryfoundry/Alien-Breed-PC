@@ -155,8 +155,6 @@ static void renderer_build_world_zone_prepass(GameState *state, uint32_t frame_i
 #define RENDERER_MAX_THREADS 64
 /* Keep column strips wide enough to reduce overlap/synchronization overhead. */
 #define RENDERER_MIN_COLS_PER_WORKER 32
-/* Auto worker cap tuned for current software renderer/memory bandwidth balance. */
-#define RENDERER_AUTO_MAX_WORKERS 12
 
 typedef enum {
     RENDERER_THREAD_JOB_WORLD = 0,
@@ -207,7 +205,7 @@ typedef struct {
 static RendererThreadPool g_renderer_thread_pool;
 static int g_prof_last_world_workers = 0;
 static int g_prof_last_tint_workers = 0;
-static int g_renderer_thread_max_workers = 0; /* 0 = auto */
+static int g_renderer_thread_max_workers = 0; /* 0 = use max available workers */
 #endif
 
 /* -----------------------------------------------------------------------
@@ -1069,7 +1067,7 @@ static int renderer_prepare_worker_columns(RendererThreadPool *pool, int width,
 {
     int active_workers = pool->worker_count;
     int worker_cap = g_renderer_thread_max_workers;
-    if (worker_cap <= 0) worker_cap = RENDERER_AUTO_MAX_WORKERS;
+    if (worker_cap <= 0) worker_cap = pool->worker_count;
     if (worker_cap > RENDERER_MAX_THREADS) worker_cap = RENDERER_MAX_THREADS;
     if (active_workers > width) active_workers = width;
     if (active_workers > worker_cap) {

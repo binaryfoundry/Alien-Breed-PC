@@ -43,5 +43,5 @@ supersampling=1
 render_threads=1
 
 # Worker strip cap for threaded renderer:
-# 0 = auto (currently uses up to 12 strips), otherwise use at most this many strips (1..64).
+# 0 = use max available strips (up to SDL_GetCPUCount and other runtime limits), otherwise cap to this many strips (1..64).
 render_threads_max=0
