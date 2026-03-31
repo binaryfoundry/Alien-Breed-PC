@@ -264,8 +264,6 @@ static uint32_t g_level_sky_cache_poly_count;
 static uint32_t g_level_sky_cache_poly_cap;
 static RendererSkyCacheBucket *g_level_sky_cache_buckets;
 static int g_level_sky_cache_zone_slots;
-static int16_t g_sky_debug_last_viewer_zone = -1;
-static int8_t g_sky_debug_last_viewer_top = -1;
 
 static void renderer_reset_level_sky_cache_internal(void);
 
@@ -4819,8 +4817,6 @@ static void renderer_reset_level_sky_cache_internal(void)
     free(g_level_sky_cache_buckets);
     g_level_sky_cache_buckets = NULL;
     g_level_sky_cache_zone_slots = 0;
-    g_sky_debug_last_viewer_zone = -1;
-    g_sky_debug_last_viewer_top = -1;
 }
 
 void renderer_reset_level_sky_cache(void)
@@ -5267,18 +5263,12 @@ void renderer_build_level_sky_cache(const LevelState *level)
             upper_gfx_data = level->graphics + upper_gfx_off;
         }
 
-        int has_upper_stream = (upper_gfx_data != NULL);
-        int zone_has_explicit_roof =
-            zone_stream_has_explicit_roof_polygon(lower_gfx_data) ||
-            zone_stream_has_explicit_roof_polygon(upper_gfx_data);
-
         for (int use_upper = 0; use_upper <= 1; use_upper++) {
             int bucket_idx = zone_id * 2 + use_upper;
             uint32_t start = g_level_sky_cache_poly_count;
             g_level_sky_cache_buckets[bucket_idx].start = start;
             g_level_sky_cache_buckets[bucket_idx].count = 0;
 
-            int32_t gfx_off = use_upper ? upper_gfx_off : lower_gfx_off;
             const uint8_t *gfx_data = use_upper ? upper_gfx_data : lower_gfx_data;
             if (!gfx_data) continue;
 
@@ -5303,7 +5293,6 @@ void renderer_build_level_sky_cache(const LevelState *level)
                 }
             }
 
-            int stream_is_top = has_upper_stream ? (use_upper != 0) : (use_upper == 0);
             int32_t stream_roof_y = use_upper ? upper_roof_raw : lower_roof_y;
             if (use_upper && stream_roof_y == 0) {
                 stream_roof_y = lower_roof_y;
@@ -5322,21 +5311,6 @@ void renderer_build_level_sky_cache(const LevelState *level)
             uint32_t added = g_level_sky_cache_poly_count - start;
             g_level_sky_cache_buckets[bucket_idx].count = added;
 
-            if (added > 0u || dbg.floor_polys_seen > 0 ||
-                zone_backdrop_flag || stream_has_backdrop_marker) {
-                printf("[SKYDBG] zone=%d stream=%s gfx_off=%ld top_stream=%d"
-                       " backdrop(zone=%d marker=%d enabled=%d)"
-                       " roof_y=%ld open=%d"
-                       " roof(explicit=%d match=%d)"
-                       " floor_polys=%d sky_added=%u tracked=%d"
-                       " reasons(no_match=%d push_fail=%d)\n",
-                       zone_id, use_upper ? "upper" : "lower", (long)gfx_off, stream_is_top,
-                       zone_backdrop_flag, stream_has_backdrop_marker, synth_enabled,
-                       (long)stream_roof_y, roof_open_to_sky,
-                       zone_has_explicit_roof, dbg.floor_polys_with_matching_roof,
-                       dbg.floor_polys_seen, (unsigned)added, dbg.floor_polys_sky_added,
-                       dbg.sky_added_missing_matching_roof, dbg.sky_push_failed);
-            }
         }
     }
 
@@ -5364,50 +5338,6 @@ static void renderer_draw_zone_backdrop_sky_ctx(RenderSliceContext *ctx,
         const RendererSkyCachePoly *poly = &g_level_sky_cache_polys[i];
         renderer_tessellate_sky_ceiling_ctx(ctx, poly->pt_indices, poly->sides, zone_roof, y_off);
     }
-}
-
-static void renderer_log_viewer_zone_sky_ctx(GameState *state, const PlayerState *viewer)
-{
-    if (!state || !viewer) return;
-
-    int16_t viewer_zone = viewer->zone;
-    int viewer_top = viewer->stood_in_top ? 1 : 0;
-    if (viewer_zone == g_sky_debug_last_viewer_zone &&
-        viewer_top == g_sky_debug_last_viewer_top) {
-        return;
-    }
-
-    uint32_t lower_count = 0;
-    uint32_t upper_count = 0;
-    int zone_backdrop_flag = 0;
-
-    LevelState *level = &state->level;
-    int zone_slots = level_zone_slot_count(level);
-    if (level->data && level->zone_adds &&
-        viewer_zone >= 0 && viewer_zone < zone_slots) {
-        int32_t zone_off = rd32(level->zone_adds + (size_t)viewer_zone * 4u);
-        if (zone_off >= 0 &&
-            (level->data_byte_count == 0 || ((size_t)zone_off + 20u) <= level->data_byte_count)) {
-            const uint8_t *zone_data = level->data + zone_off;
-            zone_backdrop_flag = (rd16(zone_data + ZONE_OFF_BACK) != 0);
-        }
-    }
-
-    if (g_level_sky_cache_buckets &&
-        viewer_zone >= 0 && viewer_zone < g_level_sky_cache_zone_slots) {
-        int base = viewer_zone * 2;
-        lower_count = g_level_sky_cache_buckets[base].count;
-        upper_count = g_level_sky_cache_buckets[base + 1].count;
-    }
-
-    printf("[SKYDBG] viewer zone=%d stood_in_top=%d zone_back=%d"
-           " entered_on_stream=%s sky_cache(lower=%u upper=%u)\n",
-           (int)viewer_zone, viewer_top, zone_backdrop_flag,
-           viewer_top ? "upper" : "lower",
-           (unsigned)lower_count, (unsigned)upper_count);
-
-    g_sky_debug_last_viewer_zone = viewer_zone;
-    g_sky_debug_last_viewer_top = (int8_t)viewer_top;
 }
 
 static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, int16_t zone_id, int use_upper)
@@ -6684,8 +6614,6 @@ void renderer_draw_display(GameState *state)
 
     /* xwobble from head bob */
     r->xwobble = 0; /* Would be set from plr->bob_frame */
-
-    renderer_log_viewer_zone_sky_ctx(state, plr);
 
     /* 3. Initialize column clipping (per-column top/bot/z for floor and sprite clipping) */
     {
