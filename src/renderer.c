@@ -825,14 +825,12 @@ typedef struct {
     /* Per-slice wall shade cache (replaces function-static mutable cache). */
     const uint8_t *wall_cache_pal;
     uint16_t wall_cache_block_off;
-    uint32_t wall_cache_argb[32];
     uint16_t wall_cache_cw[32];
     int wall_cache_valid;
 
     /* Per-slice floor palette cache (replaces global mutable cache). */
     const uint8_t *floor_pal_cache_src;
     uint8_t  floor_pal_cache_valid[FLOOR_PAL_LEVEL_COUNT];
-    uint32_t floor_span_argb_cache[FLOOR_PAL_LEVEL_COUNT][256];
     uint16_t floor_span_cw_cache[FLOOR_PAL_LEVEL_COUNT][256];
     int update_column_clip;
 } RenderSliceContext;
@@ -1582,11 +1580,9 @@ static inline uint32_t blend_argb(uint32_t bg, uint32_t fg, uint32_t alpha_fg)
 
 static void floor_span_prepare_pal_cache(RenderSliceContext *ctx,
                                          const uint8_t *pal_lut_src, int level,
-                                         const uint32_t **argb_out,
                                          const uint16_t **cw_out)
 {
     if (!pal_lut_src || level < 0 || level >= FLOOR_PAL_LEVEL_COUNT) {
-        *argb_out = NULL;
         *cw_out = NULL;
         return;
     }
@@ -1600,14 +1596,11 @@ static void floor_span_prepare_pal_cache(RenderSliceContext *ctx,
         const uint8_t *lut = pal_lut_src + level * 512;
         for (int ti = 0; ti < 256; ti++) {
             uint16_t cw = (uint16_t)((lut[ti * 2] << 8) | lut[ti * 2 + 1]);
-            if (g_renderer_rgb_raster_expand)
-                ctx->floor_span_argb_cache[level][ti] = amiga12_to_argb(cw);
             ctx->floor_span_cw_cache[level][ti] = cw;
         }
         ctx->floor_pal_cache_valid[level] = 1;
     }
 
-    *argb_out = ctx->floor_span_argb_cache[level];
     *cw_out = ctx->floor_span_cw_cache[level];
 }
 
@@ -2647,8 +2640,6 @@ static void draw_wall_column(RenderSliceContext *ctx,
             for (int ti = 0; ti < 32; ti++) {
                 int lut_off = lut_block_off + ti * 2;
                 uint16_t c12 = ((uint16_t)pal[lut_off] << 8) | pal[lut_off + 1];
-                if (expand)
-                    ctx->wall_cache_argb[ti] = amiga12_to_argb(c12);
                 ctx->wall_cache_cw[ti] = c12;
             }
             ctx->wall_cache_pal = pal;
@@ -2674,8 +2665,9 @@ static void draw_wall_column(RenderSliceContext *ctx,
                                   | (uint16_t)texture[byte_off + 1];
                     uint8_t texel5 = (uint8_t)(word & 31u);
                     buf[pix] = 2; /* tag: wall */
-                    rgb[pix] = ctx->wall_cache_argb[texel5];
-                    cw[pix] = ctx->wall_cache_cw[texel5];
+                    uint16_t c12 = ctx->wall_cache_cw[texel5];
+                    rgb[pix] = amiga12_to_argb(c12);
+                    cw[pix] = c12;
                     pix += (size_t)width;
                     tex_y += tex_step;
                 }
@@ -2701,8 +2693,9 @@ static void draw_wall_column(RenderSliceContext *ctx,
                                   | (uint16_t)texture[byte_off + 1];
                     uint8_t texel5 = (uint8_t)((word >> 5) & 31u);
                     buf[pix] = 2; /* tag: wall */
-                    rgb[pix] = ctx->wall_cache_argb[texel5];
-                    cw[pix] = ctx->wall_cache_cw[texel5];
+                    uint16_t c12 = ctx->wall_cache_cw[texel5];
+                    rgb[pix] = amiga12_to_argb(c12);
+                    cw[pix] = c12;
                     pix += (size_t)width;
                     tex_y += tex_step;
                 }
@@ -2728,8 +2721,9 @@ static void draw_wall_column(RenderSliceContext *ctx,
                                   | (uint16_t)texture[byte_off + 1];
                     uint8_t texel5 = (uint8_t)((word >> 10) & 31u);
                     buf[pix] = 2; /* tag: wall */
-                    rgb[pix] = ctx->wall_cache_argb[texel5];
-                    cw[pix] = ctx->wall_cache_cw[texel5];
+                    uint16_t c12 = ctx->wall_cache_cw[texel5];
+                    rgb[pix] = amiga12_to_argb(c12);
+                    cw[pix] = c12;
                     pix += (size_t)width;
                     tex_y += tex_step;
                 }
@@ -2748,8 +2742,8 @@ static void draw_wall_column(RenderSliceContext *ctx,
             }
         }
     } else if (texture && pal) {
-        uint32_t argb0 = ctx->wall_cache_argb[0];
         uint16_t cw0 = ctx->wall_cache_cw[0];
+        uint32_t argb0 = expand ? amiga12_to_argb(cw0) : 0;
         if (expand) {
             for (int y = ct; y <= cb; y++) {
                 AB3D_PREFETCH_WRITE(cw + pix + (size_t)8 * (size_t)width);
@@ -3345,11 +3339,10 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
         floor_pal_level = floor_bright_level_table[bright_idx];
     }
 
-    const uint32_t *span_argb = NULL;
     const uint16_t *span_cw = NULL;
     const int use_span_lut = (texture != NULL && pal_lut_src != NULL && !is_water && !use_gour);
     if (use_span_lut) {
-        floor_span_prepare_pal_cache(ctx, pal_lut_src, floor_pal_level, &span_argb, &span_cw);
+        floor_span_prepare_pal_cache(ctx, pal_lut_src, floor_pal_level, &span_cw);
     }
 
     /* UV accumulators: 32-bit wrapping is sufficient - we only need (fp>>16)&63 for tile coords.
@@ -3427,7 +3420,7 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
     }
 
     /* Fast non-water textured path: no per-pixel branching. */
-    if (use_span_lut && span_argb && span_cw) {
+    if (use_span_lut && span_cw) {
         if (expand) {
             uint8_t *p8 = row8;
             uint32_t *p32 = row32;
@@ -3445,8 +3438,9 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
                 v_pf += (uint32_t)v_step;
 
                 *p8++ = 1;
-                *p32++ = span_argb[texel];
-                *p16++ = span_cw[texel];
+                uint16_t out_cw = span_cw[texel];
+                *p32++ = amiga12_to_argb(out_cw);
+                *p16++ = out_cw;
             }
         } else {
             uint8_t *p8 = row8;
@@ -3641,12 +3635,9 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
         uint16_t *p16 = row16;
 
         if (use_gour) {
-            const uint32_t *gour_argb_levels[FLOOR_PAL_LEVEL_COUNT];
             const uint16_t *gour_cw_levels[FLOOR_PAL_LEVEL_COUNT];
             for (int level = 0; level < FLOOR_PAL_LEVEL_COUNT; level++) {
-                floor_span_prepare_pal_cache(ctx, pal_lut_src, level,
-                                             &gour_argb_levels[level],
-                                             &gour_cw_levels[level]);
+                floor_span_prepare_pal_cache(ctx, pal_lut_src, level, &gour_cw_levels[level]);
             }
 
             for (int i = 0; i < span_len; i++) {
@@ -3659,9 +3650,10 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
                 u_fp += (uint32_t)u_step;
                 v_fp += (uint32_t)v_step;
 
+                uint16_t out_cw = gour_cw_levels[gour_level][texel];
                 *p8++ = 1;
-                RASTER_PUT_PP(&p32, gour_argb_levels[gour_level][texel]);
-                *p16++ = gour_cw_levels[gour_level][texel];
+                RASTER_PUT_PP(&p32, amiga12_to_argb(out_cw));
+                *p16++ = out_cw;
             }
             return;
         }
