@@ -2830,17 +2830,50 @@ static void draw_wall_column(RenderSliceContext *ctx,
         }
     }
 
-    /* Update column clip (walls occlude floor/ceiling/sprites behind).
-     * Store wall depth so sprites only skip when actually behind the wall (sprite_z >= clip.z). */
+    /* Update column clip (walls occlude sprites behind them).
+     * Edge-expanded rows/columns also write clip coverage so sprites don't overdraw those pixels. */
     if (ctx->update_column_clip && g_renderer.clip.top && g_renderer.clip.bot) {
-        if (y_top > g_renderer.clip.top[x]) {
-            g_renderer.clip.top[x] = (int16_t)y_top;
+        int occ_top = ct;
+        int occ_bot = cb;
+        if (ct > ctx->top_clip) occ_top = ct - 1;
+        if (cb + 1 <= ctx->bot_clip) occ_bot = cb + 1;
+
+        if (occ_top > g_renderer.clip.top[x]) {
+            g_renderer.clip.top[x] = (int16_t)occ_top;
         }
-        if (y_bot < g_renderer.clip.bot[x]) {
-            g_renderer.clip.bot[x] = (int16_t)y_bot;
+        if (occ_bot < g_renderer.clip.bot[x]) {
+            g_renderer.clip.bot[x] = (int16_t)occ_bot;
         }
         if (g_renderer.clip.z) {
-            g_renderer.clip.z[x] = col_z;
+            int32_t prev_z = g_renderer.clip.z[x];
+            if (prev_z <= 0 || col_z < prev_z) g_renderer.clip.z[x] = col_z;
+        }
+
+        if (x > ctx->slice_left) {
+            int nx = x - 1;
+            if (ct > g_renderer.clip.top[nx]) {
+                g_renderer.clip.top[nx] = (int16_t)ct;
+            }
+            if (cb < g_renderer.clip.bot[nx]) {
+                g_renderer.clip.bot[nx] = (int16_t)cb;
+            }
+            if (g_renderer.clip.z) {
+                int32_t prev_z = g_renderer.clip.z[nx];
+                if (prev_z <= 0 || col_z < prev_z) g_renderer.clip.z[nx] = col_z;
+            }
+        }
+        if (x + 1 < ctx->slice_right) {
+            int nx = x + 1;
+            if (ct > g_renderer.clip.top[nx]) {
+                g_renderer.clip.top[nx] = (int16_t)ct;
+            }
+            if (cb < g_renderer.clip.bot[nx]) {
+                g_renderer.clip.bot[nx] = (int16_t)cb;
+            }
+            if (g_renderer.clip.z) {
+                int32_t prev_z = g_renderer.clip.z[nx];
+                if (prev_z <= 0 || col_z < prev_z) g_renderer.clip.z[nx] = col_z;
+            }
         }
     }
 }
@@ -3908,7 +3941,17 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
             /* Room band clip: do not draw above ceiling or below floor (floor covers feet). */
             if (clip_top_sy < clip_bot_sy && (screen_row < clip_top_sy || screen_row > clip_bot_sy)) continue;
 
-            /* Billboards are drawn last in the zone (after all walls), so we draw on top with no clip test. */
+            /* Wall clip test: only skip sprite pixels that are both inside a wall span in this
+             * column and behind that wall depth. */
+            if (g_renderer.clip.top && g_renderer.clip.bot && g_renderer.clip.z) {
+                int16_t wall_top = g_renderer.clip.top[screen_col];
+                int16_t wall_bot = g_renderer.clip.bot[screen_col];
+                if (wall_top <= wall_bot && screen_row >= wall_top && screen_row <= wall_bot) {
+                    int32_t wall_z = g_renderer.clip.z[screen_col];
+                    if (wall_z > 0 && (int32_t)z >= wall_z) continue;
+                }
+            }
+
             /* Map screen row to source row 0..eff_rows-1 */
             int src_row = (height > 1) ? (dy * eff_rows) / height : 0;
             if (src_row >= eff_rows) src_row = eff_rows - 1;
