@@ -3245,6 +3245,7 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
                                          int16_t scaleval, int is_water,
                                          int16_t water_rows_left)
 {
+    (void)water_rows_left;
     /* Translated from AB3DI.s pastfloorbright (line 6657).
      *
      * Key insight: The Amiga packs UV into d5.w = ((V & 63) << 8) | (U & 63)
@@ -3451,15 +3452,6 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
             refr_y_off_fp = (int32_t)(((int64_t)refr_y_off_fp * rs->height) / 80);
         }
 
-        /* Safety guard: keep source sampling on not-yet-written rows in current pass.
-         * This is only a guard for high-res rasterization and does not alter non-water paths. */
-        if (water_rows_left > 0) {
-            int max_mag = (int)water_rows_left - 1;
-            if (max_mag < 0) max_mag = 0;
-            int32_t max_mag_fp = (int32_t)max_mag << 8;
-            if (refr_y_off_fp > max_mag_fp) refr_y_off_fp = max_mag_fp;
-            if (refr_y_off_fp < -max_mag_fp) refr_y_off_fp = -max_mag_fp;
-        }
         water_refr_y_off_fp = refr_y_off_fp;
     }
 
@@ -3566,10 +3558,12 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
 
             uint16_t bg_cw0 = cwbuf[bg_i0];
             uint32_t bg0 = g_renderer_rgb_raster_expand ? rgb[bg_i0] : amiga12_to_argb(bg_cw0);
-            if (buf[bg_i0] == 0 && water_has_back_buffers) {
+            if ((buf[bg_i0] == 0 || buf[bg_i0] == 4) && water_has_back_buffers) {
                 /* AB3DI texturedwater samples from display memory while floor lines are streamed.
                  * When refraction points at rows not written yet this frame, those pixels still
-                 * contain prior-frame values; mirror that by sampling back-buffer content. */
+                 * contain prior-frame values; mirror that by sampling back-buffer content.
+                 * Also avoid water-over-water feedback between adjacent zones in this port's
+                 * per-zone streaming path by treating existing water-tagged pixels the same way. */
                 bg_cw0 = rs->cw_back_buffer[bg_i0];
                 bg0 = g_renderer_rgb_raster_expand ? rs->rgb_back_buffer[bg_i0] : amiga12_to_argb(bg_cw0);
             }
@@ -3581,7 +3575,7 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
             if (water_has_next_refr) {
                 bg_cw1 = cwbuf[bg_i1];
                 bg1 = g_renderer_rgb_raster_expand ? rgb[bg_i1] : amiga12_to_argb(bg_cw1);
-                if (buf[bg_i1] == 0 && water_has_back_buffers) {
+                if ((buf[bg_i1] == 0 || buf[bg_i1] == 4) && water_has_back_buffers) {
                     bg_cw1 = rs->cw_back_buffer[bg_i1];
                     bg1 = g_renderer_rgb_raster_expand ? rs->rgb_back_buffer[bg_i1] : amiga12_to_argb(bg_cw1);
                 }
