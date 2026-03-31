@@ -4070,7 +4070,7 @@ int pickup_distance_check(GameObject *obj, GameState *state, int player_num)
     if (obj_zone < 0 || plr->zone != obj_zone) {
         return 0;
     }
-    if (plr->stood_in_top != obj->obj.in_top) {
+    if ((plr->stood_in_top != 0) != (obj->obj.in_top != 0)) {
         return 0;
     }
 
