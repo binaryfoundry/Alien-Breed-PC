@@ -49,42 +49,6 @@
 #define AB3D_HAVE_SSE2 0
 #endif
 
-/* Non-temporal blit: reduces RFO/cache pollution when writing cold global framebuffers from workers. */
-#if AB3D_HAVE_SSE2
-static void nt_blit_u8(uint8_t *dst, const uint8_t *src, size_t count)
-{
-    size_t i = 0;
-    while (i < count && (((uintptr_t)(dst + i)) & 15u) != 0) {
-        dst[i] = src[i];
-        i++;
-    }
-    for (; i + 16 <= count; i += 16) {
-        __m128i v = _mm_loadu_si128((const __m128i *)(src + i));
-        _mm_stream_si128((__m128i *)(dst + i), v);
-    }
-    for (; i < count; i++)
-        dst[i] = src[i];
-}
-
-static void nt_blit_u16(uint16_t *dst, const uint16_t *src, size_t count)
-{
-    size_t i = 0;
-    while (i < count && (((uintptr_t)(dst + i)) & 15u) != 0) {
-        dst[i] = src[i];
-        i++;
-    }
-    for (; i + 8 <= count; i += 8) {
-        __m128i v = _mm_loadu_si128((const __m128i *)(src + i));
-        _mm_stream_si128((__m128i *)(dst + i), v);
-    }
-    for (; i < count; i++)
-        dst[i] = src[i];
-}
-#else
-#define nt_blit_u8(d, s, n)  memcpy((d), (s), (n))
-#define nt_blit_u16(d, s, n) memcpy((d), (s), (n) * sizeof(uint16_t))
-#endif
-
 #if defined(__GNUC__) || defined(__clang__)
 #define AB3D_PREFETCH_READ(p)  __builtin_prefetch((p), 0, 0)
 #define AB3D_PREFETCH_WRITE(p) __builtin_prefetch((p), 1, 0)
@@ -185,19 +149,8 @@ static void renderer_build_world_zone_prepass(GameState *state, uint32_t frame_i
                                               int trace_clip, RendererWorldZonePrepass *out);
 static void renderer_draw_sky_pass_rows(int16_t angpos, int16_t row_start, int16_t row_end);
 
-typedef struct {
-    uint8_t *buf;
-    uint32_t *rgb;
-    uint16_t *cw;
-} RendererThreadTarget;
-
 #ifndef AB3D_NO_THREADS
 #define RENDERER_MAX_THREADS 64
-#define RENDERER_ROW_STRIP_HALO_MIN_TOP 2
-#define RENDERER_ROW_STRIP_HALO_MIN_BOTTOM 2
-/* Extra guard rows to reduce occasional strip-boundary artifacts. */
-#define RENDERER_ROW_STRIP_HALO_WATER_TOP_EXTRA 1
-#define RENDERER_ROW_STRIP_HALO_WATER_BOTTOM_EXTRA 2
 /* Keep strips reasonably tall to reduce overlap/synchronization overhead. */
 #define RENDERER_MIN_ROWS_PER_WORKER 32
 /* Auto worker cap tuned for current software renderer/memory bandwidth balance. */
@@ -214,22 +167,10 @@ struct RendererThreadWorker {
     int16_t row_start;
     int16_t row_end;
     int8_t fill_screen_water;
-    /* Biased pointers: local_buf[row * w + x] is valid for row in [local_strip_start, local_strip_end).
-     * The backing allocations are local_buf_alloc etc., which are strip-sized, not full-frame. */
-    uint8_t  *local_buf;
-    uint32_t *local_rgb;
-    uint16_t *local_cw;
-    uint8_t  *local_buf_alloc;
-    uint32_t *local_rgb_alloc;
-    uint16_t *local_cw_alloc;
-    int local_w;
-    int local_h;
-    int local_strip_start;
-    int local_strip_end;
 #if UINTPTR_MAX > 0xFFFFFFFFu
-    char _pad[40];
+    char _pad[104];
 #else
-    char _pad[72];
+    char _pad[112];
 #endif
 };
 typedef struct RendererThreadWorker RendererThreadWorker;
@@ -263,8 +204,6 @@ typedef struct {
 } RendererThreadPool;
 
 static RendererThreadPool g_renderer_thread_pool;
-static SDL_TLSID g_renderer_target_tls_id = 0;
-static int g_renderer_target_tls_ready = 0;
 static int g_prof_last_world_workers = 0;
 static int g_prof_last_tint_workers = 0;
 static int g_renderer_thread_max_workers = 0; /* 0 = auto */
@@ -856,43 +795,19 @@ static void render_slice_context_init(RenderSliceContext *ctx,
     ctx->update_column_clip = 1;
 }
 
-static inline RendererThreadTarget *renderer_get_thread_target(void)
-{
-#ifndef AB3D_NO_THREADS
-    if (g_renderer_target_tls_ready && g_renderer_target_tls_id != 0) {
-        return (RendererThreadTarget*)SDL_TLSGet(g_renderer_target_tls_id);
-    }
-#endif
-    return NULL;
-}
-
-static inline void renderer_set_thread_target(RendererThreadTarget *target)
-{
-#ifndef AB3D_NO_THREADS
-    if (g_renderer_target_tls_ready && g_renderer_target_tls_id != 0) {
-        SDL_TLSSet(g_renderer_target_tls_id, target, NULL);
-    }
-#else
-    (void)target;
-#endif
-}
-
 static inline uint8_t *renderer_active_buf(void)
 {
-    RendererThreadTarget *t = renderer_get_thread_target();
-    return (t && t->buf) ? t->buf : g_renderer.buffer;
+    return g_renderer.buffer;
 }
 
 static inline uint32_t *renderer_active_rgb(void)
 {
-    RendererThreadTarget *t = renderer_get_thread_target();
-    return (t && t->rgb) ? t->rgb : g_renderer.rgb_buffer;
+    return g_renderer.rgb_buffer;
 }
 
 static inline uint16_t *renderer_active_cw(void)
 {
-    RendererThreadTarget *t = renderer_get_thread_target();
-    return (t && t->cw) ? t->cw : g_renderer.cw_buffer;
+    return g_renderer.cw_buffer;
 }
 
 uint32_t *renderer_get_active_rgb_target(void)
@@ -921,144 +836,6 @@ static int8_t merge_fill_screen_water(int8_t a, int8_t b)
     if (a > 0 || b > 0) return 0x0F;
     if (a < 0 || b < 0) return (int8_t)-1;
     return 0;
-}
-
-/* Forward declaration — defined after the water-halo helpers. */
-static void renderer_compute_strip_halo_rows(int16_t row_start, int16_t row_end,
-                                             int *out_top_halo, int *out_bottom_halo);
-
-static void renderer_release_worker_local_buffers(RendererThreadWorker *worker)
-{
-    if (!worker) return;
-    ab3d_aligned_free(worker->local_buf_alloc);
-    ab3d_aligned_free(worker->local_rgb_alloc);
-    ab3d_aligned_free(worker->local_cw_alloc);
-    worker->local_buf_alloc = NULL;
-    worker->local_rgb_alloc = NULL;
-    worker->local_cw_alloc  = NULL;
-    worker->local_buf = NULL;
-    worker->local_rgb = NULL;
-    worker->local_cw  = NULL;
-    worker->local_w = 0;
-    worker->local_h = 0;
-    worker->local_strip_start = 0;
-    worker->local_strip_end   = 0;
-}
-
-/* Allocate per-worker strip buffers sized to just the rows this worker will draw
- * (assigned strip + halo).  Biased pointers let rasterizers index by the global
- * row coordinate with no offset arithmetic changes anywhere else.
- *
- * E.g. strip rows [48, 96) with halo 4 → draw range [44, 100):
- *   strip_h = 56 rows allocated
- *   local_buf = alloc_base - 44 * w
- *   local_buf[row * w + x]  (row >= 44)  → alloc_base[(row-44) * w + x]  ✓
- */
-static int renderer_ensure_worker_local_buffers(RendererThreadWorker *worker, int w, int h)
-{
-    if (!worker || w <= 0 || h <= 0) return 0;
-
-    /* Compute the draw strip this worker will actually render, including halo. */
-    int row_halo_top    = RENDERER_ROW_STRIP_HALO_MIN_TOP;
-    int row_halo_bottom = RENDERER_ROW_STRIP_HALO_MIN_BOTTOM;
-    renderer_compute_strip_halo_rows(worker->row_start, worker->row_end,
-                                     &row_halo_top, &row_halo_bottom);
-    int draw_start = (int)worker->row_start - row_halo_top;
-    int draw_end   = (int)worker->row_end   + row_halo_bottom;
-    if (draw_start < 0) draw_start = 0;
-    if (draw_end   > h) draw_end   = h;
-    int strip_h = draw_end - draw_start;
-    if (strip_h <= 0) strip_h = 1;
-
-    /* Reuse existing allocation when geometry hasn't changed. */
-    if (worker->local_buf_alloc && worker->local_rgb_alloc && worker->local_cw_alloc &&
-        worker->local_w == w && worker->local_h == h &&
-        worker->local_strip_start == draw_start && worker->local_strip_end == draw_end) {
-        return 1;
-    }
-
-    renderer_release_worker_local_buffers(worker);
-
-    size_t count = (size_t)w * (size_t)strip_h;
-    uint8_t  *buf_alloc = (uint8_t *)ab3d_aligned_alloc(64, count * sizeof(uint8_t));
-    uint32_t *rgb_alloc = (uint32_t *)ab3d_aligned_alloc(64, count * sizeof(uint32_t));
-    uint16_t *cw_alloc  = (uint16_t *)ab3d_aligned_alloc(64, count * sizeof(uint16_t));
-    if (!buf_alloc || !rgb_alloc || !cw_alloc) {
-        ab3d_aligned_free(buf_alloc);
-        ab3d_aligned_free(rgb_alloc);
-        ab3d_aligned_free(cw_alloc);
-        return 0;
-    }
-    memset(buf_alloc, 0, count * sizeof(uint8_t));
-    memset(rgb_alloc, 0, count * sizeof(uint32_t));
-    memset(cw_alloc, 0, count * sizeof(uint16_t));
-
-    ptrdiff_t bias = (ptrdiff_t)draw_start * (ptrdiff_t)w;
-    worker->local_buf_alloc = buf_alloc;
-    worker->local_rgb_alloc = rgb_alloc;
-    worker->local_cw_alloc  = cw_alloc;
-    worker->local_buf = buf_alloc - bias;
-    worker->local_rgb = rgb_alloc - bias;
-    worker->local_cw  = cw_alloc  - bias;
-    worker->local_w          = w;
-    worker->local_h          = h;
-    worker->local_strip_start = draw_start;
-    worker->local_strip_end   = draw_end;
-    return 1;
-}
-
-/* Estimate max vertical water refraction span in rows for current frame height.
- * Mirrors textured-water offset math with conservative bounds:
- *   - minimum distance clamp (16)
- *   - maximum sine magnitude
- *   - +2 row base offset
- * Callers add per-side minimums/safety margins. */
-static int renderer_estimate_max_water_halo_rows(void)
-{
-    const int32_t dist_min = 16;
-    const int32_t den = dist_min + 300;
-    const int32_t sine_abs_max = 32768;
-    int32_t refr_y_off_fp = 0;
-
-    if (den > 0) {
-        refr_y_off_fp = (int32_t)(((int64_t)sine_abs_max << 8) / ((int64_t)den << 6));
-    }
-    refr_y_off_fp += (2 << 8);
-
-    if (g_renderer.height != 80) {
-        refr_y_off_fp = (int32_t)(((int64_t)refr_y_off_fp * g_renderer.height) / 80);
-    }
-
-    /* ceil from 8.8 fixed-point rows */
-    int rows = (int)((refr_y_off_fp + 255) >> 8);
-    if (rows < 0) rows = 0;
-    return rows;
-}
-
-/* Per-strip halo sizing:
- *  - keep a 2-row base halo on top+bottom
- *  - apply larger halo only to directions water can sample:
- *      rows above horizon sample upward
- *      rows below horizon sample downward */
-static void renderer_compute_strip_halo_rows(int16_t row_start, int16_t row_end,
-                                             int *out_top_halo, int *out_bottom_halo)
-{
-    int top = RENDERER_ROW_STRIP_HALO_MIN_TOP;
-    int bottom = RENDERER_ROW_STRIP_HALO_MIN_BOTTOM;
-    int horizon = g_renderer.height / 2;
-    int water_halo = renderer_estimate_max_water_halo_rows();
-
-    if (row_start < horizon) {
-        int need = water_halo + RENDERER_ROW_STRIP_HALO_WATER_TOP_EXTRA;
-        if (need > top) top = need;
-    }
-    if (row_end > horizon) {
-        int need = water_halo + RENDERER_ROW_STRIP_HALO_WATER_BOTTOM_EXTRA;
-        if (need > bottom) bottom = need;
-    }
-
-    if (out_top_halo) *out_top_halo = top;
-    if (out_bottom_halo) *out_bottom_halo = bottom;
 }
 
 static int renderer_thread_worker_main(void *userdata)
@@ -1096,47 +873,11 @@ static int renderer_thread_worker_main(void *userdata)
         int8_t fill_screen_water = 0;
         if (active && row_start < row_end) {
             if (job_type == RENDERER_THREAD_JOB_WORLD && state) {
-                RendererThreadTarget target = { 0 };
-                target.buf = worker->local_buf;
-                target.rgb = worker->local_rgb;
-                target.cw = worker->local_cw;
-                renderer_set_thread_target(&target);
-
-                int16_t draw_row_start = row_start;
-                int16_t draw_row_end = row_end;
-                int row_halo_top = RENDERER_ROW_STRIP_HALO_MIN_TOP;
-                int row_halo_bottom = RENDERER_ROW_STRIP_HALO_MIN_BOTTOM;
-                renderer_compute_strip_halo_rows(row_start, row_end,
-                                                 &row_halo_top, &row_halo_bottom);
-                draw_row_start = (int16_t)(draw_row_start - row_halo_top);
-                draw_row_end = (int16_t)(draw_row_end + row_halo_bottom);
-                if (draw_row_start < 0) draw_row_start = 0;
-                if (draw_row_end > g_renderer.height) draw_row_end = (int16_t)g_renderer.height;
-                renderer_draw_sky_pass_rows(sky_angpos, draw_row_start, draw_row_end);
+                renderer_draw_sky_pass_rows(sky_angpos, row_start, row_end);
                 renderer_draw_world_slice(state, world_zone_prepass,
-                                          draw_row_start, draw_row_end,
+                                          row_start, row_end,
                                           frame_idx, trace_clip, &fill_screen_water);
                 renderer_draw_gun_rows(state, row_start, row_end);
-                renderer_set_thread_target(NULL);
-
-                if (g_renderer.buffer && g_renderer.rgb_buffer && g_renderer.cw_buffer &&
-                    worker->local_buf && worker->local_rgb && worker->local_cw) {
-                    const int w = g_renderer.width;
-                    int copy_rows = (int)row_end - (int)row_start;
-                    if (w > 0 && copy_rows > 0) {
-                        size_t row0 = (size_t)row_start * (size_t)w;
-                        size_t pix_count = (size_t)copy_rows * (size_t)w;
-                        nt_blit_u8(g_renderer.buffer + row0, worker->local_buf + row0, pix_count);
-                        if (g_renderer_rgb_raster_expand) {
-                            memcpy(g_renderer.rgb_buffer + row0, worker->local_rgb + row0,
-                                   pix_count * sizeof(uint32_t));
-                        }
-                        nt_blit_u16(g_renderer.cw_buffer + row0, worker->local_cw + row0, pix_count);
-#if AB3D_HAVE_SSE2
-                        _mm_sfence();
-#endif
-                    }
-                }
             } else if (job_type == RENDERER_THREAD_JOB_WATER_TINT) {
                 renderer_apply_underwater_tint_slice(tint_fill_screen_water,
                                                      row_start, row_end,
@@ -1172,7 +913,6 @@ static void renderer_threads_shutdown(void)
             SDL_WaitThread(pool->workers[i].thread, NULL);
             pool->workers[i].thread = NULL;
         }
-        renderer_release_worker_local_buffers(&pool->workers[i]);
     }
 
     if (pool->done_sem) {
@@ -1200,16 +940,6 @@ static void renderer_threads_init(void)
     memset(pool, 0, sizeof(*pool));
     pool->last_logged_height = -1;
     pool->last_logged_workers = -1;
-
-    if (!g_renderer_target_tls_ready) {
-        g_renderer_target_tls_id = SDL_TLSCreate();
-        g_renderer_target_tls_ready = 1;
-        if (g_renderer_target_tls_id == 0) {
-            printf("[RENDERER] threading: disabled (failed to create TLS key)\n");
-            pool->initialized = 1;
-            return;
-        }
-    }
 
     int cpu_count = SDL_GetCPUCount();
     if (cpu_count < 1) cpu_count = 1;
@@ -1246,16 +976,6 @@ static void renderer_threads_init(void)
         pool->workers[i].row_start = 0;
         pool->workers[i].row_end = 0;
         pool->workers[i].fill_screen_water = 0;
-        pool->workers[i].local_buf       = NULL;
-        pool->workers[i].local_rgb       = NULL;
-        pool->workers[i].local_cw        = NULL;
-        pool->workers[i].local_buf_alloc = NULL;
-        pool->workers[i].local_rgb_alloc = NULL;
-        pool->workers[i].local_cw_alloc  = NULL;
-        pool->workers[i].local_w           = 0;
-        pool->workers[i].local_h           = 0;
-        pool->workers[i].local_strip_start = 0;
-        pool->workers[i].local_strip_end   = 0;
         pool->workers[i].thread = SDL_CreateThread(renderer_thread_worker_main,
                                                    "ab3d_render_worker",
                                                    &pool->workers[i]);
@@ -1378,24 +1098,6 @@ static int renderer_dispatch_threaded_world(GameState *state,
     int active_workers = renderer_prepare_worker_rows(pool, height, 1, 1);
     if (active_workers <= 0) {
         return 0;
-    }
-    {
-        int width = g_renderer.width;
-        int buffers_ok = 1;
-        for (int i = 0; i < active_workers; i++) {
-            if (!renderer_ensure_worker_local_buffers(&pool->workers[i], width, height)) {
-                buffers_ok = 0;
-                break;
-            }
-        }
-        if (!buffers_ok) {
-            static int s_worker_buffer_fail_logged = 0;
-            if (!s_worker_buffer_fail_logged) {
-                printf("[RENDERER] threading: failed to allocate per-worker strip buffers; falling back to single-threaded\n");
-                s_worker_buffer_fail_logged = 1;
-            }
-            return 0;
-        }
     }
 
     pool->job_state = state;
@@ -5470,7 +5172,10 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                 /* Water (entry_type 7) and floor drawn inline in stream order (Amiga itsafloordraw). */
                 int16_t water_rows_left = 0;
                 if (entry_type == 7) {
-                    int rows_left = (row_step > 0) ? (row_end - row + 1) : (row - row_end + 1);
+                    int bound = row_end;
+                    if (bound < (int)ctx->top_clip) bound = (int)ctx->top_clip;
+                    if (bound > (int)ctx->bot_clip) bound = (int)ctx->bot_clip;
+                    int rows_left = (row_step > 0) ? (bound - row + 1) : (row - bound + 1);
                     if (rows_left < 0) rows_left = 0;
                     if (rows_left > 32767) rows_left = 32767;
                     water_rows_left = (int16_t)rows_left;
