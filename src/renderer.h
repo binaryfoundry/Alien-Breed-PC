@@ -30,6 +30,8 @@
 #define RENDER_HEIGHT        (80  * RENDER_SCALE)   /* Visible game lines   */
 #define RENDER_DEFAULT_WIDTH  RENDER_WIDTH          /* Default/resize reference width  */
 #define RENDER_DEFAULT_HEIGHT RENDER_HEIGHT         /* Default/resize reference height */
+/* Maximum internal framebuffer width/height (base size × supersampling). */
+#define RENDER_INTERNAL_MAX_DIM 8192
 /* Sky filtering for HD output.
  * 1 = bilinear sample (smoother in high resolutions), 0 = nearest (Amiga-style blocky). */
 #ifndef SKY_BILINEAR_FILTER

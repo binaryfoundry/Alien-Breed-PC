@@ -3,6 +3,7 @@
  */
 
 #include "settings.h"
+#include "renderer.h"
 #include "game_types.h"
 #include <SDL.h>
 #include <ctype.h>
@@ -74,17 +75,17 @@ static void apply_line(GameState *state, char *line)
         state->cfg_all_keys = parse_bool(val) ? true : false;
     } else if (strcmp(key, "render_width") == 0) {
         int n = atoi(val);
-        if (n >= 96 && n <= 4096) {
+        if (n >= 96 && n <= RENDER_INTERNAL_MAX_DIM) {
             state->cfg_render_width = (int16_t)n;
         } else {
-            printf("[SETTINGS] render_width ignored (use 96..4096): %s\n", val);
+            printf("[SETTINGS] render_width ignored (use 96..%d): %s\n", RENDER_INTERNAL_MAX_DIM, val);
         }
     } else if (strcmp(key, "render_height") == 0) {
         int n = atoi(val);
-        if (n >= 80 && n <= 4096) {
+        if (n >= 80 && n <= RENDER_INTERNAL_MAX_DIM) {
             state->cfg_render_height = (int16_t)n;
         } else {
-            printf("[SETTINGS] render_height ignored (use 80..4096): %s\n", val);
+            printf("[SETTINGS] render_height ignored (use 80..%d): %s\n", RENDER_INTERNAL_MAX_DIM, val);
         }
     } else if (strcmp(key, "supersampling") == 0) {
         int n = atoi(val);

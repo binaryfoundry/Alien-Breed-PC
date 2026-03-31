@@ -35,7 +35,7 @@ render_height=720
 
 # Internal renderer multiplier.
 # 1 = normal internal size, 2 = 2x, 4 = 4x (supersampled, then downscaled).
-# Note: internal renderer size is capped to 4096x4096 and scales uniformly to keep aspect ratio.
+# Note: internal renderer size is capped to 8192x8192 and scales uniformly to keep aspect ratio.
 supersampling=1
 
 # 1 = split each zone across column slices (one SDL thread per slice, up to SDL_GetCPUCount).

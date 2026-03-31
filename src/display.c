@@ -628,9 +628,9 @@ void display_init(GameState *state)
         const double req_w = (double)base_rw * (double)supersampling;
         const double req_h = (double)base_rh * (double)supersampling;
         double fit = 1.0;
-        if (req_w > 4096.0 || req_h > 4096.0) {
-            const double fit_w = 4096.0 / req_w;
-            const double fit_h = 4096.0 / req_h;
+        if (req_w > (double)RENDER_INTERNAL_MAX_DIM || req_h > (double)RENDER_INTERNAL_MAX_DIM) {
+            const double fit_w = (double)RENDER_INTERNAL_MAX_DIM / req_w;
+            const double fit_h = (double)RENDER_INTERNAL_MAX_DIM / req_h;
             fit = (fit_w < fit_h) ? fit_w : fit_h;
             if (fit < 0.0) fit = 0.0;
         }
@@ -638,8 +638,8 @@ void display_init(GameState *state)
         rh = (int)(req_h * fit + 0.5);
         if (rw < 96) rw = 96;
         if (rh < 80) rh = 80;
-        if (rw > 4096) rw = 4096;
-        if (rh > 4096) rh = 4096;
+        if (rw > RENDER_INTERNAL_MAX_DIM) rw = RENDER_INTERNAL_MAX_DIM;
+        if (rh > RENDER_INTERNAL_MAX_DIM) rh = RENDER_INTERNAL_MAX_DIM;
     }
 
     g_internal_w = rw;

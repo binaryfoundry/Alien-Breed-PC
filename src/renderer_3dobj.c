@@ -179,7 +179,7 @@ static int obj_bright_to_level(int raw_brightness)
 static inline int poly_clamp_base_width(int w)
 {
     if (w < 96) w = 96;
-    if (w > 4096) w = 4096;
+    if (w > RENDER_INTERNAL_MAX_DIM) w = RENDER_INTERNAL_MAX_DIM;
     return w;
 }
 
