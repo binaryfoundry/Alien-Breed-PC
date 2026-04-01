@@ -27,6 +27,10 @@
 
 /* Big claws (small red): minimum distance before they stop rushing in (CalcDist-style units). */
 #define SMALL_RED_STANDOFF_DIST 128
+/* Hard minimum spacing from players for red enemy families. */
+#define RED_ALIEN_MIN_PLAYER_DIST      112
+#define HUGE_RED_MIN_PLAYER_DIST       224
+#define SMALL_RED_THING_MIN_PLAYER_DIST 160
 
 /* Big-endian read/write helpers (Amiga data is big-endian) */
 static inline int16_t be16(const uint8_t *p) {
@@ -583,6 +587,69 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
     return false;
 }
 
+static int16_t enemy_min_player_separation_for_type(int8_t obj_type)
+{
+    switch (obj_type) {
+    case OBJ_NBR_ALIEN:
+        return RED_ALIEN_MIN_PLAYER_DIST;
+    case OBJ_NBR_HUGE_RED_THING:
+        return HUGE_RED_MIN_PLAYER_DIST;
+    case OBJ_NBR_SMALL_RED_THING:
+        return SMALL_RED_THING_MIN_PLAYER_DIST;
+    default:
+        return 0;
+    }
+}
+
+static void enemy_enforce_min_distance_from_player(const GameObject *obj,
+                                                   const PlayerState *plr,
+                                                   int16_t min_dist,
+                                                   int16_t *x, int16_t *z)
+{
+    if (!obj || !plr || !x || !z || min_dist <= 0) return;
+
+    int32_t dx = (int32_t)(*x) - (int32_t)plr->p_xoff;
+    int32_t dz = (int32_t)(*z) - (int32_t)plr->p_zoff;
+    int32_t dist = calc_dist_approx(dx, dz);
+    if (dist >= min_dist) return;
+
+    if (dist <= 0) {
+        /* Degenerate overlap: push out along current facing so we still enforce spacing. */
+        int32_t sx = (int32_t)sin_lookup(NASTY_FACING(*obj));
+        int32_t sz = (int32_t)cos_lookup(NASTY_FACING(*obj));
+        dx = (sx == 0) ? 1 : sx;
+        dz = (sz == 0) ? 0 : sz;
+        dist = calc_dist_approx(dx, dz);
+        if (dist <= 0) {
+            dx = 1;
+            dz = 0;
+            dist = 1;
+        }
+    }
+
+    int32_t nx = (int32_t)plr->p_xoff + (dx * (int32_t)min_dist) / dist;
+    int32_t nz = (int32_t)plr->p_zoff + (dz * (int32_t)min_dist) / dist;
+    if (nx < -32768) nx = -32768;
+    if (nx >  32767) nx =  32767;
+    if (nz < -32768) nz = -32768;
+    if (nz >  32767) nz =  32767;
+    *x = (int16_t)nx;
+    *z = (int16_t)nz;
+}
+
+static void enemy_enforce_player_separation(const GameObject *obj, const GameState *state,
+                                            int16_t *x, int16_t *z)
+{
+    if (!obj || !state || !x || !z) return;
+    int16_t min_dist = enemy_min_player_separation_for_type(obj->obj.number);
+    if (min_dist <= 0) return;
+
+    enemy_enforce_min_distance_from_player(obj, &state->plr1, min_dist, x, z);
+    if (state->mode != MODE_SINGLE) {
+        enemy_enforce_min_distance_from_player(obj, &state->plr2, min_dist, x, z);
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Enemy common: wander behavior using Amiga-style ObjTimer ranges.
  * ----------------------------------------------------------------------- */
@@ -705,6 +772,15 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
     } else {
         /* Amiga enemy movement uses a single MoveObject pass per tick. */
         move_object(&ctx, &state->level);
+    }
+
+    /* Gameplay guardrail: red enemies must keep minimum spacing from players. */
+    {
+        int16_t sep_x = (int16_t)ctx.newx;
+        int16_t sep_z = (int16_t)ctx.newz;
+        enemy_enforce_player_separation(obj, state, &sep_x, &sep_z);
+        ctx.newx = sep_x;
+        ctx.newz = sep_z;
     }
 
     if (state->level.object_points) {
@@ -1799,6 +1875,15 @@ static int32_t marine_track_target(GameObject *obj, const EnemyParams *params,
         ctx.newz = ctx.oldz;
     }
 
+    /* Gameplay guardrail: red enemies must keep minimum spacing from players. */
+    {
+        int16_t sep_x = (int16_t)ctx.newx;
+        int16_t sep_z = (int16_t)ctx.newz;
+        enemy_enforce_player_separation(obj, state, &sep_x, &sep_z);
+        ctx.newx = sep_x;
+        ctx.newz = sep_z;
+    }
+
     if (state->level.object_points) {
         int cid = (int)OBJ_CID(obj);
         uint8_t *pts = state->level.object_points + cid * 8;
@@ -2831,9 +2916,6 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         if (r > 32767) r = 32767;
         range = (int16_t)r;
     }
-    int32_t sqr_edge = (int32_t)range + 40;
-    int64_t sqrnum = (int64_t)sqr_edge * (int64_t)sqr_edge;
-
     int check_idx = 0;
     while (1) {
         GameObject *target = (GameObject*)(state->level.object_data +
@@ -2865,6 +2947,8 @@ void object_handle_bullet(GameObject *obj, GameState *state)
 
         /* Height check (Anims.s: abs(target_y - bullet_y) <= half_height). */
         const CollisionBox *box = &col_box_table[tgt_type];
+        int32_t sqr_edge = (int32_t)range + 40;
+        int64_t sqrnum = (int64_t)sqr_edge * (int64_t)sqr_edge;
         int16_t ydiff = (int16_t)(obj_w(obj->raw + 4) - obj_w(target->raw + 4));
         if (ydiff < 0) ydiff = (int16_t)(-ydiff);
         if (ydiff > box->half_height) {
