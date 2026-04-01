@@ -5316,8 +5316,8 @@ void renderer_build_level_sky_cache(const LevelState *level)
     int zone_limit = zone_slots;
     if (level->num_zone_graph_entries > 0 && level->num_zone_graph_entries < zone_limit)
         zone_limit = level->num_zone_graph_entries;
-    if (level->num_zones > 0 && level->num_zones < zone_limit)
-        zone_limit = level->num_zones;
+    /* Do not clamp by num_zones: some real levels use extra zone_adds slots
+     * (num_zone_slots > num_zones), and those slots can be valid runtime zones. */
 
     for (int zone_id = 0; zone_id < zone_limit; zone_id++) {
         int32_t zone_off = rd32(level->zone_adds + (size_t)zone_id * 4u);
