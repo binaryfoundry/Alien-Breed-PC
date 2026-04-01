@@ -89,6 +89,59 @@ static uint16_t mix_bytes(uint8_t a, uint8_t b)
     return result;
 }
 
+static int16_t control_read_be16(const uint8_t *p)
+{
+    return (int16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+}
+
+/* Rebuild per-level condition bits from loaded level state.
+ * Prevents switch/key conditions from leaking between levels (e.g. level 2 exit switch puzzle). */
+static void game_rebuild_level_conditions(GameState *state)
+{
+    if (!state) {
+        game_conditions = 0;
+        return;
+    }
+
+    uint16_t rebuilt = 0;
+
+    /* Preserve key bits already collected in this loaded state (key object removed from world). */
+    if (state->level.object_data) {
+        const uint8_t *obj = state->level.object_data;
+        for (int i = 0; i < MAX_OBJECTS; i++, obj += OBJECT_SIZE) {
+            int16_t cid = control_read_be16(obj + 0);
+            if (cid < 0) break;
+
+            int8_t obj_type = (int8_t)obj[16];
+            int16_t zone = control_read_be16(obj + 12);
+            if (obj_type == OBJ_NBR_KEY && zone < 0) {
+                rebuilt = (uint16_t)(rebuilt | (uint8_t)obj[17]);
+            }
+        }
+    }
+
+    /* Mirror switch on/off state bytes into condition bits (bit = 4 + switch_index). */
+    if (state->level.switch_data) {
+        const uint8_t *sw = state->level.switch_data;
+        int switch_index = 0;
+        for (;;) {
+            int16_t zone_id = control_read_be16(sw + 0);
+            if (zone_id < 0) break;
+
+            unsigned bit_num = 4u + (unsigned)(switch_index & 7);
+            uint16_t bit_mask = (uint16_t)(1u << bit_num);
+            if ((int8_t)sw[10] != 0)
+                rebuilt = (uint16_t)(rebuilt | bit_mask);
+
+            sw += 14;
+            switch_index++;
+            if (switch_index >= 1024) break;  /* safety guard for malformed data */
+        }
+    }
+
+    game_conditions = (int16_t)rebuilt;
+}
+
 /* Unmix a word into two bytes */
 static void unmix_word(uint16_t word, uint8_t *a, uint8_t *b)
 {
@@ -355,6 +408,8 @@ void play_the_game(GameState *state)
             printf("[PLAYER] debug load: save restored (level %d)\n",
                    (int)state->current_level);
         }
+
+        game_rebuild_level_conditions(state);
 
         printf("[GAME] Entering main loop...\n");
 
