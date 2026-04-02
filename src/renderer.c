@@ -4548,8 +4548,9 @@ static int renderer_lateral_span_hits_adj_lines(const LevelState *level,
     if (!level || !level->floor_lines || !line_ids || line_count <= 0) return 0;
     if (half_span_world < 1) half_span_world = 1;
 
-    int64_t off_x64 = ((int64_t)view_right_x * (int64_t)half_span_world) >> 15;
-    int64_t off_z64 = ((int64_t)view_right_z * (int64_t)half_span_world) >> 15;
+    /* Runtime trig values are Q14 (16384 = 1.0). */
+    int64_t off_x64 = ((int64_t)view_right_x * (int64_t)half_span_world) / 16384;
+    int64_t off_z64 = ((int64_t)view_right_z * (int64_t)half_span_world) / 16384;
     if (off_x64 == 0 && off_z64 == 0) {
         off_x64 = (view_right_x >= 0) ? 1 : -1;
     }
@@ -4558,6 +4559,10 @@ static int renderer_lateral_span_hits_adj_lines(const LevelState *level,
     int32_t sz1 = (int32_t)((int64_t)pz - off_z64);
     int32_t sx2 = (int32_t)((int64_t)px + off_x64);
     int32_t sz2 = (int32_t)((int64_t)pz + off_z64);
+    int32_t near_radius = half_span_world + 24;
+    if (near_radius < 16) near_radius = 16;
+    if (near_radius > 1024) near_radius = 1024;
+    int64_t near2 = (int64_t)near_radius * (int64_t)near_radius;
 
     for (int i = 0; i < line_count; i++) {
         int16_t li = line_ids[i];
@@ -4568,6 +4573,10 @@ static int renderer_lateral_span_hits_adj_lines(const LevelState *level,
         int32_t x2 = x1 + rd16(fl + RENDERER_FLINE_XLEN_OFF);
         int32_t z2 = z1 + rd16(fl + RENDERER_FLINE_ZLEN_OFF);
         if (renderer_segments_intersect_i32(sx1, sz1, sx2, sz2, x1, z1, x2, z2)) {
+            return 1;
+        }
+        /* Safety net for near-miss quantization/corner cases at zone boundaries. */
+        if (renderer_point_segment_dist2_i32(px, pz, x1, z1, x2, z2) <= near2) {
             return 1;
         }
     }
