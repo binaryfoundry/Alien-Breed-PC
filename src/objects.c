@@ -2548,6 +2548,8 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     int8_t  shot_status = SHOT_STATUS(*obj);
     int8_t  shot_size = SHOT_SIZE(*obj);
     int zone_slots = level_zone_slot_count(&state->level);
+    int anim_ticks = (int)state->temp_frames;
+    if (anim_ticks < 1) anim_ticks = 1;
     bool    timed_out = false;
 
     /* Popping path (Amiga ItsABullet shotstatus!=0): advance pop sequence only. */
@@ -2561,33 +2563,36 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         }
 
         const BulletAnimFrame *table = bullet_pop_tables[shot_size];
-
-        /* Keep RockPop-derived sequences (rocket/grenade explosion pops) at
-         * the same cadence as the original feel in this port's timing model. */
+        int pop_step_vblanks = 1;
         if (shot_size == 2 || shot_size == 4) {
-            int16_t tf = state->temp_frames;
-            if (tf < 1) tf = 1;
-            int16_t pop_accum = SHOT_LIFE(*obj);
-            if (pop_accum < 0) pop_accum = 0;
-            pop_accum = (int16_t)(pop_accum + tf);
-            if (pop_accum < EXPLOSION_FRAME_STEP_VBLANKS) {
-                SHOT_SET_LIFE(*obj, pop_accum);
-                return;
-            }
-            pop_accum = (int16_t)(pop_accum - EXPLOSION_FRAME_STEP_VBLANKS);
-            SHOT_SET_LIFE(*obj, pop_accum);
+            /* Keep RockPop-derived sequences at their intended slower cadence. */
+            pop_step_vblanks = EXPLOSION_FRAME_STEP_VBLANKS;
         }
+        int16_t pop_accum = SHOT_LIFE(*obj);
+        if (pop_accum < 0) pop_accum = 0;
+        pop_accum = (int16_t)(pop_accum + anim_ticks);
+        int anim_steps = pop_accum / pop_step_vblanks;
+        pop_accum = (int16_t)(pop_accum % pop_step_vblanks);
+        SHOT_SET_LIFE(*obj, pop_accum);
+        if (anim_steps < 1) return;
 
         uint8_t anim_idx = SHOT_ANIM(*obj);
-        const BulletAnimFrame *f = &table[anim_idx];
-        if (f->width < 0) {
-            OBJ_SET_ZONE(obj, -1);
-            SHOT_STATUS(*obj) = 0;
-            SHOT_ANIM(*obj) = 0;
-            return;
+        int32_t acc = SHOT_ACCYPOS(*obj);
+        const BulletAnimFrame *f = NULL;
+        while (anim_steps > 0) {
+            f = &table[anim_idx];
+            if (f->width < 0) {
+                OBJ_SET_ZONE(obj, -1);
+                SHOT_STATUS(*obj) = 0;
+                SHOT_ANIM(*obj) = 0;
+                return;
+            }
+            acc += ((int32_t)f->y_offset << 7);
+            anim_idx = (uint8_t)(anim_idx + 1);
+            anim_steps--;
         }
 
-        SHOT_ANIM(*obj) = (uint8_t)(anim_idx + 1);
+        SHOT_ANIM(*obj) = anim_idx;
         obj->raw[6] = (uint8_t)f->width;
         obj->raw[7] = (uint8_t)f->height;
         obj_sw(obj->raw + 8,  f->vect_num);
@@ -2601,11 +2606,8 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             obj->raw[15] = bullet_pop_src_rows[shot_size];
         }
 
-        {
-            int32_t acc = SHOT_ACCYPOS(*obj) + ((int32_t)f->y_offset << 7);
-            SHOT_SET_ACCYPOS(*obj, acc);
-            obj_sw(obj->raw + 4, (int16_t)(acc >> 7));
-        }
+        SHOT_SET_ACCYPOS(*obj, acc);
+        obj_sw(obj->raw + 4, (int16_t)(acc >> 7));
         return;
     }
 
@@ -2628,13 +2630,11 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     /* Advance bullet animation (Amiga ItsABullet notpopping path).
      * BulletTypes[shot_size].anim_ptr drives size/vect/frame each tick. */
     if (shot_status == 0 && shot_size >= 0 && shot_size < MAX_BULLET_ANIM_IDX && bullet_anim_tables[shot_size]) {
-        int anim_steps = 1;
+        int anim_steps = anim_ticks;
         if (shot_size >= 50) {
-            int16_t tf = state->temp_frames;
-            if (tf < 1) tf = 1;
             int16_t accum = SHOT_LIFE(*obj);
             if (accum < 0) accum = 0;
-            accum = (int16_t)(accum + tf);
+            accum = (int16_t)(accum + anim_ticks);
             anim_steps = accum / EXPLOSION_FRAME_STEP_VBLANKS;
             accum = (int16_t)(accum % EXPLOSION_FRAME_STEP_VBLANKS);
             SHOT_SET_LIFE(*obj, accum);
@@ -4165,8 +4165,8 @@ void compute_blast(GameState *state, int32_t x, int32_t z, int32_t y,
 
 /* -----------------------------------------------------------------------
  * Explosion animation (visual only; damage is compute_blast).
- * Amiga: explosion/bullet pop advances one step per ObjMoveAnim (per vblank).
- * Advance by 1 per call so duration is consistent regardless of temp_frames.
+ * Progress in TempFrames (50 Hz logic-vblank units) so speed stays stable
+ * when a slow frame batches multiple logic ticks.
  * ----------------------------------------------------------------------- */
 void explosion_spawn(GameState *state, int16_t x, int16_t z, int16_t zone, int8_t in_top, int32_t y_floor,
                     int8_t size_scale, int8_t anim_rate)
@@ -4188,19 +4188,28 @@ void explosion_spawn(GameState *state, int16_t x, int16_t z, int16_t zone, int8_
     state->explosions[i].start_delay = (int8_t)(rand() & 3);
 }
 
-/* Amiga-style cadence: advance explosion anim once per ObjMoveAnim call.
- * anim_rate is percentage of one frame step per call (100 = 1 frame/call). */
+/* anim_rate is percentage of one frame step per logic-vblank (100 = 1 frame / 20ms). */
 void explosion_advance(GameState *state)
 {
     int n = state->num_explosions;
+    int ticks = (int)state->temp_frames;
+    if (ticks < 1) ticks = 1;
     for (int i = 0; i < n; i++) {
+        int ticks_left = ticks;
         if (state->explosions[i].start_delay > 0) {
-            state->explosions[i].start_delay = (int8_t)(state->explosions[i].start_delay - 1);
-            if (state->explosions[i].start_delay < 0) state->explosions[i].start_delay = 0;
-        } else {
+            int delay = (int)state->explosions[i].start_delay;
+            if (ticks_left >= delay) {
+                ticks_left -= delay;
+                state->explosions[i].start_delay = 0;
+            } else {
+                state->explosions[i].start_delay = (int8_t)(delay - ticks_left);
+                ticks_left = 0;
+            }
+        }
+        if (ticks_left > 0) {
             int rate = (int)state->explosions[i].anim_rate;
             if (rate <= 0) rate = 100;
-            int frac = (int)state->explosions[i].frame_frac + rate;
+            int frac = (int)state->explosions[i].frame_frac + (rate * ticks_left);
             while (frac >= 100) {
                 state->explosions[i].frame = (int8_t)(state->explosions[i].frame + 1);
                 frac -= 100;
