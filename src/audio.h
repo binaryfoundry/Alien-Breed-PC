@@ -21,6 +21,7 @@ void audio_rem_player(void);
 void audio_load_module(const char *filename);
 void audio_init_module(void);
 void audio_play_module(void);
+void audio_play_module_blocking_once(const char *filename);
 void audio_unload_module(void);
 
 /* Sound effects */

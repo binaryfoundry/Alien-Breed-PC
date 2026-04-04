@@ -538,12 +538,21 @@ void play_game(GameState *state)
         play_the_game(state);
 
         if (!state->finished_level) {
+            if (state->energy <= 0) {
+                audio_play_module_blocking_once("sounds/mt/GameOver.mt");
+                printf("[MUSIC] outcome: game over\n");
+            }
             break;
         }
 
         if (state->current_level >= MAX_LEVELS - 1) {
+            audio_play_module_blocking_once("sounds/mt/EndGame.mt");
+            printf("[MUSIC] outcome: end game\n");
             break;
         }
+
+        audio_play_module_blocking_once("sounds/mt/WellDone.mt");
+        printf("[MUSIC] outcome: well done\n");
 
         state->current_level++;
         printf("[CONTROL] Loading next level %d (player state preserved)\n",

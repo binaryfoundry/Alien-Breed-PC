@@ -20,6 +20,7 @@
 #define MAX_SAMPLES      64
 #define MAX_CHANNELS     24
 #define NUM_NAMED_SFX    28
+#define MUSIC_DEFAULT_VOL 176 /* 0..255 */
 /* AB3DI.s sets AUDxPER=443 for SFX playback. Paula PAL audio clock is 3,546,895 Hz. */
 #define AMIGA_SFX_PERIOD 443
 #define AMIGA_PAULA_PAL_CLOCK 3546895
@@ -83,10 +84,21 @@ typedef struct {
     int          sample_id;
 } Channel;
 
+typedef struct {
+    Uint8  *data;
+    Uint32  length;
+    Uint32  position;
+    int     loaded;
+    int     playing;
+    int     loop;
+    int     volume; /* 0..255 */
+} MusicTrack;
+
 static SDL_AudioDeviceID g_device = 0;
 static SDL_AudioSpec     g_spec;
 static LoadedSample      g_samples[MAX_SAMPLES];
 static Channel           g_channels[MAX_CHANNELS];
+static MusicTrack        g_music;
 static int               g_audio_ready = 0;
 static int               g_master_volume = 100; /* 0..100, scales per-sample volume in audio_play_sample */
 /* Per-game-frame SFX dedupe:
@@ -133,10 +145,69 @@ static int choose_channel_for_play(void)
     return 0;
 }
 
+static void music_stop_locked(void)
+{
+    g_music.playing = 0;
+    g_music.position = 0;
+}
+
+static void music_unload_locked(void)
+{
+    if (g_music.data) {
+        SDL_free(g_music.data);
+    }
+    g_music.data = NULL;
+    g_music.length = 0;
+    g_music.position = 0;
+    g_music.loaded = 0;
+    g_music.playing = 0;
+    g_music.loop = 1;
+    g_music.volume = MUSIC_DEFAULT_VOL;
+}
+
 static void audio_callback(void *userdata, Uint8 *stream, int len)
 {
     (void)userdata;
     memset(stream, 0, (size_t)len);
+
+    if (g_music.playing && g_music.loaded && g_music.data && g_music.length > 0) {
+        Uint32 out_pos = 0;
+        Uint32 out_remain = (Uint32)len;
+
+        while (out_remain > 0 && g_music.playing) {
+            if (g_music.position >= g_music.length) {
+                if (g_music.loop) {
+                    g_music.position = 0;
+                } else {
+                    g_music.playing = 0;
+                    break;
+                }
+            }
+
+            Uint32 in_remain = g_music.length - g_music.position;
+            Uint32 to_mix = (out_remain < in_remain) ? out_remain : in_remain;
+
+            int mix_vol = g_music.volume;
+            if (mix_vol < 0) mix_vol = 0;
+            if (mix_vol > 255) mix_vol = 255;
+            if (g_master_volume <= 0) {
+                mix_vol = 0;
+            } else {
+                mix_vol = (mix_vol * g_master_volume + 50) / 100;
+                if (mix_vol > 255) mix_vol = 255;
+            }
+            mix_vol = (mix_vol * 128) / 255;
+
+            if (mix_vol > 0) {
+                SDL_MixAudioFormat(stream + out_pos, g_music.data + g_music.position,
+                                   g_spec.format, to_mix, mix_vol);
+            }
+
+            g_music.position += to_mix;
+            out_pos += to_mix;
+            out_remain -= to_mix;
+        }
+    }
 
     for (int c = 0; c < MAX_CHANNELS; c++) {
         Channel *ch = &g_channels[c];
@@ -178,6 +249,54 @@ static void path_filename_to_lower(char *path)
     if (b && (!p || b > p)) p = b;
     if (p) p++; else p = path;
     for (; *p; p++) *p = (char)tolower((unsigned char)*p);
+}
+
+static int load_wav_converted(const char *subpath, char *path_out, size_t path_size,
+                              Uint8 **buf_out, Uint32 *len_out)
+{
+    SDL_AudioSpec want;
+    Uint8 *buf = NULL;
+    Uint32 len = 0;
+    char path[512];
+
+    io_make_data_path(path, sizeof(path), subpath);
+    if (!SDL_LoadWAV(path, &want, &buf, &len)) {
+        char path_lower[512];
+        snprintf(path_lower, sizeof(path_lower), "%s", path);
+        path_filename_to_lower(path_lower);
+        if (!SDL_LoadWAV(path_lower, &want, &buf, &len)) {
+            return 0;
+        }
+        snprintf(path, sizeof(path), "%s", path_lower);
+    }
+
+    SDL_AudioCVT cvt;
+    if (SDL_BuildAudioCVT(&cvt, want.format, want.channels, want.freq,
+                          g_spec.format, g_spec.channels, g_spec.freq) < 0) {
+        SDL_FreeWAV(buf);
+        return 0;
+    }
+
+    cvt.len = (int)len;
+    cvt.buf = (Uint8 *)SDL_malloc((size_t)len * cvt.len_mult);
+    if (!cvt.buf) {
+        SDL_FreeWAV(buf);
+        return 0;
+    }
+    memcpy(cvt.buf, buf, (size_t)len);
+    SDL_FreeWAV(buf);
+
+    if (SDL_ConvertAudio(&cvt) < 0) {
+        SDL_free(cvt.buf);
+        return 0;
+    }
+
+    *buf_out = cvt.buf;
+    *len_out = (Uint32)cvt.len_cvt;
+    if (path_out && path_size > 0) {
+        snprintf(path_out, path_size, "%s", path);
+    }
+    return 1;
 }
 
 /* Load Amiga raw SFX: no header, 8-bit signed PCM, one byte per sample, ~8007 Hz.
@@ -347,6 +466,9 @@ void audio_init(void)
     printf("[AUDIO] init\n");
     memset(g_samples, 0, sizeof(g_samples));
     memset(g_channels, 0, sizeof(g_channels));
+    memset(&g_music, 0, sizeof(g_music));
+    g_music.loop = 1;
+    g_music.volume = MUSIC_DEFAULT_VOL;
     memset(g_sample_last_played_frame, 0, sizeof(g_sample_last_played_frame));
     for (int i = 0; i < MAX_CHANNELS; i++) {
         g_channels[i].sample_id = -1;
@@ -416,8 +538,13 @@ void audio_set_master_volume(int volume_0_to_100)
 void audio_shutdown(void)
 {
     if (g_device) {
+        SDL_LockAudioDevice(g_device);
+        music_unload_locked();
+        SDL_UnlockAudioDevice(g_device);
         SDL_CloseAudioDevice(g_device);
         g_device = 0;
+    } else {
+        music_unload_locked();
     }
     free_samples();
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
@@ -425,13 +552,149 @@ void audio_shutdown(void)
     printf("[AUDIO] shutdown\n");
 }
 
-void audio_init_player(void)       { /* stub */ }
-void audio_stop_player(void)       { /* stub */ }
-void audio_rem_player(void)        { /* stub */ }
-void audio_load_module(const char *filename) { (void)filename; }
-void audio_init_module(void)       { /* stub */ }
-void audio_play_module(void)       { /* stub */ }
-void audio_unload_module(void)     { /* stub */ }
+static int str_ends_with_ci(const char *s, const char *suffix)
+{
+    size_t slen = strlen(s);
+    size_t tlen = strlen(suffix);
+    if (slen < tlen) return 0;
+    const char *tail = s + (slen - tlen);
+    for (size_t i = 0; i < tlen; i++) {
+        if (tolower((unsigned char)tail[i]) != tolower((unsigned char)suffix[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void normalize_module_subpath(const char *filename, char *out, size_t out_size)
+{
+    if (!filename || !*filename || !out || out_size == 0) {
+        if (out && out_size > 0) out[0] = '\0';
+        return;
+    }
+
+    snprintf(out, out_size, "%s", filename);
+    for (char *p = out; *p; p++) {
+        if (*p == '\\') *p = '/';
+    }
+
+    if (str_ends_with_ci(out, ".mt")) {
+        size_t n = strlen(out);
+        if (n + 2 < out_size) {
+            out[n - 3] = '.';
+            out[n - 2] = 'w';
+            out[n - 1] = 'a';
+            out[n] = 'v';
+            out[n + 1] = '\0';
+        }
+    }
+}
+
+void audio_init_player(void)       { /* no-op: single mixed callback backend */ }
+void audio_stop_player(void)
+{
+    if (!g_audio_ready || g_device == 0) return;
+    SDL_LockAudioDevice(g_device);
+    music_stop_locked();
+    SDL_UnlockAudioDevice(g_device);
+}
+
+void audio_rem_player(void)        { audio_unload_module(); }
+
+void audio_load_module(const char *filename)
+{
+    if (!g_audio_ready || g_device == 0 || !filename || !*filename) return;
+
+    char subpath[256];
+    char loaded_path[512];
+    Uint8 *data = NULL;
+    Uint32 len = 0;
+
+    normalize_module_subpath(filename, subpath, sizeof(subpath));
+    if (!subpath[0]) return;
+
+    if (!load_wav_converted(subpath, loaded_path, sizeof(loaded_path), &data, &len)) {
+        SDL_LockAudioDevice(g_device);
+        music_unload_locked();
+        SDL_UnlockAudioDevice(g_device);
+        printf("[MUSIC] missing/unreadable module wav: %s\n", subpath);
+        return;
+    }
+
+    SDL_LockAudioDevice(g_device);
+    music_unload_locked();
+    g_music.data = data;
+    g_music.length = len;
+    g_music.position = 0;
+    g_music.loaded = 1;
+    g_music.playing = 0;
+    g_music.loop = 1;
+    g_music.volume = MUSIC_DEFAULT_VOL;
+    SDL_UnlockAudioDevice(g_device);
+
+    printf("[MUSIC] loaded: %s (%u bytes converted)\n", loaded_path, (unsigned)len);
+}
+
+void audio_init_module(void)
+{
+    if (!g_audio_ready || g_device == 0) return;
+    SDL_LockAudioDevice(g_device);
+    if (g_music.loaded) {
+        g_music.position = 0;
+    }
+    SDL_UnlockAudioDevice(g_device);
+}
+
+void audio_play_module(void)
+{
+    if (!g_audio_ready || g_device == 0) return;
+    SDL_LockAudioDevice(g_device);
+    if (g_music.loaded && g_music.data && g_music.length > 0) {
+        g_music.playing = 1;
+    }
+    SDL_UnlockAudioDevice(g_device);
+}
+
+void audio_play_module_blocking_once(const char *filename)
+{
+    if (!g_audio_ready || g_device == 0) return;
+    if (!filename || !*filename) return;
+
+    audio_load_module(filename);
+
+    int started = 0;
+    SDL_LockAudioDevice(g_device);
+    if (g_music.loaded && g_music.data && g_music.length > 0) {
+        g_music.loop = 0;
+        g_music.position = 0;
+        g_music.playing = 1;
+        started = 1;
+    }
+    SDL_UnlockAudioDevice(g_device);
+
+    if (!started) return;
+
+    printf("[MUSIC] playing once: %s\n", filename);
+    for (;;) {
+        int playing;
+        SDL_LockAudioDevice(g_device);
+        playing = g_music.playing;
+        SDL_UnlockAudioDevice(g_device);
+        if (!playing) break;
+        SDL_Delay(10);
+    }
+}
+
+void audio_unload_module(void)
+{
+    if (g_device) {
+        SDL_LockAudioDevice(g_device);
+        music_unload_locked();
+        SDL_UnlockAudioDevice(g_device);
+    } else {
+        music_unload_locked();
+    }
+}
 
 void audio_begin_frame(void)
 {
@@ -511,5 +774,27 @@ void audio_stop_all(void)
     SDL_UnlockAudioDevice(g_device);
 }
 
-void audio_mt_init(void)           { /* stub */ }
-void audio_mt_end(void)            { /* stub */ }
+void audio_mt_init(void)
+{
+    static int logged_disabled = 0;
+    if (!g_audio_ready || g_device == 0) return;
+    /* User preference: disable in-level background music. */
+    audio_unload_module();
+    if (!logged_disabled) {
+        logged_disabled = 1;
+        printf("[MUSIC] in-game music disabled\n");
+    }
+}
+
+void audio_mt_end(void)
+{
+    if (!g_audio_ready || g_device == 0) return;
+    SDL_LockAudioDevice(g_device);
+    if (g_music.playing) {
+        music_stop_locked();
+        SDL_UnlockAudioDevice(g_device);
+        printf("[MUSIC] in-game music stopped\n");
+        return;
+    }
+    SDL_UnlockAudioDevice(g_device);
+}
