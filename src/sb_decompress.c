@@ -16,8 +16,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef AB3D_STANDALONE_TOOL
 #include "logging.h"
 #define printf ab3d_log_printf
+#endif
 
 /* =======================================================================
  * =SB= header parsing
