@@ -29,9 +29,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backpal")
 endif()
 
 # -----------------------------------------------------------------------
-# Data: ensure data/sounds exists (use Amiga raw files or .wav; no build-time conversion)
+# Data: use amiga/sounds as source; generate .wav into data/sounds
 # -----------------------------------------------------------------------
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds")
+find_package(Python3 QUIET)
 
 # -----------------------------------------------------------------------
 # Data: vector objects are copied to the build output (beside the exe)
@@ -99,7 +100,6 @@ target_include_directories(ab3d1 PRIVATE src)
 set(PAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data/pal")
 set(PAL_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/src/sprite_palettes_data.h")
 if(EXISTS "${PAL_DIR}")
-  find_package(Python3 QUIET)
   if(Python3_FOUND)
     execute_process(
       COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/pal_to_header.py"
@@ -139,6 +139,29 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects")
             "${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects"
             "$<TARGET_FILE_DIR:ab3d1>/data/vectorobjects"
     COMMENT "Copy amiga/vectorobjects -> build data/vectorobjects"
+  )
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/sounds")
+  add_custom_command(TARGET ab3d1 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/amiga/sounds"
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds"
+    COMMENT "Sync amiga/sounds -> data/sounds"
+  )
+  if(Python3_FOUND)
+    add_custom_command(TARGET ab3d1 POST_BUILD
+      COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/raw_to_wav.py"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      COMMENT "Generate .wav files in data/sounds from raw Amiga sounds"
+    )
+  endif()
+  add_custom_command(TARGET ab3d1 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/sounds"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds"
+            "$<TARGET_FILE_DIR:ab3d1>/data/sounds"
+    COMMENT "Copy data/sounds -> build data/sounds"
   )
 endif()
 set_target_properties(ab3d1 PROPERTIES
