@@ -35,6 +35,14 @@ file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds")
 find_package(Python3 QUIET)
 
 # -----------------------------------------------------------------------
+# Data: use amiga/data/includes as source and sync into data/includes
+# -----------------------------------------------------------------------
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/includes")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/includes")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/includes" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
+endif()
+
+# -----------------------------------------------------------------------
 # Data: vector objects are copied to the build output (beside the exe)
 # from amiga/vectorobjects.
 # -----------------------------------------------------------------------
@@ -162,6 +170,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/sounds")
             "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds"
             "$<TARGET_FILE_DIR:ab3d1>/data/sounds"
     COMMENT "Copy data/sounds -> build data/sounds"
+  )
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/includes")
+  add_custom_command(TARGET ab3d1 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/includes"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/includes"
+            "$<TARGET_FILE_DIR:ab3d1>/data/includes"
+    COMMENT "Copy data/includes -> build data/includes"
   )
 endif()
 set_target_properties(ab3d1 PROPERTIES
