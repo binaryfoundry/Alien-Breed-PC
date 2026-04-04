@@ -60,6 +60,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SOUNDS_DIR,
         help=f"Directory containing raw sound files (default: {DEFAULT_SOUNDS_DIR})",
     )
+    parser.add_argument(
+        "--wav-only",
+        action="store_true",
+        help="After conversion, remove non-.wav source files from sounds-dir",
+    )
     return parser.parse_args()
 
 
@@ -176,6 +181,22 @@ def main() -> int:
 
     if converted:
         print(f"[raw_to_wav] Converted {converted} file(s) to .wav in {sounds_dir}")
+
+    if args.wav_only:
+        removed = 0
+        for p in sorted(sounds_dir.rglob("*")):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() == ".wav":
+                continue
+            try:
+                p.unlink()
+                removed += 1
+                print(f"  removed source {p.relative_to(sounds_dir)}")
+            except OSError as e:
+                print(f"[raw_to_wav] failed to remove {p}: {e}", file=sys.stderr)
+        if removed:
+            print(f"[raw_to_wav] Removed {removed} non-.wav source file(s) from {sounds_dir}")
     return 0
 
 

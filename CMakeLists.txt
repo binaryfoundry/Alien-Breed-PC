@@ -170,8 +170,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/sounds" AND Python3_FOUND)
   add_custom_command(TARGET ab3d1 POST_BUILD
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/raw_to_wav.py"
             --sounds-dir "$<TARGET_FILE_DIR:ab3d1>/data/sounds"
+            --wav-only
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "Generate/update .wav files in output data/sounds from raw Amiga sounds"
+    COMMENT "Generate/update .wav files in output data/sounds and keep wav-only assets"
   )
 endif()
 
