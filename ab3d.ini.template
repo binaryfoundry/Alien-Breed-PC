@@ -20,6 +20,11 @@ all_weapons=0
 # 1 = treat every key in the level as collected (door/lift condition bits only; switches unchanged).
 all_keys=0
 
+# Display mode:
+# fullscreen = fullscreen-desktop borderless (no display mode switch / no resolution change)
+# windowed = resizable window using render_width/render_height
+display_mode=fullscreen
+
 # Master sound effects volume: 0 = silent, 100 = full (linear scale).
 volume=100
 

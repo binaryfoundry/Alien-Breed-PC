@@ -87,9 +87,7 @@ static int g_fb_mipmap_ok_logged;
 static int g_fb_mipmap_fail_logged;
 #endif
 
-#ifdef AB3D_RELEASE
-/* Release: run in borderless desktop-sized window (never request display mode switch). */
-#endif
+/* Fullscreen-desktop means borderless desktop-sized window (no display mode switch). */
 
 /* Non-GL path: g_texture is ARGB8888 after CPU unpack. GL path uses g_gl_tex_cw (R16UI). */
 
@@ -604,6 +602,19 @@ static void display_log_display_mode_snapshot(const char *tag)
     printf("[DISPLAY] %s: display mode query unavailable (%s)\n", tag, SDL_GetError());
 }
 
+static int display_use_fullscreen_desktop(const GameState *state)
+{
+    if (state) {
+        if (state->cfg_display_mode == 1) return 1;
+        if (state->cfg_display_mode == 0) return 0;
+    }
+#ifdef AB3D_RELEASE
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 /* -----------------------------------------------------------------------
  * Lifecycle
  * ----------------------------------------------------------------------- */
@@ -612,12 +623,14 @@ void display_init(GameState *state)
     int base_rw = 1280;
     int base_rh = 720;
     int supersampling = 1;
+    int fullscreen_desktop;
     int rw, rh;
     if (state) {
         base_rw = (int)state->cfg_render_width;
         base_rh = (int)state->cfg_render_height;
         supersampling = (int)state->cfg_supersampling;
     }
+    fullscreen_desktop = display_use_fullscreen_desktop(state);
     if (base_rw < 96) base_rw = 96;
     if (base_rh < 80) base_rh = 80;
     if (supersampling < 1) supersampling = 1;
@@ -658,13 +671,13 @@ void display_init(GameState *state)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
-#ifdef AB3D_RELEASE
-    printf("[DISPLAY] SDL2 init (window=desktop, base=%dx%d, internal render=%dx%d, supersampling=%d)\n",
-           base_rw, base_rh, g_internal_w, g_internal_h, supersampling);
-#else
-    printf("[DISPLAY] SDL2 init (window %dx%d, internal render %dx%d, supersampling=%d; resize to letterbox)\n",
-           base_rw, base_rh, g_internal_w, g_internal_h, supersampling);
-#endif
+    if (fullscreen_desktop) {
+        printf("[DISPLAY] SDL2 init (display_mode=fullscreen-desktop, base=%dx%d, internal render=%dx%d, supersampling=%d)\n",
+               base_rw, base_rh, g_internal_w, g_internal_h, supersampling);
+    } else {
+        printf("[DISPLAY] SDL2 init (display_mode=windowed, window %dx%d, internal render %dx%d, supersampling=%d; resize to letterbox)\n",
+               base_rw, base_rh, g_internal_w, g_internal_h, supersampling);
+    }
 
     renderer_init();
 
@@ -674,32 +687,33 @@ void display_init(GameState *state)
     Uint32 window_flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
     int window_x = SDL_WINDOWPOS_CENTERED;
     int window_y = SDL_WINDOWPOS_CENTERED;
-#ifdef AB3D_RELEASE
-    SDL_Rect desktop_bounds;
-    SDL_DisplayMode desktop_mode;
-    if (SDL_GetDesktopDisplayMode(0, &desktop_mode) == 0 &&
-        desktop_mode.w >= 96 && desktop_mode.h >= 80) {
-        window_w = desktop_mode.w;
-        window_h = desktop_mode.h;
-    }
-    if (SDL_GetDisplayBounds(0, &desktop_bounds) == 0) {
-        window_x = desktop_bounds.x;
-        window_y = desktop_bounds.y;
-        if (desktop_bounds.w >= 96 && desktop_bounds.h >= 80) {
-            window_w = desktop_bounds.w;
-            window_h = desktop_bounds.h;
+    g_release_borderless_desktop = 0;
+    if (fullscreen_desktop) {
+        SDL_Rect desktop_bounds;
+        SDL_DisplayMode desktop_mode;
+        if (SDL_GetDesktopDisplayMode(0, &desktop_mode) == 0 &&
+            desktop_mode.w >= 96 && desktop_mode.h >= 80) {
+            window_w = desktop_mode.w;
+            window_h = desktop_mode.h;
         }
+        if (SDL_GetDisplayBounds(0, &desktop_bounds) == 0) {
+            window_x = desktop_bounds.x;
+            window_y = desktop_bounds.y;
+            if (desktop_bounds.w >= 96 && desktop_bounds.h >= 80) {
+                window_w = desktop_bounds.w;
+                window_h = desktop_bounds.h;
+            }
+        }
+        window_flags = SDL_WINDOW_SHOWN | SDL_WINDOW_BORDERLESS;
+        g_release_borderless_desktop = 1;
     }
-    window_flags = SDL_WINDOW_SHOWN | SDL_WINDOW_BORDERLESS;
-    g_release_borderless_desktop = 1;
-#endif
     if (driver_override && strcmp(driver_override, "opengl") == 0) {
         window_flags |= SDL_WINDOW_OPENGL;
-#ifdef AB3D_RELEASE
-        printf("[DISPLAY] Release OpenGL path: borderless desktop window + SDL_WINDOW_OPENGL\n");
-#else
-        printf("[DISPLAY] OpenGL override: windowed SDL_WINDOW_OPENGL enabled\n");
-#endif
+        if (fullscreen_desktop) {
+            printf("[DISPLAY] OpenGL override: borderless desktop window + SDL_WINDOW_OPENGL\n");
+        } else {
+            printf("[DISPLAY] OpenGL override: windowed SDL_WINDOW_OPENGL enabled\n");
+        }
     }
 
     g_window = SDL_CreateWindow(
@@ -812,9 +826,7 @@ void display_handle_resize(void)
 int display_is_fullscreen(void)
 {
     if (!g_window) return 0;
-#ifdef AB3D_RELEASE
     if (g_release_borderless_desktop) return 1;
-#endif
     return (SDL_GetWindowFlags(g_window) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) != 0;
 }
 

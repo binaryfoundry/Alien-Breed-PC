@@ -46,6 +46,50 @@ static int parse_bool(const char *v)
     return 0;
 }
 
+static int parse_display_mode_value(const char *v, int8_t *out_mode)
+{
+    char buf[64];
+    size_t n = 0;
+    if (!v || !out_mode) return 0;
+
+    while (*v && isspace((unsigned char)*v)) v++;
+    while (*v && n + 1 < sizeof(buf)) {
+        buf[n++] = (char)tolower((unsigned char)*v++);
+    }
+    while (n > 0 && isspace((unsigned char)buf[n - 1])) n--;
+    buf[n] = '\0';
+
+    if (strcmp(buf, "fullscreen") == 0 ||
+        strcmp(buf, "fullscreen_desktop") == 0 ||
+        strcmp(buf, "desktop") == 0 ||
+        strcmp(buf, "1") == 0 ||
+        strcmp(buf, "true") == 0 ||
+        strcmp(buf, "yes") == 0 ||
+        strcmp(buf, "on") == 0) {
+        *out_mode = 1;
+        return 1;
+    }
+    if (strcmp(buf, "windowed") == 0 ||
+        strcmp(buf, "window") == 0 ||
+        strcmp(buf, "0") == 0 ||
+        strcmp(buf, "false") == 0 ||
+        strcmp(buf, "no") == 0 ||
+        strcmp(buf, "off") == 0) {
+        *out_mode = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static const char *display_mode_to_text(int8_t mode)
+{
+    switch (mode) {
+    case 1:  return "fullscreen";
+    case 0:  return "windowed";
+    default: return "build-default";
+    }
+}
+
 static void apply_line(GameState *state, char *line)
 {
     char *eq = strchr(line, '=');
@@ -73,6 +117,16 @@ static void apply_line(GameState *state, char *line)
         state->cfg_all_weapons = parse_bool(val) ? true : false;
     } else if (strcmp(key, "all_keys") == 0) {
         state->cfg_all_keys = parse_bool(val) ? true : false;
+    } else if (strcmp(key, "display_mode") == 0 ||
+               strcmp(key, "window_mode") == 0) {
+        int8_t mode = -1;
+        if (parse_display_mode_value(val, &mode)) {
+            state->cfg_display_mode = mode;
+        } else {
+            printf("[SETTINGS] display_mode ignored (use windowed/fullscreen): %s\n", val);
+        }
+    } else if (strcmp(key, "fullscreen") == 0) {
+        state->cfg_display_mode = parse_bool(val) ? 1 : 0;
     } else if (strcmp(key, "render_width") == 0) {
         int n = atoi(val);
         if (n >= 96 && n <= RENDER_INTERNAL_MAX_DIM) {
@@ -141,13 +195,14 @@ static void apply_runtime_constraints(GameState *state)
 static void log_effective_settings(const GameState *state, const char *source_label)
 {
     if (state->cfg_start_level >= 0) {
-        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d\n",
+        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d\n",
                source_label,
                (int)state->cfg_start_level,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
                state->cfg_all_weapons ? 1 : 0,
                state->cfg_all_keys ? 1 : 0,
+               display_mode_to_text(state->cfg_display_mode),
                (int)state->cfg_render_width,
                (int)state->cfg_render_height,
                (int)state->cfg_supersampling,
@@ -157,12 +212,13 @@ static void log_effective_settings(const GameState *state, const char *source_la
                (int)state->cfg_y_proj_scale,
                state->cfg_billboard_sprite_rendering_enhancement ? 1 : 0);
     } else {
-        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d\n",
+        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d\n",
                source_label,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
                state->cfg_all_weapons ? 1 : 0,
                state->cfg_all_keys ? 1 : 0,
+               display_mode_to_text(state->cfg_display_mode),
                (int)state->cfg_render_width,
                (int)state->cfg_render_height,
                (int)state->cfg_supersampling,
