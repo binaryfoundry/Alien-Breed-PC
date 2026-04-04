@@ -34,19 +34,19 @@ void player2_shoot(GameState *state);
 void player1_snapshot(GameState *state);
 void player2_snapshot(GameState *state);
 
-/* Debug: save full game + level runtime state to data/debug_save.bin (F5). */
-void player_debug_save_position(GameState *state);
+/* Save full game + level runtime state to savegame.bin beside the executable (F5). */
+void player_save_position(GameState *state);
 
 typedef enum {
-    PLAYER_DEBUG_LOAD_FAILED = 0,
-    PLAYER_DEBUG_LOAD_APPLIED,
-    PLAYER_DEBUG_LOAD_NEED_LEVEL_RELOAD
-} PlayerDebugLoadResult;
+    PLAYER_SAVE_LOAD_FAILED = 0,
+    PLAYER_SAVE_LOAD_APPLIED,
+    PLAYER_SAVE_LOAD_NEED_LEVEL_RELOAD
+} PlayerSaveLoadResult;
 
-/* Read debug_save.bin. Full saves stage a pending restore and request level reload. */
-PlayerDebugLoadResult player_debug_load_save_from_file(GameState *state);
+/* Read savegame.bin. Full saves stage a pending restore and request level reload. */
+PlayerSaveLoadResult player_load_save_from_file(GameState *state);
 
 /* After level reload, apply the pending full restore (or legacy position payload). */
-void player_debug_apply_save_payload_after_level_load(GameState *state);
+void player_apply_save_payload_after_level_load(GameState *state);
 
 #endif /* PLAYER_H */

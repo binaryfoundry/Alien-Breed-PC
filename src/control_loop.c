@@ -296,7 +296,7 @@ void play_the_game(GameState *state)
 {
     /* Fresh session: do not carry F9 reload state from a prior play_the_game call */
     state->debug_f9_need_level_reload = false;
-    state->debug_f9_pending_apply_save = false;
+    state->f9_pending_apply_save = false;
 
     bool copper_screen_ready = false;
 
@@ -366,7 +366,7 @@ void play_the_game(GameState *state)
         /* Ensure each object has world size in its record (Amiga style), for file and test levels */
         if (state->level.object_data && state->level.num_object_points > 0)
             object_init_world_sizes_from_types(&state->level);
-        if (!state->debug_f9_pending_apply_save) {
+        if (!state->f9_pending_apply_save) {
             renderer_build_level_sky_cache(&state->level);
         }
 
@@ -375,7 +375,7 @@ void play_the_game(GameState *state)
         printf("[GAME] Control mode: mouse+kbd (default)\n");
 
         /* ---- Init player positions from level header (skip when F9 will apply save after load) ---- */
-        if (!state->debug_f9_pending_apply_save) {
+        if (!state->f9_pending_apply_save) {
             player_init_from_level(state);
         }
 
@@ -401,11 +401,11 @@ void play_the_game(GameState *state)
         state->plr2.energy = PLAYER_MAX_ENERGY;
 
         /* F9 cross-level: apply position/orientation only after level + objects are ready */
-        if (state->debug_f9_pending_apply_save) {
-            state->debug_f9_pending_apply_save = false;
-            player_debug_apply_save_payload_after_level_load(state);
+        if (state->f9_pending_apply_save) {
+            state->f9_pending_apply_save = false;
+            player_apply_save_payload_after_level_load(state);
             renderer_build_level_sky_cache(&state->level);
-            printf("[PLAYER] debug load: save restored (level %d)\n",
+            printf("[PLAYER] load: save restored (level %d)\n",
                    (int)state->current_level);
         }
 
@@ -418,7 +418,7 @@ void play_the_game(GameState *state)
 
         if (state->debug_f9_need_level_reload) {
             state->debug_f9_need_level_reload = false;
-            state->debug_f9_pending_apply_save = true;
+            state->f9_pending_apply_save = true;
             printf("[GAME] F9: reloading level %d and applying save state\n",
                    (int)state->current_level);
             audio_mt_end();

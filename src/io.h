@@ -42,7 +42,9 @@ void io_save_prefs(const char *prefs_buf, int buf_size);
 void io_load_passwords(void);
 void io_save_passwords(void);
 
-/* Build full path for a file under the data directory (e.g. "debug_save.bin"). */
+/* Build full path for a file under the executable-local data/ directory. */
 void io_make_data_path(char *buf, size_t bufsize, const char *subpath);
+/* Build full path for a file beside the executable (e.g. "savegame.bin"). */
+void io_make_exe_path(char *buf, size_t bufsize, const char *subpath);
 
 #endif /* IO_H */

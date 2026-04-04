@@ -31,25 +31,35 @@
  *
  * Game data must be present beside the executable under data/.
  * ----------------------------------------------------------------------- */
+static char g_exe_base[512] = "";
 static char g_data_base[512] = "";
 
-static const char *data_base_path(void)
+static const char *exe_base_path(void)
 {
-    if (g_data_base[0]) return g_data_base;
+    if (g_exe_base[0]) return g_exe_base;
 
     char *base = SDL_GetBasePath();
     if (!base) {
-        fprintf(stderr, "[IO] FATAL: SDL_GetBasePath failed; cannot resolve executable-local data/\n");
+        fprintf(stderr, "[IO] FATAL: SDL_GetBasePath failed; cannot resolve executable base path\n");
         exit(1);
     }
 
-    if (snprintf(g_data_base, sizeof(g_data_base), "%sdata/", base) >= (int)sizeof(g_data_base)) {
+    if (snprintf(g_exe_base, sizeof(g_exe_base), "%s", base) >= (int)sizeof(g_exe_base)) {
         SDL_free(base);
         fprintf(stderr, "[IO] FATAL: executable base path too long\n");
         exit(1);
     }
     SDL_free(base);
+    return g_exe_base;
+}
 
+static const char *data_base_path(void)
+{
+    if (g_data_base[0]) return g_data_base;
+    if (snprintf(g_data_base, sizeof(g_data_base), "%sdata/", exe_base_path()) >= (int)sizeof(g_data_base)) {
+        fprintf(stderr, "[IO] FATAL: executable-local data path too long\n");
+        exit(1);
+    }
     return g_data_base;
 }
 
@@ -61,6 +71,11 @@ static void make_data_path(char *buf, size_t bufsize, const char *subpath)
 void io_make_data_path(char *buf, size_t bufsize, const char *subpath)
 {
     snprintf(buf, bufsize, "%s%s", data_base_path(), subpath);
+}
+
+void io_make_exe_path(char *buf, size_t bufsize, const char *subpath)
+{
+    snprintf(buf, bufsize, "%s%s", exe_base_path(), subpath);
 }
 
 _Noreturn static void io_fatal_missing(const char *what, const char *path)

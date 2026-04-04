@@ -118,17 +118,17 @@ void game_loop(GameState *state)
          * ================================================================ */
         input_update(state->key_map, &state->last_pressed);
         if (input_f5_save_requested())
-            player_debug_save_position(state);
+            player_save_position(state);
         if (input_f9_load_requested()) {
-            switch (player_debug_load_save_from_file(state)) {
-            case PLAYER_DEBUG_LOAD_APPLIED:
+            switch (player_load_save_from_file(state)) {
+            case PLAYER_SAVE_LOAD_APPLIED:
                 break;
-            case PLAYER_DEBUG_LOAD_NEED_LEVEL_RELOAD:
+            case PLAYER_SAVE_LOAD_NEED_LEVEL_RELOAD:
                 state->debug_f9_need_level_reload = true;
                 state->running = false;
                 break;
-            case PLAYER_DEBUG_LOAD_FAILED:
-                printf("[PLAYER] F9: no debug_save.bin or load failed\n");
+            case PLAYER_SAVE_LOAD_FAILED:
+                printf("[PLAYER] F9: no savegame.bin or load failed\n");
                 break;
             }
         }
