@@ -162,16 +162,16 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/sounds")
             "${AB3D_STAGE_DATA_DIR}/sounds"
     COMMENT "Stage sounds: amiga/sounds -> build/data/sounds"
   )
-  if(Python3_FOUND)
-    add_custom_command(TARGET ab3d1 POST_BUILD
-      COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/raw_to_wav.py"
-              --sounds-dir "${AB3D_STAGE_DATA_DIR}/sounds"
-      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      COMMENT "Generate .wav files in build/data/sounds from raw Amiga sounds"
-    )
-  endif()
 endif()
 ab3d_copy_stage_dir("sounds")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/sounds" AND Python3_FOUND)
+  add_custom_command(TARGET ab3d1 POST_BUILD
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/raw_to_wav.py"
+            --sounds-dir "$<TARGET_FILE_DIR:ab3d1>/data/sounds"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Generate/update .wav files in output data/sounds from raw Amiga sounds"
+  )
+endif()
 
 ab3d_stage_dir("${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/includes" "includes")
 ab3d_copy_stage_dir("includes")

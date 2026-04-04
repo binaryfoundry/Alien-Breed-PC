@@ -7,6 +7,7 @@ Default input/output directory is repo-root data/sounds, but a custom
 directory can be passed with --sounds-dir.
 """
 import argparse
+import io
 from pathlib import Path
 import struct
 import sys
@@ -38,6 +39,15 @@ def write_wav_header(f, num_samples: int) -> None:
     # data chunk
     f.write(b"data")
     f.write(struct.pack("<I", data_size))
+
+
+def build_wav_bytes(raw: bytes) -> bytes:
+    """Return complete WAV bytes for signed 8-bit raw samples."""
+    samples = bytearray((b + 128) & 0xFF for b in raw)
+    out = io.BytesIO()
+    write_wav_header(out, len(samples))
+    out.write(samples)
+    return out.getvalue()
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,13 +82,17 @@ def main() -> int:
         if len(raw) == 0:
             continue
 
-        # Amiga 8-bit signed (file) -> WAV 8-bit unsigned: u = (b + 128) % 256
-        samples = bytearray((b + 128) & 0xFF for b in raw)
-
         out = p.parent / (p.name.lower() + ".wav")
+        wav_bytes = build_wav_bytes(raw)
+        if out.exists():
+            try:
+                if out.read_bytes() == wav_bytes:
+                    continue
+            except OSError:
+                pass
+
         with open(out, "wb") as f:
-            write_wav_header(f, len(samples))
-            f.write(samples)
+            f.write(wav_bytes)
         converted += 1
         print(f"  {p.name} -> {out.name}")
 
