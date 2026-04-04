@@ -4372,20 +4372,24 @@ static const struct {
 };
 
 /* RockPop/Explosion world sizes are authored from Amiga BitMapObj tables where
- * both axes use the same <<7 scale. This port projects billboard height with
- * proj_y_scale, so convert Amiga-authored explosion height into the port's
- * Y-scale domain before projection.
+ * both axes use the same <<7 scale.
  *
- * This keeps explosion billboard sizing consistent across resize/aspect changes
- * without relying on a fixed heuristic multiplier. */
-static inline int explosion_world_h_to_port(const RendererState *r, int world_h_amiga)
+ * The port projects billboard width via runtime horizontal projection scaling,
+ * but height goes through proj_y_scale. Convert Amiga-authored explosion height
+ * into that Y domain using the current X sprite scale so explosions preserve the
+ * original width:height relationship across aspect/render size changes. */
+static inline int explosion_world_h_to_port(const RendererState *r, int world_h_amiga, int sprite_scale_x)
 {
     int32_t py = r->proj_y_scale;
     if (py < 1) py = 1;
-    int64_t corrected = ((int64_t)world_h_amiga * 128 + (py / 2)) / py;
-    if (corrected < 1) corrected = 1;
-    if (corrected > 32767) corrected = 32767;
-    return (int)corrected;
+    if (sprite_scale_x < 1) sprite_scale_x = 1;
+    {
+        int64_t denom = (int64_t)py * (int64_t)RENDER_SCALE;
+        int64_t corrected = ((int64_t)world_h_amiga * (int64_t)sprite_scale_x + (denom / 2)) / denom;
+        if (corrected < 1) corrected = 1;
+        if (corrected > 32767) corrected = 32767;
+        return (int)corrected;
+    }
 }
 
 #define RENDERER_ZONE_EXIT_LIST_OFF 32
@@ -5027,7 +5031,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int scr_y = (int)((int64_t)rel_y_8 * (int64_t)r->proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp_z) + center_y;
             int z_for_size = orp_z;
             if (z_for_size < 1) z_for_size = 1;
-            int expl_h_port = explosion_world_h_to_port(r, expl_h);
+            int expl_h_port = explosion_world_h_to_port(r, expl_h, explosion_sprite_scale_x);
             int sprite_w = (int)((int32_t)expl_w * explosion_sprite_scale_x / z_for_size) * SPRITE_SIZE_MULTIPLIER;
             int sprite_h = (int)((int64_t)expl_h_port * (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
             sprite_w *= EXPLOSION_SIZE_CORRECTION;
@@ -5181,7 +5185,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         int world_h_for_proj = world_h;
         if (explosion_billboard) {
             sprite_scale_x = explosion_sprite_scale_x;
-            world_h_for_proj = explosion_world_h_to_port(&g_renderer, world_h);
+            world_h_for_proj = explosion_world_h_to_port(&g_renderer, world_h, explosion_sprite_scale_x);
         }
         int sprite_w = (int)((int32_t)world_w * sprite_scale_x / z_for_size) * SPRITE_SIZE_MULTIPLIER;
         int sprite_h = (int)((int64_t)world_h_for_proj * (int64_t)g_renderer.proj_y_scale * (int64_t)RENDER_SCALE / z_for_size) * SPRITE_SIZE_MULTIPLIER;
