@@ -43,6 +43,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/includes")
 endif()
 
 # -----------------------------------------------------------------------
+# Data: use amiga/data/levels as source and sync into data/levels
+# -----------------------------------------------------------------------
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/levels")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/levels")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/levels" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
+endif()
+
+# -----------------------------------------------------------------------
 # Data: vector objects are copied to the build output (beside the exe)
 # from amiga/vectorobjects.
 # -----------------------------------------------------------------------
@@ -179,6 +187,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/includes")
             "${CMAKE_CURRENT_SOURCE_DIR}/data/includes"
             "$<TARGET_FILE_DIR:ab3d1>/data/includes"
     COMMENT "Copy data/includes -> build data/includes"
+  )
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/levels")
+  add_custom_command(TARGET ab3d1 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/levels"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/levels"
+            "$<TARGET_FILE_DIR:ab3d1>/data/levels"
+    COMMENT "Copy data/levels -> build data/levels"
   )
 endif()
 set_target_properties(ab3d1 PROPERTIES
