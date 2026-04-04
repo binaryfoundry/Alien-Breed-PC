@@ -229,10 +229,6 @@ typedef struct {
     BoxRot boxrot[MAX_POLY_POINTS];
     int16_t boxbrights[MAX_POLY_POINTS];
     ObjVertex world[MAX_POLY_POINTS];
-    int32_t *depth;
-    uint32_t *depth_gen;
-    size_t depth_cap;
-    uint32_t generation;
 } PolyThreadContext;
 
 static SDL_TLSID g_poly_thread_tls_id = 0;
@@ -264,10 +260,8 @@ static void draw_textured_polygon(const int *sx, const int *sy,
                                   int n, uint16_t tex_map_word, int shade_level,
                                   const int16_t *shade_values,
                                   int use_gouraud, int use_holes,
-                                  int32_t *depth_buf, uint32_t *depth_gen_buf, uint32_t depth_gen_tag,
                                   int clip_left, int clip_right,
                                   int clip_top, int clip_bot);
-static int ensure_poly_depth_buffer(PolyThreadContext *ctx, size_t pixels);
 static PolyThreadContext *poly_thread_context_get(void);
 static void poly_thread_context_destroy(void *userdata);
 
@@ -275,8 +269,6 @@ static void poly_thread_context_destroy(void *userdata)
 {
     PolyThreadContext *ctx = (PolyThreadContext*)userdata;
     if (!ctx) return;
-    free(ctx->depth);
-    free(ctx->depth_gen);
     ab3d_aligned_free(ctx);
 }
 
@@ -522,16 +514,6 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
     int half_h = H / 2;
     int proj_xs = poly_proj_x_scale_px(r, state);
     int32_t proj_ys = r->proj_y_scale;
-    size_t pix_count = (size_t)W * (size_t)H;
-    if (!ensure_poly_depth_buffer(thread_ctx, pix_count)) return;
-    /* Advance generation stamp instead of clearing all W*H entries.
-     * On overflow back to zero, reset the stamp array so no stale entries match. */
-    thread_ctx->generation++;
-    if (thread_ctx->generation == 0) {
-        thread_ctx->generation = 1;
-        if (thread_ctx->depth_gen)
-            memset(thread_ctx->depth_gen, 0, pix_count * sizeof(uint32_t));
-    }
 
     for (int i = 0; i < np; i++) {
         int32_t worldX = boxrot[i].x + xpos_mid;
@@ -544,10 +526,10 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
     }
 
     /* ---- 7. PutinParts: depth-sort polygon parts --------------------- */
-    /* Amiga uses a 32-slot insertion-sort depth buffer keyed by squared
-     * distance of each part's sort-point from the object origin.
-     * For simplicity we use a direct array + insertion sort.
-     * sort key = z of the sort point's world-space Z (before projection).
+    /* Amiga PutinParts key uses translated boxrot values (after convtoscr adds
+     * object/view offsets), not pure local-object coordinates:
+     *   key = (x>>7)^2 + (y>>7)^2 + z^2
+     * with muls word semantics.
      */
     int nparts = vo->num_parts;
     if (nparts > MAX_POLY_PARTS) nparts = MAX_POLY_PARTS;
@@ -562,20 +544,19 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
         int sort_pt = (int)vo->part_sort_off[p] / 10;
         if (sort_pt < 0 || sort_pt >= np) sort_pt = 0;
 
-        /* Amiga PutinParts key:
-         *   key = (x>>7)^2 + (y>>7)^2 + z^2
-         * where x/y/z are from boxrot[] (object space after facing/view rotation,
-         * before object translation). */
-        int16_t sx = (int16_t)(boxrot[sort_pt].x >> 7);
-        int16_t sy = (int16_t)(boxrot[sort_pt].y >> 7);
-        int16_t sz = (int16_t)boxrot[sort_pt].z;
+        /* Match Amiga data source: translated coords (our world[]). */
+        int16_t sx = (int16_t)(world[sort_pt].x >> 7);
+        int16_t sy = (int16_t)(world[sort_pt].y >> 7);
+        int16_t sz = (int16_t)world[sort_pt].z;
         int32_t key = (int32_t)sx * (int32_t)sx +
                       (int32_t)sy * (int32_t)sy +
                       (int32_t)sz * (int32_t)sz;
 
-        /* Insertion sort: farthest first (painter's) */
+        /* Insertion sort: farthest first (painter's).
+         * Use <= so equal keys are inserted ahead of existing entries,
+         * matching PutinParts (cmp.l (a0),d0 / blt stillfront). */
         int ins = sorted_count;
-        while (ins > 0 && sorted[ins - 1].sort_key < key) ins--;
+        while (ins > 0 && sorted[ins - 1].sort_key <= key) ins--;
         for (int k = sorted_count; k > ins; k--) sorted[k] = sorted[k - 1];
         sorted[ins].sort_key = key;
         sorted[ins].part_idx = p;
@@ -703,7 +684,6 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
                 draw_textured_polygon(sx, sy, sz, su, svt, clipped_n,
                                       tex_map, shade_level,
                                       shade_values, use_gouraud, use_holes,
-                                      thread_ctx->depth, thread_ctx->depth_gen, thread_ctx->generation,
                                       clip_l, clip_r, clip_t, clip_b);
             } else {
                 uint32_t color = make_poly_color(vect_num, tex_map, shade_level);
@@ -779,7 +759,6 @@ static void draw_textured_triangle(const int *sx, const int *sy,
                                    const int16_t *shade_values,
                                    int use_gouraud, int use_holes,
                                    uint16_t tex_map_word, int shade_level,
-                                   int32_t *depth_buf, uint32_t *depth_gen_buf, uint32_t depth_gen_tag,
                                    int clip_left, int clip_right,
                                    int clip_top, int clip_bot)
 {
@@ -823,10 +802,7 @@ static void draw_textured_triangle(const int *sx, const int *sy,
 
             int32_t zf = (int32_t)(w0 * (double)sz[0] + w1 * (double)sz[1] + w2 * (double)sz[2]);
             if (poly_pixel_behind_wall(x, y, zf)) continue;
-            size_t didx = (size_t)y * (size_t)W + (size_t)x;
-            if (depth_buf && depth_gen_buf &&
-                depth_gen_buf[didx] == depth_gen_tag &&
-                zf >= depth_buf[didx]) continue;
+            /* Amiga doapoly is painter/stream ordered only: no per-pixel object z-buffer. */
             int32_t uf = (int32_t)(w0 * (double)u[0] + w1 * (double)u[1] + w2 * (double)u[2]);
             int32_t vf = (int32_t)(w0 * (double)v[0] + w1 * (double)v[1] + w2 * (double)v[2]);
             uint8_t pal_idx = sample_poly_texel_index(tex_map_word, uf, vf);
@@ -839,10 +815,6 @@ static void draw_textured_triangle(const int *sx, const int *sy,
                 pixel_shade = (int)(shade_f + 0.5);
                 if (pixel_shade < 0) pixel_shade = 0;
                 if (pixel_shade > 14) pixel_shade = 14;
-            }
-            if (depth_buf) {
-                depth_buf[didx] = zf;
-                if (depth_gen_buf) depth_gen_buf[didx] = depth_gen_tag;
             }
             uint16_t pal_cw = sample_poly_palette_cw(pal_idx, pixel_shade);
             if (renderer_get_rgb_raster_expand())
@@ -858,7 +830,6 @@ static void draw_textured_polygon(const int *sx, const int *sy,
                                   int n, uint16_t tex_map_word, int shade_level,
                                   const int16_t *shade_values,
                                   int use_gouraud, int use_holes,
-                                  int32_t *depth_buf, uint32_t *depth_gen_buf, uint32_t depth_gen_tag,
                                   int clip_left, int clip_right,
                                   int clip_top, int clip_bot)
 {
@@ -889,31 +860,9 @@ static void draw_textured_polygon(const int *sx, const int *sy,
 
         draw_textured_triangle(tsx, tsy, tz, tu, tv,
                                tshade, use_gouraud, use_holes,
-                               tex_map_word, shade_level, depth_buf, depth_gen_buf, depth_gen_tag,
+                               tex_map_word, shade_level,
                                clip_left, clip_right, clip_top, clip_bot);
     }
-}
-
-static int ensure_poly_depth_buffer(PolyThreadContext *ctx, size_t pixels)
-{
-    if (!ctx || pixels == 0) return 0;
-    if (pixels > ctx->depth_cap) {
-        size_t old_cap = ctx->depth_cap;
-        int32_t *new_buf = (int32_t *)realloc(ctx->depth, pixels * sizeof(int32_t));
-        if (!new_buf) return 0;
-        uint32_t *new_gen = (uint32_t *)realloc(ctx->depth_gen, pixels * sizeof(uint32_t));
-        if (!new_gen) {
-            /* realloc may have moved depth; keep the valid pointer and fail cleanly. */
-            ctx->depth = new_buf;
-            return 0;
-        }
-        /* Zero new stamp entries so they never accidentally match current generation. */
-        memset(new_gen + old_cap, 0, (pixels - old_cap) * sizeof(uint32_t));
-        ctx->depth = new_buf;
-        ctx->depth_gen = new_gen;
-        ctx->depth_cap = pixels;
-    }
-    return 1;
 }
 
 static PolyVertex intersect_near_plane(const PolyVertex *a, const PolyVertex *b,
