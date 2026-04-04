@@ -1216,7 +1216,6 @@ void io_load_sky(void)
     char path[512];
     FILE *f = NULL;
     static const char *sky_data[] = {
-        "includes/backfile",
         "gfx/backfile",
         NULL
     };
@@ -1229,7 +1228,7 @@ void io_load_sky(void)
     const uint8_t *pal_ptr = NULL;
     {
         FILE *pf = NULL;
-        static const char *pal_data[] = { "includes/backpal", "gfx/backpal", NULL };
+        static const char *pal_data[] = { "gfx/backpal", NULL };
         for (int i = 0; pal_data[i] && !pf; i++) {
             make_data_path(path, sizeof(path), pal_data[i]);
             pf = fopen(path, "rb");

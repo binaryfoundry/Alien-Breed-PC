@@ -130,6 +130,7 @@ add_custom_command(TARGET ab3d1 POST_BUILD
 function(ab3d_stage_dir source_dir subdir)
   if(EXISTS "${source_dir}")
     add_custom_command(TARGET ab3d1 POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E remove_directory "${AB3D_STAGE_DATA_DIR}/${subdir}"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${AB3D_STAGE_DATA_DIR}/${subdir}"
       COMMAND ${CMAKE_COMMAND} -E copy_directory
               "${source_dir}"
