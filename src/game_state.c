@@ -12,6 +12,17 @@ GameState g_state;
 
 /* Use the end_zones table from game_data.c */
 
+static void game_state_init_single_player_loadout(PlayerState *plr)
+{
+    memset(plr->gun_data, 0, sizeof(plr->gun_data));
+
+    /* Amiga ControlLoop.s SetupDefaultGame:
+     * pistol visible with 160 internal ammo, other main guns hidden/empty. */
+    plr->gun_data[0].visible = -1;
+    plr->gun_data[0].ammo = 160;
+    plr->gun_selected = 0;
+}
+
 void game_state_init_player(PlayerState *plr)
 {
     memset(plr, 0, sizeof(*plr));
@@ -75,6 +86,8 @@ void game_state_setup_default(GameState *state)
 {
     game_state_init_player(&state->plr1);
     game_state_init_player(&state->plr2);
+    game_state_init_single_player_loadout(&state->plr1);
+    game_state_init_single_player_loadout(&state->plr2);
     state->nasty = true;
 }
 
