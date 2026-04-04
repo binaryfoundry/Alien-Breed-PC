@@ -69,13 +69,22 @@ def main() -> int:
         print(f"[raw_to_wav] No directory: {sounds_dir}", file=sys.stderr)
         return 0  # not fatal
 
-    converted = 0
-    for p in sorted(sounds_dir.iterdir()):
+    def is_convertible(p: Path) -> bool:
         if not p.is_file():
-            continue
+            return False
         if p.suffix.lower() == ".wav":
-            continue
+            return False
         if p.name.startswith(".") or p.name.lower() == "readme.md":
+            return False
+
+        rel = p.relative_to(sounds_dir)
+        # Keep existing behaviour for top-level SFX files, and also include
+        # tracker music dumps in nested paths (e.g. sounds/mt/*.mt).
+        return rel.parent == Path(".") or p.suffix.lower() == ".mt"
+
+    converted = 0
+    for p in sorted(sounds_dir.rglob("*")):
+        if not is_convertible(p):
             continue
 
         raw = p.read_bytes()
