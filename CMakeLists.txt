@@ -6,56 +6,31 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 option(AB3D_NO_THREADS "Build without renderer threading support (render_threads is ignored at runtime)" OFF)
 
 # -----------------------------------------------------------------------
-# Data: ensure data/pal exists and copy from amiga/pal and amiga/data/pal
+# Data staging (build/data)
+#
+# All intermediate sync/conversion is done in the build tree under data/.
+# Runtime copies then come from build/data to the executable-local data/.
 # -----------------------------------------------------------------------
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/pal")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/pal")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/pal" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
-endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
-endif()
+set(AB3D_STAGE_DATA_DIR "${CMAKE_BINARY_DIR}/data")
+file(MAKE_DIRECTORY "${AB3D_STAGE_DATA_DIR}")
+file(MAKE_DIRECTORY "${AB3D_STAGE_DATA_DIR}/vectorobjects")
+file(MAKE_DIRECTORY "${AB3D_STAGE_DATA_DIR}/sounds")
+file(MAKE_DIRECTORY "${AB3D_STAGE_DATA_DIR}/includes")
+file(MAKE_DIRECTORY "${AB3D_STAGE_DATA_DIR}/levels")
+file(MAKE_DIRECTORY "${AB3D_STAGE_DATA_DIR}/gfx")
+file(MAKE_DIRECTORY "${AB3D_STAGE_DATA_DIR}/pal")
+file(MAKE_DIRECTORY "${AB3D_STAGE_DATA_DIR}/helper")
+file(MAKE_DIRECTORY "${AB3D_STAGE_DATA_DIR}/texturemaps")
 
-# Data: use amiga/data/gfx as source and sync into data/gfx.
-# Keep backfile/backpal mirrored next to repo-root includes/ for io_load_sky search path.
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx")
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/includes")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
-endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx/backfile")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx/backfile" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/includes")
-endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx/backpal")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx/backpal" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/includes")
-endif()
-
-# -----------------------------------------------------------------------
-# Data: use amiga/sounds as source; generate .wav into data/sounds
-# -----------------------------------------------------------------------
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds")
 find_package(Python3 QUIET)
 
-# -----------------------------------------------------------------------
-# Data: use amiga/data/includes as source and sync into data/includes
-# -----------------------------------------------------------------------
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/includes")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/includes")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/includes" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
+# Stage palettes at configure time so sprite_palettes_data.h can be generated.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/pal")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/pal" DESTINATION "${AB3D_STAGE_DATA_DIR}")
 endif()
-
-# -----------------------------------------------------------------------
-# Data: use amiga/data/levels as source and sync into data/levels
-# -----------------------------------------------------------------------
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/levels")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/levels")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/levels" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal" DESTINATION "${AB3D_STAGE_DATA_DIR}")
 endif()
-
-# -----------------------------------------------------------------------
-# Data: vector objects are copied to the build output (beside the exe)
-# from amiga/vectorobjects.
-# -----------------------------------------------------------------------
 
 # -----------------------------------------------------------------------
 # SDL2 (auto-download via FetchContent)
@@ -114,13 +89,15 @@ set_source_files_properties(${PROJECT_HEADERS} PROPERTIES HEADER_FILE_ONLY ON)
 
 target_include_directories(ab3d1 PRIVATE src)
 
-# Generate sprite_palettes_data.h from data/pal/*.pal (no runtime .pal load)
-set(PAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data/pal")
+# Generate sprite_palettes_data.h from staged build/data/pal/*.pal (no runtime .pal load)
+set(PAL_DIR "${AB3D_STAGE_DATA_DIR}/pal")
 set(PAL_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/src/sprite_palettes_data.h")
 if(EXISTS "${PAL_DIR}")
   if(Python3_FOUND)
     execute_process(
       COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/pal_to_header.py"
+              --pal-dir "${PAL_DIR}"
+              --output "${PAL_HEADER}"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       RESULT_VARIABLE PAL_RESULT
       OUTPUT_VARIABLE PAL_OUT
@@ -134,7 +111,7 @@ if(EXISTS "${PAL_DIR}")
   endif()
 endif()
 if(NOT EXISTS "${PAL_HEADER}")
-  message(FATAL_ERROR "sprite_palettes_data.h not found. Put .pal files in data/pal and run: python tools/pal_to_header.py")
+  message(FATAL_ERROR "sprite_palettes_data.h not found. Put .pal files in amiga/pal or amiga/data/pal and run: python tools/pal_to_header.py --pal-dir \"${PAL_DIR}\" --output \"${PAL_HEADER}\"")
 endif()
 
 # Link SDL2 (no SDL2main - we use CONSOLE subsystem for printf output)
@@ -150,92 +127,69 @@ add_custom_command(TARGET ab3d1 POST_BUILD
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_ab3d_ini_if_missing.cmake
   COMMENT "Ensure ab3d.ini beside ab3d1 (from template if missing)"
 )
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects")
+function(ab3d_stage_dir source_dir subdir)
+  if(EXISTS "${source_dir}")
+    add_custom_command(TARGET ab3d1 POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${AB3D_STAGE_DATA_DIR}/${subdir}"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              "${source_dir}"
+              "${AB3D_STAGE_DATA_DIR}/${subdir}"
+      COMMENT "Stage ${subdir}: ${source_dir} -> ${AB3D_STAGE_DATA_DIR}/${subdir}"
+    )
+  endif()
+endfunction()
+
+function(ab3d_copy_stage_dir subdir)
   add_custom_command(TARGET ab3d1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/vectorobjects"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/${subdir}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects"
-            "$<TARGET_FILE_DIR:ab3d1>/data/vectorobjects"
-    COMMENT "Copy amiga/vectorobjects -> build data/vectorobjects"
+            "${AB3D_STAGE_DATA_DIR}/${subdir}"
+            "$<TARGET_FILE_DIR:ab3d1>/data/${subdir}"
+    COMMENT "Copy staged ${subdir} -> output data/${subdir}"
   )
-endif()
+endfunction()
+
+ab3d_stage_dir("${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects" "vectorobjects")
+ab3d_copy_stage_dir("vectorobjects")
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/sounds")
   add_custom_command(TARGET ab3d1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds"
+    COMMAND ${CMAKE_COMMAND} -E remove_directory "${AB3D_STAGE_DATA_DIR}/sounds"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${AB3D_STAGE_DATA_DIR}/sounds"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/amiga/sounds"
-            "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds"
-    COMMENT "Sync amiga/sounds -> data/sounds"
+            "${AB3D_STAGE_DATA_DIR}/sounds"
+    COMMENT "Stage sounds: amiga/sounds -> build/data/sounds"
   )
   if(Python3_FOUND)
     add_custom_command(TARGET ab3d1 POST_BUILD
       COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/raw_to_wav.py"
+              --sounds-dir "${AB3D_STAGE_DATA_DIR}/sounds"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      COMMENT "Generate .wav files in data/sounds from raw Amiga sounds"
+      COMMENT "Generate .wav files in build/data/sounds from raw Amiga sounds"
     )
   endif()
-  add_custom_command(TARGET ab3d1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/sounds"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds"
-            "$<TARGET_FILE_DIR:ab3d1>/data/sounds"
-    COMMENT "Copy data/sounds -> build data/sounds"
-  )
 endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/includes")
-  add_custom_command(TARGET ab3d1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/includes"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/includes"
-            "$<TARGET_FILE_DIR:ab3d1>/data/includes"
-    COMMENT "Copy amiga/data/includes -> build data/includes"
-  )
-endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/levels")
-  add_custom_command(TARGET ab3d1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/levels"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/levels"
-            "$<TARGET_FILE_DIR:ab3d1>/data/levels"
-    COMMENT "Copy amiga/data/levels -> build data/levels"
-  )
-endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx")
-  add_custom_command(TARGET ab3d1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/gfx"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx"
-            "$<TARGET_FILE_DIR:ab3d1>/data/gfx"
-    COMMENT "Copy amiga/data/gfx -> build data/gfx"
-  )
-endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal")
-  add_custom_command(TARGET ab3d1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/pal"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal"
-            "$<TARGET_FILE_DIR:ab3d1>/data/pal"
-    COMMENT "Copy amiga/data/pal -> build data/pal"
-  )
-endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/helper")
-  add_custom_command(TARGET ab3d1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/helper"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/helper"
-            "$<TARGET_FILE_DIR:ab3d1>/data/helper"
-    COMMENT "Copy amiga/data/helper -> build data/helper"
-  )
-endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/texturemaps")
-  add_custom_command(TARGET ab3d1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/texturemaps"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/amiga/texturemaps"
-            "$<TARGET_FILE_DIR:ab3d1>/data/texturemaps"
-    COMMENT "Copy amiga/texturemaps -> build data/texturemaps"
-  )
-endif()
+ab3d_copy_stage_dir("sounds")
+
+ab3d_stage_dir("${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/includes" "includes")
+ab3d_copy_stage_dir("includes")
+
+ab3d_stage_dir("${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/levels" "levels")
+ab3d_copy_stage_dir("levels")
+
+ab3d_stage_dir("${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx" "gfx")
+ab3d_copy_stage_dir("gfx")
+
+ab3d_stage_dir("${CMAKE_CURRENT_SOURCE_DIR}/amiga/pal" "pal")
+ab3d_stage_dir("${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal" "pal")
+ab3d_copy_stage_dir("pal")
+
+ab3d_stage_dir("${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/helper" "helper")
+ab3d_copy_stage_dir("helper")
+
+ab3d_stage_dir("${CMAKE_CURRENT_SOURCE_DIR}/amiga/texturemaps" "texturemaps")
+ab3d_copy_stage_dir("texturemaps")
 set_target_properties(ab3d1 PROPERTIES
   ADDITIONAL_CLEAN_FILES "$<TARGET_FILE_DIR:ab3d1>/ab3d.ini"
 )

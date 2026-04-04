@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Convert raw 8-bit signed PCM files in data/sounds to .wav (8-bit unsigned, mono).
-Amiga LoadFromDisk.s loads these as raw; Paula plays 8-bit signed.
-Output: data/sounds/<name>.wav so load_one_sample can load them.
-Run from repo root:  python tools/raw_to_wav.py
-Sample rate matches Amiga SFX playback: Paula PAL 3546895 Hz / period 443 ~= 8007 Hz (AB3DI.s).
+Convert raw 8-bit signed PCM files in a sounds directory to .wav
+(8-bit unsigned, mono).
+
+Default input/output directory is repo-root data/sounds, but a custom
+directory can be passed with --sounds-dir.
 """
+import argparse
 from pathlib import Path
 import struct
 import sys
@@ -13,7 +14,8 @@ import sys
 # Amiga AB3DI.s sets AUDxPER = 443 for all SFX channels.
 # Paula PAL audio clock is 3546895 Hz (half the 7.09 MHz master clock).
 SAMPLE_RATE = (3546895 + (443 // 2)) // 443  # 8007 Hz
-SOUNDS_DIR = Path(__file__).resolve().parent.parent / "data" / "sounds"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_SOUNDS_DIR = REPO_ROOT / "data" / "sounds"
 
 
 def write_wav_header(f, num_samples: int) -> None:
@@ -38,13 +40,27 @@ def write_wav_header(f, num_samples: int) -> None:
     f.write(struct.pack("<I", data_size))
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Convert Amiga raw SFX files to WAV.")
+    parser.add_argument(
+        "--sounds-dir",
+        type=Path,
+        default=DEFAULT_SOUNDS_DIR,
+        help=f"Directory containing raw sound files (default: {DEFAULT_SOUNDS_DIR})",
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
-    if not SOUNDS_DIR.is_dir():
-        print(f"[raw_to_wav] No directory: {SOUNDS_DIR}", file=sys.stderr)
+    args = parse_args()
+    sounds_dir = args.sounds_dir
+
+    if not sounds_dir.is_dir():
+        print(f"[raw_to_wav] No directory: {sounds_dir}", file=sys.stderr)
         return 0  # not fatal
 
     converted = 0
-    for p in sorted(SOUNDS_DIR.iterdir()):
+    for p in sorted(sounds_dir.iterdir()):
         if not p.is_file():
             continue
         if p.suffix.lower() == ".wav":
@@ -67,7 +83,7 @@ def main() -> int:
         print(f"  {p.name} -> {out.name}")
 
     if converted:
-        print(f"[raw_to_wav] Converted {converted} file(s) to .wav in {SOUNDS_DIR}")
+        print(f"[raw_to_wav] Converted {converted} file(s) to .wav in {sounds_dir}")
     return 0
 
 

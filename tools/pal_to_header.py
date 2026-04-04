@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Convert .pal files in data/pal to C tables in src/sprite_palettes_data.h.
-Run from repo root:  python tools/pal_to_header.py
-No runtime .pal loading; palettes are embedded in the header.
+Convert .pal files to C tables in src/sprite_palettes_data.h.
+
+Default input directory is repo-root data/pal, but a custom directory
+can be passed with --pal-dir.
 """
+import argparse
 from pathlib import Path
 import sys
 
@@ -29,10 +31,28 @@ def find_pal(pal_dir: Path, name: str) -> Path | None:
     return None
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     repo = Path(__file__).resolve().parent.parent
-    pal_dir = repo / "data" / "pal"
-    out_header = repo / "src" / "sprite_palettes_data.h"
+    parser = argparse.ArgumentParser(description="Generate embedded sprite palette header.")
+    parser.add_argument(
+        "--pal-dir",
+        type=Path,
+        default=repo / "data" / "pal",
+        help="Directory containing sprite .pal files",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=repo / "src" / "sprite_palettes_data.h",
+        help="Output header path",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    pal_dir = args.pal_dir
+    out_header = args.output
 
     if not pal_dir.is_dir():
         print(f"Error: directory not found: {pal_dir}", file=sys.stderr)
