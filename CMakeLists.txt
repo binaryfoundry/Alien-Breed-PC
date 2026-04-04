@@ -34,12 +34,9 @@ endif()
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/sounds")
 
 # -----------------------------------------------------------------------
-# Data: ensure data/vectorobjects exists and copy from amiga/vectorobjects
+# Data: vector objects are copied to the build output (beside the exe)
+# from amiga/vectorobjects.
 # -----------------------------------------------------------------------
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/vectorobjects")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
-endif()
 
 # -----------------------------------------------------------------------
 # SDL2 (auto-download via FetchContent)
@@ -135,6 +132,15 @@ add_custom_command(TARGET ab3d1 POST_BUILD
     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_ab3d_ini_if_missing.cmake
   COMMENT "Ensure ab3d.ini beside ab3d1 (from template if missing)"
 )
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects")
+  add_custom_command(TARGET ab3d1 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/vectorobjects"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/amiga/vectorobjects"
+            "$<TARGET_FILE_DIR:ab3d1>/data/vectorobjects"
+    COMMENT "Copy amiga/vectorobjects -> build data/vectorobjects"
+  )
+endif()
 set_target_properties(ab3d1 PROPERTIES
   ADDITIONAL_CLEAN_FILES "$<TARGET_FILE_DIR:ab3d1>/ab3d.ini"
 )
