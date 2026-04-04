@@ -1798,10 +1798,14 @@ static int32_t marine_track_target(GameObject *obj, const EnemyParams *params,
     if (speed == 0) speed = 6;
 
     uint32_t collide_mask = 0xFFDE1;
-    bool use_pre_collision = true;
+    /* Amiga attack handlers only run pre-move Collision for Normal Alien.
+     * Other enemy classes go straight to MoveObject here, which avoids
+     * enemy-vs-enemy deadlocks while tracking a target. */
+    bool use_pre_collision = false;
     switch (obj->obj.number) {
     case OBJ_NBR_ALIEN:
         collide_mask = 0xFFDC1;
+        use_pre_collision = true;
         break;
     case OBJ_NBR_WORM:
         collide_mask = 0x7FDE1;
@@ -1822,7 +1826,6 @@ static int32_t marine_track_target(GameObject *obj, const EnemyParams *params,
         break;
     case OBJ_NBR_ROBOT:
     case OBJ_NBR_BIG_NASTY:
-        use_pre_collision = false;
         break;
     default:
         break;
