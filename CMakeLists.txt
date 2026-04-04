@@ -16,16 +16,18 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal")
   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/pal" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
 endif()
 
-# Sky backdrop (Amiga data/gfx/backfile); also copy next to includes/ for io_load_sky search path
+# Data: use amiga/data/gfx as source and sync into data/gfx.
+# Keep backfile/backpal mirrored next to repo-root includes/ for io_load_sky search path.
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx")
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/includes")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backfile")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backfile" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backfile" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/includes")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data")
 endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backpal")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backpal" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx")
-  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/amiga/data/gfx/backpal" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/includes")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx/backfile")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx/backfile" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/includes")
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx/backpal")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx/backpal" DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/includes")
 endif()
 
 # -----------------------------------------------------------------------
@@ -196,6 +198,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/levels")
             "${CMAKE_CURRENT_SOURCE_DIR}/data/levels"
             "$<TARGET_FILE_DIR:ab3d1>/data/levels"
     COMMENT "Copy data/levels -> build data/levels"
+  )
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx")
+  add_custom_command(TARGET ab3d1 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ab3d1>/data/gfx"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/gfx"
+            "$<TARGET_FILE_DIR:ab3d1>/data/gfx"
+    COMMENT "Copy data/gfx -> build data/gfx"
   )
 endif()
 set_target_properties(ab3d1 PROPERTIES
