@@ -665,7 +665,8 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
             /* Back-face culling – matches Amiga doapoly cross product:
              *   muls (x2-x1),(y0-y1)  →  sub  muls (x0-x1),(y2-y1)  → ble skip
              * i.e. (x2-x1)*(y0-y1) - (x0-x1)*(y2-y1) > 0 is front-facing. */
-            int cross = (sx[2] - sx[1]) * (sy[0] - sy[1]) - (sx[0] - sx[1]) * (sy[2] - sy[1]);
+            int64_t cross = (int64_t)(sx[2] - sx[1]) * (int64_t)(sy[0] - sy[1]) -
+                            (int64_t)(sx[0] - sx[1]) * (int64_t)(sy[2] - sy[1]);
             if (cross <= 0) continue;  /* back-facing or degenerate */
 
             /* ObjDraw3 face brightness:
@@ -673,8 +674,14 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
              *   shade_raw = objBright + 14 - d1
              * polybright is measured in Amiga screen pixels, so normalize for
              * higher render scales to keep similar contrast. */
-            int cross_norm = cross / (RENDER_SCALE * RENDER_SCALE);
-            int face_term = (cross_norm * 8) / shade_div;
+            /* polybright in ObjDraw3 is measured from projected Amiga-space pixel area.
+             * Our projection can use a non-8x horizontal scale (wider FOV/aspect),
+             * so normalize with the runtime X scale and fixed Y up-scale. */
+            int64_t area_norm = (int64_t)proj_xs * (int64_t)RENDER_SCALE;
+            if (area_norm < 1) area_norm = 1;
+            int64_t face_den = (int64_t)shade_div * area_norm;
+            if (face_den < 1) face_den = 1;
+            int face_term = (int)((cross * 8) / face_den);
             int shade_raw = obj_bright_base + 14 - face_term;
 
             int shade_level = obj_bright_to_level(shade_raw);
