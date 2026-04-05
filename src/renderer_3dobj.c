@@ -430,9 +430,9 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
     /* Amiga: d3 = zpos>>7; d2 = objVectBright + d3. */
     int16_t obj_bright = vec_rd16(obj + 2);    /* objVectBright */
     int32_t z_mid      = orp->z;
+    /* Amiga keeps raw brightness index here (distance term + objVectBright)
+     * and only maps/clamps when indexing objscalecols in doapoly. */
     int obj_bright_base = (int)(z_mid >> 7) + (int)obj_bright;
-    if (obj_bright_base < 0)  obj_bright_base = 0;
-    if (obj_bright_base > 14) obj_bright_base = 14;
 
     /* ---- 2. Relative rotation angle ---------------------------------- */
     /* Amiga: angpos = (objAng - 2048 - viewer_angpos) & 8191
@@ -675,8 +675,6 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
              * higher render scales to keep similar contrast. */
             int cross_norm = cross / (RENDER_SCALE * RENDER_SCALE);
             int face_term = (cross_norm * 8) / shade_div;
-            if (face_term < 0) face_term = 0;
-            if (face_term > 64) face_term = 64;
             int shade_raw = obj_bright_base + 14 - face_term;
 
             int shade_level = obj_bright_to_level(shade_raw);

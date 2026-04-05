@@ -49,7 +49,7 @@
 #define POLY_OBJECTS_COUNT  10
 
 /* Safety caps */
-#define MAX_POLY_POINTS     64   /* up from Amiga's ~30; hard cap for stack buffers */
+#define MAX_POLY_POINTS     128  /* Robot.vec=67, MediPac.vec=85; keep full meshes */
 #define MAX_POLY_PARTS      32
 #define MAX_POLY_FRAMES     32
 

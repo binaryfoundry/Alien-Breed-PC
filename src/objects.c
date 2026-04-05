@@ -1704,6 +1704,7 @@ void object_handle_robot(GameObject *obj, GameState *state)
     int can_see = obj->obj.can_see & 0x03;
     int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
     bool attacking = false;
+    bool fired_this_tick = false;
     int target_player = 0;
 
     if (can_see && third_timer <= 0) {
@@ -1727,6 +1728,7 @@ void object_handle_robot(GameObject *obj, GameState *state)
                 OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, (int16_t)(150 + (rand() & 0x7F)));
                 audio_play_sample(9, 100);
                 enemy_fire_at_player(obj, state, target_player, 4, 10, 16, 3);
+                fired_this_tick = true;
             }
         }
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
@@ -1755,6 +1757,12 @@ void object_handle_robot(GameObject *obj, GameState *state)
         int16_t anim_vect = ((uint8_t)obj->raw[6] == (uint8_t)OBJ_3D_SPRITE) ? 0 : 5;
         wbe16(obj->raw + 8, anim_vect);
         wbe16(obj->raw + 10, robot_frame);
+    }
+
+    /* Robot.s sets objVectBright to -100 in the firing branch after normal
+     * zone-bright update, producing a brief muzzle-flash brightening. */
+    if (fired_this_tick) {
+        obj_sw(obj->raw + 2, -100);
     }
 
     {
