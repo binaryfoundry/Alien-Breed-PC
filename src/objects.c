@@ -514,9 +514,27 @@ static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameS
             return true;
 
         case ENEMY_DMG_AUDIO_ROBOT:
-            /* Robot.s: boom #15 @400, ComputeBlast — no splat #14, no ExplodeIntoBits */
-            audio_play_sample(15, amiga_noisevol_to_pc(400));
-            enemy_apply_death_outcome(obj, params, instant_kill);
+            /* Robot death should explode like a barrel (blast + explosion anim). */
+            {
+                int16_t bx = 0, bz = 0;
+                get_object_pos(&state->level, (int)OBJ_CID(obj), &bx, &bz);
+                compute_blast(state, bx, bz, ((int32_t)obj_w(obj->raw + 4)) << 7,
+                              40, OBJ_ZONE(obj), obj->obj.in_top);
+                audio_play_sample(15, 300);
+
+                NASTY_LIVES(*obj) = 0;
+                NASTY_DAMAGE(*obj) = 0;
+                obj->obj.worry = 0;
+
+                /* Reuse barrel exploding-state handler for frame advance/removal. */
+                obj->obj.number = OBJ_NBR_BARREL;
+                obj_sw(obj->raw + 8, 8);     /* vect = explosion */
+                obj_sw(obj->raw + 10, 0);    /* frame = 0 */
+                OBJ_SET_TD_W(obj, ENEMY_OBJ_TIMER_OFF, 0);
+                obj->raw[14] = 0x20;         /* src cols = 32 */
+                obj->raw[15] = 0x20;         /* src rows = 32 */
+                obj_sw(obj->raw + 2, -30);   /* objVectBright */
+            }
             return true;
 
         case ENEMY_DMG_AUDIO_BIG_GIB:
