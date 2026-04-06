@@ -76,6 +76,29 @@ static int16_t robot_frame_counter = 0;
 /* Gib floor/wall splat (sample 13): only one per objects_update — many gibs can time out together. */
 static bool gib_impact_splat_sound_this_update;
 
+/* Switch-controlled lifts with top mode=auto-lower and bottom mode=manual-up
+ * should hold at top after an upward ride until re-armed by conditions dropping.
+ * This matches expected gameplay behavior for call-down lifts in later levels. */
+#define MAX_TRACKED_LIFTS 512
+static uint8_t lift_top_hold_latch[MAX_TRACKED_LIFTS];
+static uint16_t lift_top_hold_cond_snapshot[MAX_TRACKED_LIFTS];
+static int16_t lift_top_hold_level = -1;
+static int32_t lift_top_hold_count = -1;
+
+static void lift_top_hold_sync(const GameState *state)
+{
+    int16_t level_id = state ? state->current_level : (int16_t)-1;
+    int32_t lift_count = (state ? state->level.num_lifts : 0);
+    if (lift_count < 0) lift_count = 0;
+
+    if (lift_top_hold_level != level_id || lift_top_hold_count != lift_count) {
+        memset(lift_top_hold_latch, 0, sizeof(lift_top_hold_latch));
+        memset(lift_top_hold_cond_snapshot, 0, sizeof(lift_top_hold_cond_snapshot));
+        lift_top_hold_level = level_id;
+        lift_top_hold_count = lift_count;
+    }
+}
+
 enum {
     ENEMY_OBJ_TIMER_OFF    = 16, /* ObjTimer   (raw+34) */
     ENEMY_SEC_TIMER_OFF    = 18, /* SecTimer   (raw+36) */
@@ -3590,6 +3613,7 @@ void door_routine(GameState *state)
 void lift_routine(GameState *state)
 {
     if (!state->level.lift_data) return;
+    lift_top_hold_sync(state);
     const int zone_slots = level_zone_slot_count(&state->level);
 
     uint8_t *lift = state->level.lift_data;
@@ -3639,13 +3663,52 @@ void lift_routine(GameState *state)
         uint8_t mode_raise_at_bottom = (uint8_t)((uint16_t)lift_type >> 8);
         uint8_t mode_lower_at_top    = (uint8_t)((uint16_t)lift_type & 0xFFu);
 
+        bool tracked_lift = (lift_idx >= 0 && lift_idx < MAX_TRACKED_LIFTS);
+        bool top_hold_latched = tracked_lift ? (lift_top_hold_latch[lift_idx] != 0) : false;
         int16_t trigger_vel = lift_vel;
         uint16_t trigger_mask = 0;
         bool clear_touch_flags = false;
+        bool force_latched_switch_release = false;
 
         /* Conditions gate all behavior; when not satisfied Amiga simplecheck clears 14(a4). */
         bool conditions_met = (((uint16_t)game_conditions & lift_flags) == lift_flags);
-        if (!conditions_met) {
+        if (!conditions_met && tracked_lift)
+            lift_top_hold_latch[lift_idx] = 0;
+
+        if (conditions_met &&
+            at_top &&
+            prev_lift_vel < 0 &&
+            mode_lower_at_top == 2 &&
+            mode_raise_at_bottom == 0 &&
+            lift_flags != 0 &&
+            tracked_lift) {
+            lift_top_hold_latch[lift_idx] = 1;
+            lift_top_hold_cond_snapshot[lift_idx] = (uint16_t)((uint16_t)game_conditions & lift_flags);
+            top_hold_latched = true;
+        }
+
+        if (at_bot && tracked_lift) {
+            lift_top_hold_latch[lift_idx] = 0;
+            lift_top_hold_cond_snapshot[lift_idx] = (uint16_t)((uint16_t)game_conditions & lift_flags);
+            top_hold_latched = false;
+        }
+
+        if (top_hold_latched && at_top && lift_flags != 0 && tracked_lift) {
+            uint16_t cond_now = (uint16_t)((uint16_t)game_conditions & lift_flags);
+            if (cond_now != lift_top_hold_cond_snapshot[lift_idx]) {
+                force_latched_switch_release = true;
+                lift_top_hold_latch[lift_idx] = 0;
+                top_hold_latched = false;
+            }
+        }
+
+        bool allow_bottom_manual_when_unsatisfied =
+            at_bot &&
+            mode_raise_at_bottom == 0 &&
+            mode_lower_at_top == 2 &&
+            lift_flags != 0;
+
+        if (!conditions_met && !force_latched_switch_release && !allow_bottom_manual_when_unsatisfied) {
             clear_touch_flags = true;
         } else if (at_top) {
             switch (mode_lower_at_top) {
@@ -3669,7 +3732,24 @@ void lift_routine(GameState *state)
                     break;
                 case 2:
                     trigger_vel = 4;
-                    trigger_mask = (uint16_t)0x8000;
+                    if (force_latched_switch_release) {
+                        trigger_mask = (uint16_t)0x8000;
+                    } else if (top_hold_latched && lift_flags != 0 && mode_raise_at_bottom == 0) {
+                        /* Switch-call lifts: once ridden back up, hold at top,
+                         * but allow manual send-down with Space while on the lift. */
+                        uint16_t m = 0;
+                        if (state->plr1.p_spctap) {
+                            m |= (uint16_t)0x0100;
+                            if (plr1_at) m = (uint16_t)0x8000;
+                        }
+                        if (m != (uint16_t)0x8000 && state->plr2.p_spctap) {
+                            m |= (uint16_t)0x0800;
+                            if (plr2_at) m = (uint16_t)0x8000;
+                        }
+                        trigger_mask = m;
+                    } else {
+                        trigger_mask = (uint16_t)0x8000;
+                    }
                     break;
                 case 3:
                 default:
@@ -3784,39 +3864,20 @@ void switch_routine(GameState *state)
 {
     if (!state->level.switch_data) return;
 
-    /* Real-time auto-switch pacing:
-     * Convert elapsed wall-clock ms into virtual 50Hz ticks so auto-reset
-     * timing is stable even when render/frame pacing changes. */
-    static const uint8_t *s_last_switch_data = NULL;
-    static uint32_t s_last_switch_tick_ms = 0;
-    static uint32_t s_switch_vblank_remainder_ms = 0;
-    uint32_t now_ms = state->current_ticks_ms;
-    if (state->level.switch_data != s_last_switch_data) {
-        s_last_switch_data = state->level.switch_data;
-        s_last_switch_tick_ms = now_ms;
-        s_switch_vblank_remainder_ms = 0;
-    }
-    uint32_t elapsed_ms = now_ms - s_last_switch_tick_ms;
-    s_last_switch_tick_ms = now_ms;
-    if (elapsed_ms > 200u) elapsed_ms = 200u;
-    s_switch_vblank_remainder_ms += elapsed_ms;
-    int auto_vblanks = (int)(s_switch_vblank_remainder_ms / 20u);
-    s_switch_vblank_remainder_ms %= 20u;
-    /* Keep prior gameplay tweak: 50% slower auto-reset than original (2 units per 50Hz tick). */
-    int8_t auto_dec = (int8_t)(auto_vblanks * 2);
+    /* Amiga parity (Anims.s SwitchRoutine):
+     * auto-reset countdown uses TempFrames*4 each logic tick. */
+    int8_t auto_dec = (int8_t)(state->temp_frames * 4);
 
-    /* Make switch pressing a little less strict than original 60-unit radius. */
-    const int32_t switch_dist_sq = 80 * 80;
+    const int32_t switch_dist_sq = 60 * 60;
     uint8_t *sw = state->level.switch_data;
-    int switch_index = 0;
 
-    while (1) {
+    /* Amiga parity: SwitchRoutine iterates exactly 8 entries (d0 = 7..0). */
+    for (int switch_index = 0; switch_index < 8; switch_index++, sw += 14) {
         int16_t zone_id = be16(sw);
-        if (zone_id < 0) break;
 
         /* Amiga: condition bit from switch index (d0=7..0, bit = 4 + (7-d0)).
          * With forward index this is simply bit 4 + index. */
-        unsigned int bit_num = 4 + (switch_index % 8);
+        unsigned int bit_num = 4 + (unsigned int)switch_index;
         uint16_t bit_mask = (uint16_t)(1u << bit_num);
         int32_t gfx_off = (int32_t)be32(sw + 6);
 
@@ -3824,20 +3885,18 @@ void switch_routine(GameState *state)
          * original logic uses temp_frames*4; here we drive the same byte countdown
          * from wall-clock-based virtual 50Hz ticks for uncapped-frame stability. */
         if ((int8_t)sw[2] != 0 && (int8_t)sw[10] != 0) {
-            if (auto_dec != 0) {
-                sw[3] = (uint8_t)((int8_t)sw[3] - auto_dec);
-                if ((int8_t)sw[3] == 0) {
-                    sw[10] = 0;
-                    if (state->level.graphics && gfx_off >= 0) {
-                        uint8_t *wall_ptr = state->level.graphics + (uint32_t)gfx_off;
-                        write_be16(wall_ptr + 4, 11);
-                        int16_t w = be16(wall_ptr);
-                        w = (int16_t)(w & 0x007C);
-                        write_be16(wall_ptr, w);
-                    }
-                    game_conditions = (int16_t)((uint16_t)game_conditions & (uint16_t)~bit_mask);
-                    audio_play_sample(10, 50);
+            sw[3] = (uint8_t)((int8_t)sw[3] - auto_dec);
+            if ((int8_t)sw[3] == 0) {
+                sw[10] = 0;
+                if (state->level.graphics && gfx_off >= 0) {
+                    uint8_t *wall_ptr = state->level.graphics + (uint32_t)gfx_off;
+                    write_be16(wall_ptr + 4, 11);
+                    int16_t w = be16(wall_ptr);
+                    w = (int16_t)(w & 0x007C);
+                    write_be16(wall_ptr, w);
                 }
+                game_conditions = (int16_t)((uint16_t)game_conditions & (uint16_t)~bit_mask);
+                audio_play_sample(10, 50);
             }
         }
 
@@ -3850,7 +3909,7 @@ void switch_routine(GameState *state)
             bool near_plr1 = false;
             bool near_plr2 = false;
 
-            if (state->level.points && pidx >= 0) {
+            if (zone_id >= 0 && state->level.points && pidx >= 0) {
                 const uint8_t *p0 = state->level.points + (uint32_t)(uint16_t)pidx * 4u;
                 int16_t x0 = be16(p0 + 0);
                 int16_t z0 = be16(p0 + 2);
@@ -3897,9 +3956,6 @@ void switch_routine(GameState *state)
             if ((int8_t)sw[10] != 0) w = (int16_t)(w | 2);
             write_be16(wall_ptr, w);
         }
-
-        sw += 14;
-        switch_index++;
     }
 }
 

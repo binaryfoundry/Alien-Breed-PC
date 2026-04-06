@@ -173,22 +173,15 @@ static void game_rebuild_level_conditions(GameState *state)
         }
     }
 
-    /* Mirror switch on/off state bytes into condition bits (bit = 4 + switch_index). */
+    /* Mirror switch on/off state bytes into condition bits.
+     * Amiga SwitchRoutine iterates 8 entries (bits 4..11). */
     if (state->level.switch_data) {
         const uint8_t *sw = state->level.switch_data;
-        int switch_index = 0;
-        for (;;) {
-            int16_t zone_id = control_read_be16(sw + 0);
-            if (zone_id < 0) break;
-
-            unsigned bit_num = 4u + (unsigned)(switch_index & 7);
+        for (int switch_index = 0; switch_index < 8; switch_index++, sw += 14) {
+            unsigned bit_num = 4u + (unsigned)switch_index;
             uint16_t bit_mask = (uint16_t)(1u << bit_num);
             if ((int8_t)sw[10] != 0)
                 rebuilt = (uint16_t)(rebuilt | bit_mask);
-
-            sw += 14;
-            switch_index++;
-            if (switch_index >= 1024) break;  /* safety guard for malformed data */
         }
     }
 
