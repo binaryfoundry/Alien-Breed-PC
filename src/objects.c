@@ -1811,15 +1811,28 @@ void object_handle_robot(GameObject *obj, GameState *state)
 
         int16_t fourth_timer = OBJ_TD_W(obj, ENEMY_FOURTH_TIMER_OFF);
         fourth_timer -= state->temp_frames;
-        if (fourth_timer <= 0) {
-            OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, 50);
-        }
 
         if (fourth_timer < 20) {
             /* Robot.s gates shooting with canshootgun (must be facing target enough). */
             if (enemy_is_facing_player_cone(obj, state, target_player, 8192)) { /* cos >= 0.5 */
                 fourth_timer = 50;
-                OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, (int16_t)(150 + (rand() & 0x7F)));
+                {
+                    /* Robot.s shot cadence (single/co-op branches differ slightly):
+                     *   d0 = ThirdTimer - 1
+                     *   P1 path: if d0 < -1 -> d0 = 150 + ((GetRand>>4)&127)
+                     *   P2 path: if d0 < -2 -> d0 = 100 + (GetRand&127) */
+                    int16_t third_after = (int16_t)(OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF) - 1);
+                    if (target_player == 2) {
+                        if (third_after < -2) {
+                            third_after = (int16_t)(100 + (rand() & 0x7F));
+                        }
+                    } else {
+                        if (third_after < -1) {
+                            third_after = (int16_t)(150 + ((rand() >> 4) & 0x7F));
+                        }
+                    }
+                    OBJ_SET_TD_W(obj, ENEMY_THIRD_TIMER_OFF, third_after);
+                }
                 audio_play_sample(9, 100);
                 enemy_fire_at_player(obj, state, target_player, 4, 10, 16, 3);
                 fired_this_tick = true;
