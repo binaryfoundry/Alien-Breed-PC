@@ -224,11 +224,63 @@ typedef GLuint (APIENTRY *DisplayGlCreateShaderFn)(GLenum type);
 typedef void   (APIENTRY *DisplayGlAttachShaderFn)(GLuint program, GLuint shader);
 typedef void   (APIENTRY *DisplayGlCompileShaderFn)(GLuint shader);
 typedef void   (APIENTRY *DisplayGlGetProgramInfoLogFn)(GLuint program, GLsizei bufSize, GLsizei *length, GLchar *infoLog);
+typedef void   (APIENTRY *DisplayGlEnableFn)(GLenum cap);
+typedef void   (APIENTRY *DisplayGlDisableFn)(GLenum cap);
+typedef void   (APIENTRY *DisplayGlBlendFuncFn)(GLenum sfactor, GLenum dfactor);
+typedef void   (APIENTRY *DisplayGlUniform4fFn)(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
+typedef void   (APIENTRY *DisplayGlDisableVertexAttribArrayFn)(GLuint index);
+
+#ifndef GL_BLEND
+#define GL_BLEND 0x0BE2
+#endif
+#ifndef GL_SRC_ALPHA
+#define GL_SRC_ALPHA 0x0302
+#endif
+#ifndef GL_ONE_MINUS_SRC_ALPHA
+#define GL_ONE_MINUS_SRC_ALPHA 0x0303
+#endif
+#ifndef GL_DEPTH_TEST
+#define GL_DEPTH_TEST 0x0B71
+#endif
+#ifndef GL_CULL_FACE
+#define GL_CULL_FACE 0x0B44
+#endif
+#ifndef GL_SCISSOR_TEST
+#define GL_SCISSOR_TEST 0x0C11
+#endif
+#ifndef GL_TRIANGLES
+#define GL_TRIANGLES 0x0004
+#endif
+#ifndef GL_LINES
+#define GL_LINES 0x0001
+#endif
+#ifndef GL_STREAM_DRAW
+#define GL_STREAM_DRAW 0x88E0
+#endif
 
 static GLuint g_gl_tex_cw;
 static GLuint g_gl_prog;
 static GLuint g_gl_vao;
 static GLuint g_gl_vbo;
+
+/* HUD overlays: SDL_Renderer GL backend does not reliably mix with raw glUseProgram; draw HUD with
+ * SDL_GL_BindTexture + our own GLSL (same context as the 12-bit present shader). */
+static int g_gl_hud_ok;
+static GLuint g_gl_prog_hud_tex;
+static GLuint g_gl_prog_hud_solid;
+static GLuint g_gl_hud_vao_tex;
+static GLuint g_gl_hud_vao_solid;
+static GLuint g_gl_hud_vbo;
+static GLint g_gl_hud_loc_tex;
+static GLint g_gl_hud_loc_color_tex;
+static GLint g_gl_hud_loc_color_solid;
+static int g_gl_overlay_win_w;
+static int g_gl_overlay_win_h;
+static DisplayGlEnableFn                   g_gl_enable;
+static DisplayGlDisableFn                  g_gl_disable;
+static DisplayGlBlendFuncFn                g_gl_blend_func;
+static DisplayGlUniform4fFn                g_gl_uniform4f;
+static DisplayGlDisableVertexAttribArrayFn g_gl_disable_vertex_attrib_array;
 
 static DisplayGlActiveTextureFn            g_gl_active_texture;
 static DisplayGlBindBufferFn               g_gl_bind_buffer;
@@ -370,8 +422,346 @@ static GLuint display_gl_compile_shader(GLenum type, const char *src)
     return sh;
 }
 
+/* Letterbox + HUD rects use SDL_GetRendererOutputSize (same space as SDL_RenderCopy). Prefer it
+ * over SDL_GL_GetDrawableSize so scaling matches the non-GL path on HiDPI / mixed-DPI setups. */
+static void display_gl_output_size(int *out_w, int *out_h)
+{
+    if (g_sdl_ren && SDL_GetRendererOutputSize(g_sdl_ren, out_w, out_h) == 0) {
+        if (*out_w < 1) *out_w = 1;
+        if (*out_h < 1) *out_h = 1;
+        return;
+    }
+    SDL_GL_GetDrawableSize(g_window, out_w, out_h);
+    if (*out_w < 1) *out_w = 1;
+    if (*out_h < 1) *out_h = 1;
+}
+
+static const char hud_tex_vs_src[] =
+    "#version 330 core\n"
+    "layout(location=0) in vec2 a_pos;\n"
+    "layout(location=1) in vec2 a_uv;\n"
+    "out vec2 v_uv;\n"
+    "void main() {\n"
+    "  gl_Position = vec4(a_pos, 0.0, 1.0);\n"
+    "  v_uv = a_uv;\n"
+    "}\n";
+
+static const char hud_tex_fs_src[] =
+    "#version 330 core\n"
+    "uniform sampler2D u_tex;\n"
+    "uniform vec4 u_color;\n"
+    "in vec2 v_uv;\n"
+    "out vec4 o_col;\n"
+    "void main() {\n"
+    "  o_col = texture(u_tex, v_uv) * u_color;\n"
+    "}\n";
+
+static const char hud_solid_vs_src[] =
+    "#version 330 core\n"
+    "layout(location=0) in vec2 a_pos;\n"
+    "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+
+static const char hud_solid_fs_src[] =
+    "#version 330 core\n"
+    "uniform vec4 u_color;\n"
+    "out vec4 o_col;\n"
+    "void main() { o_col = u_color; }\n";
+
+static void display_gl_wnd_ndc(float x, float y, int win_w, int win_h, float *nx, float *ny)
+{
+    *nx = (2.0f * x / (float)win_w) - 1.0f;
+    *ny = 1.0f - (2.0f * y / (float)win_h);
+}
+
+static void display_gl_hud_shutdown(void)
+{
+    if (!g_gl_hud_ok) return;
+    if (g_gl_delete_vertex_arrays && g_gl_hud_vao_tex) g_gl_delete_vertex_arrays(1, &g_gl_hud_vao_tex);
+    if (g_gl_delete_vertex_arrays && g_gl_hud_vao_solid) g_gl_delete_vertex_arrays(1, &g_gl_hud_vao_solid);
+    g_gl_hud_vao_tex = 0;
+    g_gl_hud_vao_solid = 0;
+    if (g_gl_delete_buffers && g_gl_hud_vbo) g_gl_delete_buffers(1, &g_gl_hud_vbo);
+    g_gl_hud_vbo = 0;
+    if (g_gl_delete_program && g_gl_prog_hud_tex) g_gl_delete_program(g_gl_prog_hud_tex);
+    if (g_gl_delete_program && g_gl_prog_hud_solid) g_gl_delete_program(g_gl_prog_hud_solid);
+    g_gl_prog_hud_tex = 0;
+    g_gl_prog_hud_solid = 0;
+    g_gl_hud_ok = 0;
+}
+
+static int display_gl_hud_try_init(void)
+{
+    g_gl_hud_ok = 0;
+    if (!g_sdl_ren || !g_window) return 0;
+
+    g_gl_enable = (DisplayGlEnableFn)SDL_GL_GetProcAddress("glEnable");
+    g_gl_disable = (DisplayGlDisableFn)SDL_GL_GetProcAddress("glDisable");
+    g_gl_blend_func = (DisplayGlBlendFuncFn)SDL_GL_GetProcAddress("glBlendFunc");
+    g_gl_uniform4f = (DisplayGlUniform4fFn)SDL_GL_GetProcAddress("glUniform4f");
+    g_gl_disable_vertex_attrib_array = (DisplayGlDisableVertexAttribArrayFn)SDL_GL_GetProcAddress("glDisableVertexAttribArray");
+    if (!g_gl_enable || !g_gl_disable || !g_gl_blend_func || !g_gl_uniform4f || !g_gl_disable_vertex_attrib_array)
+        return 0;
+
+    GLuint v1 = display_gl_compile_shader(GL_VERTEX_SHADER, hud_tex_vs_src);
+    GLuint f1 = display_gl_compile_shader(GL_FRAGMENT_SHADER, hud_tex_fs_src);
+    if (!v1 || !f1) {
+        if (v1) g_gl_delete_shader(v1);
+        if (f1) g_gl_delete_shader(f1);
+        return 0;
+    }
+    g_gl_prog_hud_tex = g_gl_create_program();
+    if (!g_gl_prog_hud_tex) {
+        g_gl_delete_shader(v1);
+        g_gl_delete_shader(f1);
+        return 0;
+    }
+    g_gl_attach_shader(g_gl_prog_hud_tex, v1);
+    g_gl_attach_shader(g_gl_prog_hud_tex, f1);
+    g_gl_delete_shader(v1);
+    g_gl_delete_shader(f1);
+    g_gl_link_program(g_gl_prog_hud_tex);
+    GLint linked = 0;
+    g_gl_get_programiv(g_gl_prog_hud_tex, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[1024];
+        log[0] = 0;
+        if (g_gl_get_program_info_log) g_gl_get_program_info_log(g_gl_prog_hud_tex, (GLsizei)sizeof(log), NULL, log);
+        printf("[DISPLAY] HUD GL tex program link failed: %s\n", log);
+        g_gl_delete_program(g_gl_prog_hud_tex);
+        g_gl_prog_hud_tex = 0;
+        return 0;
+    }
+    g_gl_hud_loc_tex = g_gl_get_uniform_location(g_gl_prog_hud_tex, "u_tex");
+    g_gl_hud_loc_color_tex = g_gl_get_uniform_location(g_gl_prog_hud_tex, "u_color");
+
+    v1 = display_gl_compile_shader(GL_VERTEX_SHADER, hud_solid_vs_src);
+    f1 = display_gl_compile_shader(GL_FRAGMENT_SHADER, hud_solid_fs_src);
+    if (!v1 || !f1) {
+        if (v1) g_gl_delete_shader(v1);
+        if (f1) g_gl_delete_shader(f1);
+        g_gl_delete_program(g_gl_prog_hud_tex);
+        g_gl_prog_hud_tex = 0;
+        return 0;
+    }
+    g_gl_prog_hud_solid = g_gl_create_program();
+    if (!g_gl_prog_hud_solid) {
+        g_gl_delete_shader(v1);
+        g_gl_delete_shader(f1);
+        g_gl_delete_program(g_gl_prog_hud_tex);
+        g_gl_prog_hud_tex = 0;
+        return 0;
+    }
+    g_gl_attach_shader(g_gl_prog_hud_solid, v1);
+    g_gl_attach_shader(g_gl_prog_hud_solid, f1);
+    g_gl_delete_shader(v1);
+    g_gl_delete_shader(f1);
+    g_gl_link_program(g_gl_prog_hud_solid);
+    linked = 0;
+    g_gl_get_programiv(g_gl_prog_hud_solid, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[1024];
+        log[0] = 0;
+        if (g_gl_get_program_info_log) g_gl_get_program_info_log(g_gl_prog_hud_solid, (GLsizei)sizeof(log), NULL, log);
+        printf("[DISPLAY] HUD GL solid program link failed: %s\n", log);
+        g_gl_delete_program(g_gl_prog_hud_solid);
+        g_gl_prog_hud_solid = 0;
+        g_gl_delete_program(g_gl_prog_hud_tex);
+        g_gl_prog_hud_tex = 0;
+        return 0;
+    }
+    g_gl_hud_loc_color_solid = g_gl_get_uniform_location(g_gl_prog_hud_solid, "u_color");
+
+    g_gl_gen_vertex_arrays(1, &g_gl_hud_vao_tex);
+    g_gl_gen_vertex_arrays(1, &g_gl_hud_vao_solid);
+    g_gl_gen_buffers(1, &g_gl_hud_vbo);
+
+    g_gl_bind_vertex_array(g_gl_hud_vao_tex);
+    g_gl_bind_buffer(0x8892 /* GL_ARRAY_BUFFER */, g_gl_hud_vbo);
+    g_gl_vertex_attrib_pointer(0, 2, 0x1406 /* GL_FLOAT */, 0, (GLsizei)(4 * sizeof(float)), (const void*)0);
+    g_gl_vertex_attrib_pointer(1, 2, 0x1406, 0, (GLsizei)(4 * sizeof(float)), (const void*)(uintptr_t)(2 * sizeof(float)));
+    g_gl_enable_vertex_attrib_array(0);
+    g_gl_enable_vertex_attrib_array(1);
+    g_gl_bind_vertex_array(0);
+
+    g_gl_bind_vertex_array(g_gl_hud_vao_solid);
+    g_gl_bind_buffer(0x8892, g_gl_hud_vbo);
+    g_gl_vertex_attrib_pointer(0, 2, 0x1406, 0, (GLsizei)(2 * sizeof(float)), (const void*)0);
+    g_gl_enable_vertex_attrib_array(0);
+    g_gl_disable_vertex_attrib_array(1);
+    g_gl_bind_vertex_array(0);
+
+    g_gl_hud_ok = 1;
+    printf("[DISPLAY] HUD: GL overlay (SDL_GL_BindTexture + GLSL)\n");
+    return 1;
+}
+
+static void display_gl_overlay_begin(void)
+{
+    display_gl_output_size(&g_gl_overlay_win_w, &g_gl_overlay_win_h);
+    g_gl_viewport(0, 0, g_gl_overlay_win_w, g_gl_overlay_win_h);
+    g_gl_disable(GL_CULL_FACE);
+    g_gl_disable(GL_SCISSOR_TEST);
+    g_gl_enable(GL_BLEND);
+    g_gl_blend_func(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    g_gl_disable(GL_DEPTH_TEST);
+}
+
+static void display_gl_overlay_end(void)
+{
+    g_gl_use_program(0);
+    g_gl_bind_vertex_array(0);
+    g_gl_bind_buffer(0x8892 /* GL_ARRAY_BUFFER */, 0);
+}
+
+static void display_gl_texture_blit(SDL_Texture *tex, const SDL_Rect *src_opt, const SDL_Rect *dst)
+{
+    if (!tex || !dst || g_gl_overlay_win_w < 1) return;
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    SDL_RenderFlush(g_sdl_ren);
+#endif
+    float tw_s, th_s;
+    if (SDL_GL_BindTexture(tex, &tw_s, &th_s) != 0)
+        return;
+    (void)tw_s;
+    (void)th_s;
+    int tw = 0, th = 0;
+    if (SDL_QueryTexture(tex, NULL, NULL, &tw, &th) != 0 || tw < 1 || th < 1) {
+        SDL_GL_UnbindTexture(tex);
+        return;
+    }
+    SDL_Rect src;
+    if (src_opt) {
+        src = *src_opt;
+    } else {
+        src.x = 0;
+        src.y = 0;
+        src.w = tw;
+        src.h = th;
+    }
+    Uint8 cr = 255, cg = 255, cb = 255, ca = 255;
+    SDL_GetTextureColorMod(tex, &cr, &cg, &cb);
+    SDL_GetTextureAlphaMod(tex, &ca);
+    float fr = cr / 255.0f, fg = cg / 255.0f, fb = cb / 255.0f, fa = ca / 255.0f;
+
+    float u0 = (float)src.x / (float)tw;
+    float v0 = (float)src.y / (float)th;
+    float u1 = (float)(src.x + src.w) / (float)tw;
+    float v1 = (float)(src.y + src.h) / (float)th;
+
+    int wx = g_gl_overlay_win_w, wy = g_gl_overlay_win_h;
+    float nx0, ny0, nx1, ny1, nx2, ny2, nx3, ny3;
+    display_gl_wnd_ndc((float)dst->x, (float)dst->y, wx, wy, &nx0, &ny0);
+    display_gl_wnd_ndc((float)(dst->x + dst->w), (float)dst->y, wx, wy, &nx1, &ny1);
+    display_gl_wnd_ndc((float)(dst->x + dst->w), (float)(dst->y + dst->h), wx, wy, &nx2, &ny2);
+    display_gl_wnd_ndc((float)dst->x, (float)(dst->y + dst->h), wx, wy, &nx3, &ny3);
+
+    float buf[24] = {
+        nx0, ny0, u0, v0,
+        nx1, ny1, u1, v0,
+        nx3, ny3, u0, v1,
+        nx1, ny1, u1, v0,
+        nx2, ny2, u1, v1,
+        nx3, ny3, u0, v1,
+    };
+
+    g_gl_use_program(g_gl_prog_hud_tex);
+    if (g_gl_hud_loc_tex >= 0) g_gl_uniform1i(g_gl_hud_loc_tex, 0);
+    if (g_gl_hud_loc_color_tex >= 0) g_gl_uniform4f(g_gl_hud_loc_color_tex, fr, fg, fb, fa);
+    g_gl_active_texture(GL_TEXTURE0);
+    g_gl_bind_vertex_array(g_gl_hud_vao_tex);
+    g_gl_bind_buffer(0x8892, g_gl_hud_vbo);
+    g_gl_buffer_data(0x8892, (ptrdiff_t)sizeof(buf), buf, GL_STREAM_DRAW);
+    g_gl_draw_arrays(GL_TRIANGLES, 0, 6);
+    SDL_GL_UnbindTexture(tex);
+}
+
+static void display_gl_solid_rect_fill(const SDL_Rect *dst, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
+{
+    if (!dst || g_gl_overlay_win_w < 1) return;
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    SDL_RenderFlush(g_sdl_ren);
+#endif
+    float fr = r / 255.0f, fg = g / 255.0f, fb = b / 255.0f, fa = a / 255.0f;
+    int wx = g_gl_overlay_win_w, wy = g_gl_overlay_win_h;
+    float nx0, ny0, nx1, ny1, nx2, ny2, nx3, ny3;
+    display_gl_wnd_ndc((float)dst->x, (float)dst->y, wx, wy, &nx0, &ny0);
+    display_gl_wnd_ndc((float)(dst->x + dst->w), (float)dst->y, wx, wy, &nx1, &ny1);
+    display_gl_wnd_ndc((float)(dst->x + dst->w), (float)(dst->y + dst->h), wx, wy, &nx2, &ny2);
+    display_gl_wnd_ndc((float)dst->x, (float)(dst->y + dst->h), wx, wy, &nx3, &ny3);
+    float buf[12] = {
+        nx0, ny0, nx1, ny1, nx3, ny3,
+        nx1, ny1, nx2, ny2, nx3, ny3,
+    };
+    g_gl_use_program(g_gl_prog_hud_solid);
+    if (g_gl_hud_loc_color_solid >= 0) g_gl_uniform4f(g_gl_hud_loc_color_solid, fr, fg, fb, fa);
+    g_gl_bind_vertex_array(g_gl_hud_vao_solid);
+    g_gl_bind_buffer(0x8892, g_gl_hud_vbo);
+    g_gl_buffer_data(0x8892, (ptrdiff_t)sizeof(buf), buf, GL_STREAM_DRAW);
+    g_gl_draw_arrays(GL_TRIANGLES, 0, 6);
+}
+
+static void display_gl_line(int x0, int y0, int x1, int y1, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
+{
+    if (g_gl_overlay_win_w < 1) return;
+    float fr = r / 255.0f, fg = g / 255.0f, fb = b / 255.0f, fa = a / 255.0f;
+    int wx = g_gl_overlay_win_w, wy = g_gl_overlay_win_h;
+    float nx0, ny0, nx1, ny1;
+    display_gl_wnd_ndc((float)x0, (float)y0, wx, wy, &nx0, &ny0);
+    display_gl_wnd_ndc((float)x1, (float)y1, wx, wy, &nx1, &ny1);
+    float buf[4] = { nx0, ny0, nx1, ny1 };
+    g_gl_use_program(g_gl_prog_hud_solid);
+    if (g_gl_hud_loc_color_solid >= 0) g_gl_uniform4f(g_gl_hud_loc_color_solid, fr, fg, fb, fa);
+    g_gl_bind_vertex_array(g_gl_hud_vao_solid);
+    g_gl_bind_buffer(0x8892, g_gl_hud_vbo);
+    g_gl_buffer_data(0x8892, (ptrdiff_t)sizeof(buf), buf, GL_STREAM_DRAW);
+    g_gl_draw_arrays(GL_LINES, 0, 2);
+}
+
+static void display_overlay_copy(SDL_Texture *tex, const SDL_Rect *src_opt, const SDL_Rect *dst)
+{
+    if (!g_sdl_ren || !tex || !dst) return;
+    if (g_gl_unpack_ok && g_gl_hud_ok)
+        display_gl_texture_blit(tex, src_opt, dst);
+    else
+        SDL_RenderCopy(g_sdl_ren, tex, src_opt, dst);
+}
+
+static void display_overlay_fill_rect_abs(const SDL_Rect *rect, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
+{
+    if (!g_sdl_ren || !rect) return;
+    if (g_gl_unpack_ok && g_gl_hud_ok)
+        display_gl_solid_rect_fill(rect, r, g, b, a);
+    else {
+        SDL_SetRenderDrawBlendMode(g_sdl_ren, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(g_sdl_ren, r, g, b, a);
+        SDL_RenderFillRect(g_sdl_ren, rect);
+    }
+}
+
+static void display_automap_line_outlined_gl(int ax0, int ay0, int ax1, int ay1,
+                                             Uint8 fr, Uint8 fg, Uint8 fb, Uint8 alpha)
+{
+    int dx = ax1 - ax0;
+    int dy = ay1 - ay0;
+    double len = hypot((double)dx, (double)dy);
+    if (len < 1e-6) return;
+    double px = -dy / len;
+    double py = dx / len;
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    SDL_RenderFlush(g_sdl_ren);
+#endif
+    for (int k = -1; k <= 1; k++) {
+        double oxk = k * px, oyk = k * py;
+        int ox = (int)(oxk + (oxk >= 0.0 ? 0.5 : -0.5));
+        int oy = (int)(oyk + (oyk >= 0.0 ? 0.5 : -0.5));
+        display_gl_line(ax0 + ox, ay0 + oy, ax1 + ox, ay1 + oy, 0, 0, 0, alpha);
+    }
+    display_gl_line(ax0, ay0, ax1, ay1, fr, fg, fb, alpha);
+}
+
 static void display_gl_shutdown_unpack(void)
 {
+    display_gl_hud_shutdown();
     if (!g_gl_unpack_ok) return;
     if (g_gl_delete_vertex_arrays && g_gl_vao) g_gl_delete_vertex_arrays(1, &g_gl_vao);
     if (g_gl_delete_buffers && g_gl_vbo) g_gl_delete_buffers(1, &g_gl_vbo);
@@ -453,6 +843,9 @@ static int display_gl_try_init_unpack(void)
     g_gl_bind_texture(0x0DE1, 0);
 
     g_gl_unpack_ok = 1;
+    if (!display_gl_hud_try_init()) {
+        printf("[DISPLAY] HUD: GL overlay init failed; status HUD may be invisible until fixed or AB3D_DISABLE_GL_UNPACK=1\n");
+    }
     printf("[DISPLAY] 12-bit unpack: GPU (GL_R16UI + shader)\n");
     return 1;
 }
@@ -490,9 +883,7 @@ static void display_gl_present_cw(const uint16_t *src, int w, int h)
     int win_w = 1, win_h = 1;
 
     if (!g_gl_unpack_ok || !src || w < 1 || h < 1) return;
-    SDL_GL_GetDrawableSize(g_window, &win_w, &win_h);
-    if (win_w < 1) win_w = 1;
-    if (win_h < 1) win_h = 1;
+    display_gl_output_size(&win_w, &win_h);
 
     display_gl_reset_client_pixel_unpack();
     g_gl_active_texture(GL_TEXTURE0);
@@ -526,6 +917,35 @@ static void display_gl_present_cw(const uint16_t *src, int w, int h)
     g_gl_draw_arrays(GL_TRIANGLE_STRIP, 0, 4);
     g_gl_bind_vertex_array(0);
     g_gl_use_program(0);
+
+    /* SDL_Renderer HUD/automap/tint overlays use window pixel coords (0..drawable); they assume
+     * glViewport matches the full drawable. A letterbox-only viewport clips or misplaces them. */
+    g_gl_viewport(0, 0, (GLsizei)win_w, (GLsizei)win_h);
+}
+
+/* SDL2's OpenGL backend caches the "current shader" as an enum (texture vs solid, etc.), not the
+ * actual GL program name. After raw glUseProgram(0), the GPU has no program while drawstate.shader
+ * still says SHADER_TEXTURE — GL_SelectShader is skipped and SDL_RenderCopy HUD draws do nothing.
+ * Queue a no-op solid draw (alpha 0 + blend) so the next texture draw forces GL_SelectShader. */
+static void display_sdl_resync_after_raw_gl(void)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    SDL_RenderFlush(g_sdl_ren);
+#endif
+    {
+        int vw, vh;
+        if (SDL_GetRendererOutputSize(g_sdl_ren, &vw, &vh) == 0) {
+            SDL_Rect full;
+            full.x = 0;
+            full.y = 0;
+            full.w = vw;
+            full.h = vh;
+            SDL_RenderSetViewport(g_sdl_ren, &full);
+        }
+    }
+    SDL_SetRenderDrawBlendMode(g_sdl_ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(g_sdl_ren, 0, 0, 0, 0);
+    SDL_RenderDrawPoint(g_sdl_ren, 0, 0);
 }
 
 static void display_cpu_unpack_cw_to_texture(const uint16_t *src, int w, int h)
@@ -980,6 +1400,11 @@ static void display_automap_draw_line_outlined(SDL_Renderer *ren,
                                                int ax0, int ay0, int ax1, int ay1,
                                                Uint8 fr, Uint8 fg, Uint8 fb, Uint8 alpha)
 {
+    if (g_gl_unpack_ok && g_gl_hud_ok) {
+        display_automap_line_outlined_gl(ax0, ay0, ax1, ay1, fr, fg, fb, alpha);
+        (void)ren;
+        return;
+    }
     int dx = ax1 - ax0;
     int dy = ay1 - ay0;
     double len = hypot((double)dx, (double)dy);
@@ -1021,9 +1446,8 @@ static void display_key_hud_fill_rect(SDL_Renderer *ren, int lx, int ly, int lw,
     rr.y = g_present_dst_rect.y + ly;
     rr.w = lw;
     rr.h = lh;
-    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(ren, r, g, b, a);
-    SDL_RenderFillRect(ren, &rr);
+    (void)ren;
+    display_overlay_fill_rect_abs(&rr, r, g, b, a);
 }
 
 static void display_key_hud_free_textures(void)
@@ -1272,7 +1696,7 @@ static void hud_draw_three_slot_value(SDL_Texture *tex, int tex_w, int tex_h, in
         dst.w = px1i - px0i;
         if (dst.w < 1) dst.w = 1;
         dst.h = sh;
-        SDL_RenderCopy(g_sdl_ren, tex, &src, &dst);
+        display_overlay_copy(tex, &src, &dst);
     }
 }
 
@@ -1392,7 +1816,7 @@ static void display_key_hud_sdl_overlay(const GameState *state)
             dst.y = g_present_dst_rect.y + iy;
             dst.w = kh;
             dst.h = kh;
-            SDL_RenderCopy(g_sdl_ren, tex, NULL, &dst);
+            display_overlay_copy(tex, NULL, &dst);
             continue;
         }
 
@@ -1469,6 +1893,10 @@ static void display_present_cw_frame(GameState *state)
 
     if (g_gl_unpack_ok) {
         display_gl_present_cw(src, w, h);
+        if (g_gl_hud_ok)
+            display_gl_overlay_begin();
+        else
+            display_sdl_resync_after_raw_gl();
     } else {
         if (!g_texture) return;
         display_cpu_unpack_cw_to_texture(src, w, h);
@@ -1488,14 +1916,23 @@ static void display_present_cw_frame(GameState *state)
     }
 
     if (g_screen_tint_enabled && g_screen_tint_a > 0) {
-        SDL_SetRenderDrawBlendMode(g_sdl_ren, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(g_sdl_ren,
-                               g_screen_tint_r,
-                               g_screen_tint_g,
-                               g_screen_tint_b,
-                               g_screen_tint_a);
-        SDL_RenderFillRect(g_sdl_ren, &g_present_dst_rect);
+        if (g_gl_unpack_ok && g_gl_hud_ok) {
+            SDL_Rect tr = g_present_dst_rect;
+            display_gl_solid_rect_fill(&tr, g_screen_tint_r, g_screen_tint_g, g_screen_tint_b,
+                                       g_screen_tint_a);
+        } else {
+            SDL_SetRenderDrawBlendMode(g_sdl_ren, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(g_sdl_ren,
+                                   g_screen_tint_r,
+                                   g_screen_tint_g,
+                                   g_screen_tint_b,
+                                   g_screen_tint_a);
+            SDL_RenderFillRect(g_sdl_ren, &g_present_dst_rect);
+        }
     }
+
+    if (g_gl_unpack_ok && g_gl_hud_ok)
+        display_gl_overlay_end();
 
     SDL_RenderPresent(g_sdl_ren);
 
