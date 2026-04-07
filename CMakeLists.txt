@@ -118,6 +118,7 @@ endif()
 
 # Link SDL2 (no SDL2main)
 target_link_libraries(ab3d1 PRIVATE SDL2-static)
+target_include_directories(ab3d1 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 
 # Incremental build: copy ab3d.ini.template (repo root) -> ab3d.ini beside the exe only if ab3d.ini is missing
 # (so local edits next to the exe are kept). Full Clean/Rebuild: ab3d.ini is listed in ADDITIONAL_CLEAN_FILES,
@@ -135,6 +136,14 @@ add_custom_command(TARGET ab3d1 POST_BUILD
           "$<TARGET_FILE_DIR:ab3d1>/README.txt"
   COMMENT "Copy README.txt beside ab3d1"
 )
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fonts")
+  add_custom_command(TARGET ab3d1 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/fonts"
+            "$<TARGET_FILE_DIR:ab3d1>/fonts"
+    COMMENT "Copy fonts -> output fonts/"
+  )
+endif()
 function(ab3d_stage_dir source_dir subdir)
   if(EXISTS "${source_dir}")
     add_custom_command(TARGET ab3d1 POST_BUILD

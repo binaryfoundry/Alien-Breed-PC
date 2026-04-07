@@ -24,6 +24,9 @@
 #include <string.h>
 #include <math.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 /* OpenGL 3.0+ integer texture (not always in SDL's bundled gl.h) */
 #ifndef GL_R16UI
 #define GL_R16UI 0x8232
@@ -71,6 +74,14 @@ static SDL_Texture  *g_texture  = NULL;
 static SDL_Texture *g_key_hud_tex[4];
 static uintptr_t    g_key_hud_tex_tag;
 static void display_key_hud_free_textures(void);
+
+/* HUD digit strips: 0 = health %, 1 = ammo count (fonts/*_digits.png). */
+static SDL_Texture *g_hud_digit_tex[2];
+static int          g_hud_digit_tex_w[2];
+static int          g_hud_digit_tex_h[2];
+static int          g_hud_digits_load_attempted;
+static void         display_hud_digits_free(void);
+static void         display_hud_digits_ensure_loaded(void);
 static int g_gl_unpack_ok; /* OpenGL R16UI + shader path active */
 static int g_present_width = 0;
 static int g_present_height = 0;
@@ -837,6 +848,7 @@ int display_is_fullscreen(void)
 
 void display_shutdown(void)
 {
+    display_hud_digits_free();
     display_key_hud_free_textures();
     g_key_hud_tex_tag = 0;
     renderer_shutdown();
@@ -965,6 +977,302 @@ static SDL_Texture *display_key_hud_texture_for_frame(int frame_idx)
     return t;
 }
 
+static void display_hud_digits_free(void)
+{
+    for (int i = 0; i < 2; i++) {
+        if (g_hud_digit_tex[i]) {
+            SDL_DestroyTexture(g_hud_digit_tex[i]);
+            g_hud_digit_tex[i] = NULL;
+        }
+        g_hud_digit_tex_w[i] = 0;
+        g_hud_digit_tex_h[i] = 0;
+    }
+    g_hud_digits_load_attempted = 0;
+}
+
+static void display_hud_digits_ensure_loaded(void)
+{
+    if (g_hud_digits_load_attempted || !g_sdl_ren) return;
+    g_hud_digits_load_attempted = 1;
+
+    const char *names[2] = { "health_digits.png", "ammo_digits.png" };
+    char *base = SDL_GetBasePath();
+    char path[512];
+
+    for (int i = 0; i < 2; i++) {
+        int w = 0, h = 0, comp = 0;
+        unsigned char *rgba = NULL;
+
+        if (base) {
+            int plen = snprintf(path, sizeof(path), "%sfonts/%s", base, names[i]);
+            if (plen > 0 && plen < (int)sizeof(path))
+                rgba = stbi_load(path, &w, &h, &comp, 4);
+        }
+        if (!rgba) {
+            int plen = snprintf(path, sizeof(path), "fonts/%s", names[i]);
+            if (plen > 0 && plen < (int)sizeof(path))
+                rgba = stbi_load(path, &w, &h, &comp, 4);
+        }
+        if (!rgba) {
+            printf("[DISPLAY] HUD digits: could not load %s (%s)\n", names[i],
+                   stbi_failure_reason() ? stbi_failure_reason() : "?");
+            continue;
+        }
+
+        size_t npix = (size_t)w * (size_t)h;
+        uint32_t *argb = (uint32_t *)malloc(npix * sizeof(uint32_t));
+        if (!argb) {
+            stbi_image_free(rgba);
+            continue;
+        }
+        for (size_t p = 0; p < npix; p++) {
+            unsigned char r = rgba[p * 4 + 0];
+            unsigned char g = rgba[p * 4 + 1];
+            unsigned char b = rgba[p * 4 + 2];
+            unsigned char a = rgba[p * 4 + 3];
+            argb[p] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+        }
+        stbi_image_free(rgba);
+
+        SDL_Texture *t = SDL_CreateTexture(g_sdl_ren, SDL_PIXELFORMAT_ARGB8888,
+                                           SDL_TEXTUREACCESS_STATIC, w, h);
+        if (!t || SDL_UpdateTexture(t, NULL, argb, (int)(w * (int)sizeof(uint32_t))) != 0) {
+            if (t) SDL_DestroyTexture(t);
+            free(argb);
+            printf("[DISPLAY] HUD digits: SDL texture failed for %s\n", names[i]);
+            continue;
+        }
+        free(argb);
+        SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+        /* Nearest: linear upscale bleeds between adjacent digits in the strip atlas. */
+        SDL_SetTextureScaleMode(t, SDL_ScaleModeNearest);
+#endif
+        g_hud_digit_tex[i] = t;
+        g_hud_digit_tex_w[i] = w;
+        g_hud_digit_tex_h[i] = h;
+    }
+
+    if (base)
+        SDL_free(base);
+}
+
+/* Bottom HUD layout: key row anchored bottom-right (same as key HUD). */
+static void hud_key_row_layout(int iw, int ih, int *margin, int *kh, int *gap, int *group_w,
+                               int *ix_key0, int *iy)
+{
+    int m = ih / 48;
+    if (m < 2) m = 2;
+    int k = ih / 6;
+    if (k < 14) k = 14;
+    if (k > 44) k = 44;
+    int g = k / 10;
+    if (g < 2) g = 2;
+    int gw = 4 * k + 3 * g;
+    int ix = iw - m - gw;
+    if (ix < 0) ix = 0;
+    int y = ih - m - k;
+    *margin = m;
+    *kh = k;
+    *gap = g;
+    *group_w = gw;
+    *ix_key0 = ix;
+    *iy = y;
+}
+
+/*
+ * Digit strip layout must match the generator (5x7 glyph, pad=1, spacing=2):
+ *   stride = gw + pad*2 + 2 + spacing  (= 11 at scale 1)
+ *   cell_w = gw + pad*2 + 2            (= 9)
+ *   row_h  = gh + pad*2 + 2            (= 11)
+ *   sheet_w = 108 * k, sheet_h = 11 * k for integer scale k (NEAREST upscale).
+ * Do not use tex_w/10 — columns are not equal width; the last column is not "remainder".
+ */
+static int hud_digit_tex_scale_k(int tex_w, int tex_h)
+{
+    if (tex_h < 11 || tex_w < 108) return 0;
+    if (tex_h % 11 != 0) return 0;
+    int k = tex_h / 11;
+    if (k < 1 || tex_w != 108 * k) return 0;
+    return k;
+}
+
+static void hud_digit_src_rect(int tex_w, int tex_h, int digit, SDL_Rect *src)
+{
+    if (digit < 0) digit = 0;
+    if (digit > 9) digit = 9;
+
+    int k = hud_digit_tex_scale_k(tex_w, tex_h);
+    if (k > 0) {
+        int stride = 11 * k;
+        int cell_w = 9 * k;
+        int row_h = 11 * k;
+        src->x = digit * stride;
+        src->y = 0;
+        src->w = cell_w;
+        src->h = row_h;
+        return;
+    }
+
+    /* Fallback: generic 10-column atlas */
+    int cell = tex_w / 10;
+    if (cell < 1) cell = 1;
+    src->x = digit * cell;
+    src->y = 0;
+    src->w = (digit == 9) ? (tex_w - digit * cell) : cell;
+    src->h = tex_h;
+}
+
+/* Widest scaled glyph — fixed column width so 0..9 align in three slots. */
+static int hud_max_digit_scaled_width(int tex_w, int tex_h, int digit_h)
+{
+    int mw = 0;
+    for (int d = 0; d <= 9; d++) {
+        SDL_Rect src;
+        hud_digit_src_rect(tex_w, tex_h, d, &src);
+        int dw = (src.w * digit_h + src.h / 2) / src.h;
+        if (dw < 1) dw = 1;
+        if (dw > mw) mw = dw;
+    }
+    return mw;
+}
+
+static int hud_three_slot_width(int tex_w, int tex_h, int digit_h, int gap)
+{
+    int sw = hud_max_digit_scaled_width(tex_w, tex_h, digit_h);
+    return sw * 3 + gap * 2;
+}
+
+/*
+ * value 0..max_value as %03d with up to two leading zeros not drawn; slots stay fixed width
+ * (health max 100, ammo count max 999).
+ */
+static void hud_draw_three_slot_value(SDL_Texture *tex, int tex_w, int tex_h, int digit_h,
+                                      int value, int max_value, int x_left, int y_top, int gap)
+{
+    if (value < 0) value = 0;
+    if (value > max_value) value = max_value;
+    char b[8];
+    snprintf(b, sizeof(b), "%03d", value);
+
+    int slot_w = hud_max_digit_scaled_width(tex_w, tex_h, digit_h);
+    int rw = renderer_get_width();
+    int rh = renderer_get_height();
+    double scale_x = (double)g_present_dst_rect.w / (double)rw;
+    double scale_y = (double)g_present_dst_rect.h / (double)rh;
+    double py0 = (double)g_present_dst_rect.y + (double)y_top * scale_y;
+    double py1 = (double)g_present_dst_rect.y + (double)(y_top + digit_h) * scale_y;
+    int sy0 = (int)floor(py0 + 0.5);
+    int sy1 = (int)floor(py1 + 0.5);
+    int sh = sy1 - sy0;
+    if (sh < 1) sh = 1;
+
+    int start;
+    if (value == 0) {
+        start = 2;
+    } else {
+        start = 0;
+        while (start < 2 && b[start] == '0')
+            start++;
+    }
+
+    for (int s = start; s < 3; s++) {
+        int d = b[s] - '0';
+        if (d < 0 || d > 9) continue;
+        SDL_Rect src;
+        hud_digit_src_rect(tex_w, tex_h, d, &src);
+        int dw = (src.w * digit_h + src.h / 2) / src.h;
+        if (dw < 1) dw = 1;
+        int slot_ix = x_left + s * (slot_w + gap);
+        int dx = slot_ix + (slot_w - dw) / 2;
+
+        double px0 = (double)g_present_dst_rect.x + (double)dx * scale_x;
+        double px1 = (double)g_present_dst_rect.x + (double)(dx + dw) * scale_x;
+        int px0i = (int)floor(px0 + 0.5);
+        int px1i = (int)floor(px1 + 0.5);
+        SDL_Rect dst;
+        dst.x = px0i;
+        dst.y = sy0;
+        dst.w = px1i - px0i;
+        if (dst.w < 1) dst.w = 1;
+        dst.h = sh;
+        SDL_RenderCopy(g_sdl_ren, tex, &src, &dst);
+    }
+}
+
+static void display_hud_stats_sdl_overlay(const GameState *state)
+{
+    if (!state || !g_sdl_ren) return;
+
+    int iw = renderer_get_width();
+    int ih = renderer_get_height();
+    if (iw < 8 || ih < 8) return;
+
+    display_hud_digits_ensure_loaded();
+    if (!g_hud_digit_tex[0] && !g_hud_digit_tex[1]) return;
+
+    int margin, kh, gap_keys, group_w, ix_key0, iy;
+    hud_key_row_layout(iw, ih, &margin, &kh, &gap_keys, &group_w, &ix_key0, &iy);
+
+    int16_t e = state->energy;
+    if (e < 0) e = 0;
+    if (e > PLAYER_MAX_ENERGY) e = PLAYER_MAX_ENERGY;
+    int hp_pct = (e * 100 + PLAYER_MAX_ENERGY / 2) / PLAYER_MAX_ENERGY;
+    if (hp_pct < 0) hp_pct = 0;
+    if (hp_pct > 100) hp_pct = 100;
+
+    /* Raw ammo count (same scale as display_ammo_bar); cap HUD at MAX_AMMO_RAW. */
+    int ammo_count;
+    if (state->infinite_ammo) {
+        ammo_count = (int)MAX_AMMO_RAW;
+    } else {
+        ammo_count = (int)state->ammo;
+        if (ammo_count < 0) ammo_count = 0;
+        if (ammo_count > (int)MAX_AMMO_RAW) ammo_count = (int)MAX_AMMO_RAW;
+    }
+
+    /* Horizontal margin between health | ammo | keys (internal pixels). */
+    int gap_stat = kh / 3;
+    if (gap_stat < 6) gap_stat = 6;
+    int d_gap = kh / 12;
+    if (d_gap < 1) d_gap = 1;
+
+    int digit_h = kh;
+    int health_w = 0, ammo_w = 0;
+    if (g_hud_digit_tex[0])
+        health_w = hud_three_slot_width(g_hud_digit_tex_w[0], g_hud_digit_tex_h[0], digit_h, d_gap);
+    if (g_hud_digit_tex[1])
+        ammo_w = hud_three_slot_width(g_hud_digit_tex_w[1], g_hud_digit_tex_h[1], digit_h, d_gap);
+
+    /* Shrink digits if stats would extend left of the margin (health | ammo | gap | keys). */
+    for (int attempt = 0; attempt < 10; attempt++) {
+        int inner = (health_w > 0 && ammo_w > 0) ? gap_stat : 0;
+        int stats_total = health_w + inner + ammo_w;
+        int leftmost = ix_key0 - gap_stat - stats_total;
+        if (leftmost >= margin) break;
+        digit_h = digit_h * 9 / 10;
+        if (digit_h < 8) break;
+        health_w = g_hud_digit_tex[0] ? hud_three_slot_width(g_hud_digit_tex_w[0], g_hud_digit_tex_h[0], digit_h, d_gap) : 0;
+        ammo_w = g_hud_digit_tex[1] ? hud_three_slot_width(g_hud_digit_tex_w[1], g_hud_digit_tex_h[1], digit_h, d_gap) : 0;
+    }
+
+    /* Right edge of stat block sits just left of the key row (same baseline iy). */
+    int right = ix_key0 - gap_stat;
+    if (g_hud_digit_tex[1] && ammo_w > 0) {
+        int ammo_x = right - ammo_w;
+        SDL_SetTextureAlphaMod(g_hud_digit_tex[1], 255);
+        hud_draw_three_slot_value(g_hud_digit_tex[1], g_hud_digit_tex_w[1], g_hud_digit_tex_h[1],
+                                  digit_h, ammo_count, (int)MAX_AMMO_RAW, ammo_x, iy, d_gap);
+        right = ammo_x - gap_stat;
+    }
+    if (g_hud_digit_tex[0] && health_w > 0) {
+        int health_x = right - health_w;
+        SDL_SetTextureAlphaMod(g_hud_digit_tex[0], 255);
+        hud_draw_three_slot_value(g_hud_digit_tex[0], g_hud_digit_tex_w[0], g_hud_digit_tex_h[0],
+                                  digit_h, hp_pct, 100, health_x, iy, d_gap);
+    }
+}
+
 static void display_key_hud_sdl_overlay(const GameState *state)
 {
     if (!state || !g_sdl_ren) return;
@@ -979,18 +1287,8 @@ static void display_key_hud_sdl_overlay(const GameState *state)
         g_key_hud_tex_tag = tag;
     }
 
-    int margin = ih / 48;
-    if (margin < 2) margin = 2;
-    int kh = ih / 6;
-    if (kh < 14) kh = 14;
-    if (kh > 44) kh = 44;
-    /* Tight horizontal group, bottom-right of the render buffer */
-    int gap = kh / 10;
-    if (gap < 2) gap = 2;
-    int group_w = 4 * kh + 3 * gap;
-    int ix0 = iw - margin - group_w;
-    if (ix0 < 0) ix0 = 0;
-    int iy = ih - margin - kh;
+    int margin, kh, gap, group_w, ix0, iy;
+    hud_key_row_layout(iw, ih, &margin, &kh, &gap, &group_w, &ix0, &iy);
 
     static const Uint8 fallback_rgb[4][3] = {
         { 255, 210, 32 },
@@ -1104,6 +1402,7 @@ static void display_present_cw_frame(GameState *state)
     }
 
     if (state) {
+        display_hud_stats_sdl_overlay(state);
         display_key_hud_sdl_overlay(state);
         if (state->automap_visible)
             display_automap_sdl_overlay(state);
