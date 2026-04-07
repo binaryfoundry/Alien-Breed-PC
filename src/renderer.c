@@ -4784,7 +4784,15 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         int idx;
         int32_t z;
     } ObjEntry;
-    ObjEntry objs[80 + 40 + MAX_EXPLOSIONS];
+    enum {
+        /* Level object table is CID-terminated but physically 256 slots in level data.
+         * Keep draw-list capacity aligned with all potential contributors. */
+        RENDERER_OBJECT_SLOT_SCAN_CAP = 256
+    };
+    ObjEntry objs[RENDERER_OBJECT_SLOT_SCAN_CAP +
+                  NASTY_SHOT_SLOT_COUNT +
+                  PLAYER_SHOT_SLOT_COUNT +
+                  MAX_EXPLOSIONS];
     const int max_draw_entries = (int)(sizeof(objs) / sizeof(objs[0]));
     int obj_count = 0;
 
@@ -4796,7 +4804,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
 
     /* Iterate by object index; each object has point number at offset 0 (ObjDraw: move.w (a0)+,d0).
      * Use that to look up ObjRotated[pt_num] so keys and other pickups use correct position/z. */
-    for (int obj_idx = 0; obj_idx < 80 && obj_count < max_draw_entries; obj_idx++) {
+    for (int obj_idx = 0; obj_idx < RENDERER_OBJECT_SLOT_SCAN_CAP && obj_count < max_draw_entries; obj_idx++) {
         const uint8_t *obj = level->object_data + obj_idx * OBJECT_SIZE;
         int16_t pt_num = rd16(obj);
         if (pt_num < 0) break; /* End of object list */
