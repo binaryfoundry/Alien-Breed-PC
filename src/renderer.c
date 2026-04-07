@@ -1670,6 +1670,15 @@ static inline int renderer_fp16_x_ceil_px(int64_t x_fp)
     return (int)((x_fp + 65535LL) >> 16);
 }
 
+/* Floor/ceiling edge tables are int16_t; clamp projected X before storing so
+ * near-plane projection spikes cannot wrap and corrupt span bounds. */
+static inline int16_t renderer_clamp_edge_x_i16(int x)
+{
+    if (x < INT16_MIN) return INT16_MIN;
+    if (x > INT16_MAX) return INT16_MAX;
+    return (int16_t)x;
+}
+
 static void build_argb24_to_amiga12_lut(void)
 {
     if (argb24_to_amiga12_lut_ready) return;
@@ -5834,7 +5843,7 @@ static void renderer_tessellate_sky_ceiling_ctx(RenderSliceContext *ctx,
     if (!left_edge || !right_edge) { free(left_edge); free(right_edge); return; }
 
     for (int i = 0; i < h; i++) {
-        left_edge[i]  = (int16_t)r->width;
+        left_edge[i]  = renderer_clamp_edge_x_i16(r->width);
         right_edge[i] = -1;
     }
     int poly_top = h;
@@ -5881,8 +5890,8 @@ static void renderer_tessellate_sky_ceiling_ctx(RenderSliceContext *ctx,
             if (row < y_min || row > y_max) continue;
             int lo = sx1 < sx2 ? sx1 : sx2;
             int hi = sx1 > sx2 ? sx1 : sx2;
-            if (lo < left_edge[row])  left_edge[row]  = (int16_t)lo;
-            if (hi > right_edge[row]) right_edge[row] = (int16_t)hi;
+            if (lo < left_edge[row])  left_edge[row]  = renderer_clamp_edge_x_i16(lo);
+            if (hi > right_edge[row]) right_edge[row] = renderer_clamp_edge_x_i16(hi);
             if (row < poly_top) poly_top = row;
             if (row > poly_bot) poly_bot = row;
             continue;
@@ -5907,8 +5916,8 @@ static void renderer_tessellate_sky_ceiling_ctx(RenderSliceContext *ctx,
             if (row < 0 || row >= h) { x_fp += dx_fp; continue; }
             int lx = renderer_fp16_x_floor_px(x_fp);
             int rx = renderer_fp16_x_ceil_px(x_fp);
-            if (lx < left_edge[row])  left_edge[row]  = (int16_t)lx;
-            if (rx > right_edge[row]) right_edge[row] = (int16_t)rx;
+            if (lx < left_edge[row])  left_edge[row]  = renderer_clamp_edge_x_i16(lx);
+            if (rx > right_edge[row]) right_edge[row] = renderer_clamp_edge_x_i16(rx);
             if (row < poly_top) poly_top = row;
             if (row > poly_bot) poly_bot = row;
             x_fp += dx_fp;
@@ -6493,7 +6502,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                 break;
             }
             for (int i = 0; i < h; i++) {
-                left_edge[i] = (int16_t)g_renderer.width;
+                left_edge[i] = renderer_clamp_edge_x_i16(g_renderer.width);
                 right_edge_tab[i] = -1;
                 if (use_gour_floor) {
                     left_bright_tab[i] = 0;
@@ -6608,11 +6617,11 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                         int32_t lo_b = (sx1 <= sx2) ? eb1 : eb2;
                         int32_t hi_b = (sx1 <= sx2) ? eb2 : eb1;
                         if (lo < left_edge[row]) {
-                            left_edge[row] = (int16_t)lo;
+                            left_edge[row] = renderer_clamp_edge_x_i16(lo);
                             if (use_gour_floor) left_bright_tab[row] = (int16_t)lo_b;
                         }
                         if (hi > right_edge_tab[row]) {
-                            right_edge_tab[row] = (int16_t)hi;
+                            right_edge_tab[row] = renderer_clamp_edge_x_i16(hi);
                             if (use_gour_floor) right_bright_tab[row] = (int16_t)hi_b;
                         }
                         if (row < poly_top) poly_top = row;
@@ -6652,11 +6661,11 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                     int left_x = renderer_fp16_x_floor_px(x_fp);
                     int right_x = renderer_fp16_x_ceil_px(x_fp);
                     if (left_x < left_edge[row]) {
-                        left_edge[row] = (int16_t)left_x;
+                        left_edge[row] = renderer_clamp_edge_x_i16(left_x);
                         if (use_gour_floor) left_bright_tab[row] = (int16_t)edge_bright;
                     }
                     if (right_x > right_edge_tab[row]) {
-                        right_edge_tab[row] = (int16_t)right_x;
+                        right_edge_tab[row] = renderer_clamp_edge_x_i16(right_x);
                         if (use_gour_floor) right_bright_tab[row] = (int16_t)edge_bright;
                     }
                     if (row < poly_top) poly_top = row;
