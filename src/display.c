@@ -937,11 +937,15 @@ static void display_map_internal_rect(int ix, int iy, int irw, int irh, SDL_Rect
     out->h = ay1 - ay0;
 }
 
-static void display_key_hud_fill_rect(SDL_Renderer *ren, int ix, int iy, int iw, int ih,
+/* Letterbox-relative coords (same space as hud_key_row_layout). */
+static void display_key_hud_fill_rect(SDL_Renderer *ren, int lx, int ly, int lw, int lh,
                                       Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 {
     SDL_Rect rr;
-    display_map_internal_rect(ix, iy, iw, ih, &rr);
+    rr.x = g_present_dst_rect.x + lx;
+    rr.y = g_present_dst_rect.y + ly;
+    rr.w = lw;
+    rr.h = lh;
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(ren, r, g, b, a);
     SDL_RenderFillRect(ren, &rr);
@@ -1057,21 +1061,23 @@ static void display_hud_digits_ensure_loaded(void)
         SDL_free(base);
 }
 
-/* Bottom HUD layout: key row anchored bottom-right (same as key HUD). */
-static void hud_key_row_layout(int iw, int ih, int *margin, int *kh, int *gap, int *group_w,
+/*
+ * Bottom HUD: compact cluster bottom-right. Letterbox pixels (g_present_dst_rect);
+ * scale ~1/32 of height so size tracks resolution without dominating the screen.
+ */
+static void hud_key_row_layout(int lay_w, int lay_h, int *margin, int *kh, int *gap, int *group_w,
                                int *ix_key0, int *iy)
 {
-    int m = ih / 48;
+    int m = lay_h / 64;
     if (m < 2) m = 2;
-    int k = ih / 6;
-    if (k < 14) k = 14;
-    if (k > 44) k = 44;
-    int g = k / 10;
+    int k = lay_h / 32;
+    if (k < 11) k = 11;
+    int g = k / 12;
     if (g < 2) g = 2;
     int gw = 4 * k + 3 * g;
-    int ix = iw - m - gw;
+    int ix = lay_w - m - gw;
     if (ix < 0) ix = 0;
-    int y = ih - m - k;
+    int y = lay_h - m - k;
     *margin = m;
     *kh = k;
     *gap = g;
@@ -1146,6 +1152,7 @@ static int hud_three_slot_width(int tex_w, int tex_h, int digit_h, int gap)
 /*
  * value 0..max_value as %03d with up to two leading zeros not drawn; slots stay fixed width
  * (health max 100, ammo count max 999).
+ * x_left, y_top, digit_h, gap are in letterbox pixels (same space as hud_key_row_layout).
  */
 static void hud_draw_three_slot_value(SDL_Texture *tex, int tex_w, int tex_h, int digit_h,
                                       int value, int max_value, int x_left, int y_top, int gap)
@@ -1156,14 +1163,10 @@ static void hud_draw_three_slot_value(SDL_Texture *tex, int tex_w, int tex_h, in
     snprintf(b, sizeof(b), "%03d", value);
 
     int slot_w = hud_max_digit_scaled_width(tex_w, tex_h, digit_h);
-    int rw = renderer_get_width();
-    int rh = renderer_get_height();
-    double scale_x = (double)g_present_dst_rect.w / (double)rw;
-    double scale_y = (double)g_present_dst_rect.h / (double)rh;
-    double py0 = (double)g_present_dst_rect.y + (double)y_top * scale_y;
-    double py1 = (double)g_present_dst_rect.y + (double)(y_top + digit_h) * scale_y;
-    int sy0 = (int)floor(py0 + 0.5);
-    int sy1 = (int)floor(py1 + 0.5);
+    int bx = g_present_dst_rect.x;
+    int by = g_present_dst_rect.y;
+    int sy0 = by + y_top;
+    int sy1 = by + y_top + digit_h;
     int sh = sy1 - sy0;
     if (sh < 1) sh = 1;
 
@@ -1186,10 +1189,8 @@ static void hud_draw_three_slot_value(SDL_Texture *tex, int tex_w, int tex_h, in
         int slot_ix = x_left + s * (slot_w + gap);
         int dx = slot_ix + (slot_w - dw) / 2;
 
-        double px0 = (double)g_present_dst_rect.x + (double)dx * scale_x;
-        double px1 = (double)g_present_dst_rect.x + (double)(dx + dw) * scale_x;
-        int px0i = (int)floor(px0 + 0.5);
-        int px1i = (int)floor(px1 + 0.5);
+        int px0i = bx + dx;
+        int px1i = bx + dx + dw;
         SDL_Rect dst;
         dst.x = px0i;
         dst.y = sy0;
@@ -1204,15 +1205,15 @@ static void display_hud_stats_sdl_overlay(const GameState *state)
 {
     if (!state || !g_sdl_ren) return;
 
-    int iw = renderer_get_width();
-    int ih = renderer_get_height();
-    if (iw < 8 || ih < 8) return;
+    int pw = g_present_dst_rect.w;
+    int ph = g_present_dst_rect.h;
+    if (pw < 8 || ph < 8) return;
 
     display_hud_digits_ensure_loaded();
     if (!g_hud_digit_tex[0] && !g_hud_digit_tex[1]) return;
 
     int margin, kh, gap_keys, group_w, ix_key0, iy;
-    hud_key_row_layout(iw, ih, &margin, &kh, &gap_keys, &group_w, &ix_key0, &iy);
+    hud_key_row_layout(pw, ph, &margin, &kh, &gap_keys, &group_w, &ix_key0, &iy);
 
     int16_t e = state->energy;
     if (e < 0) e = 0;
@@ -1231,10 +1232,10 @@ static void display_hud_stats_sdl_overlay(const GameState *state)
         if (ammo_count > (int)MAX_AMMO_RAW) ammo_count = (int)MAX_AMMO_RAW;
     }
 
-    /* Horizontal margin between health | ammo | keys (internal pixels). */
-    int gap_stat = kh / 3;
-    if (gap_stat < 6) gap_stat = 6;
-    int d_gap = kh / 12;
+    /* Horizontal margin between health | ammo | keys (letterbox pixels). */
+    int gap_stat = kh / 4;
+    if (gap_stat < 4) gap_stat = 4;
+    int d_gap = kh / 16;
     if (d_gap < 1) d_gap = 1;
 
     int digit_h = kh;
@@ -1251,7 +1252,7 @@ static void display_hud_stats_sdl_overlay(const GameState *state)
         int leftmost = ix_key0 - gap_stat - stats_total;
         if (leftmost >= margin) break;
         digit_h = digit_h * 9 / 10;
-        if (digit_h < 8) break;
+        if (digit_h < 6) break;
         health_w = g_hud_digit_tex[0] ? hud_three_slot_width(g_hud_digit_tex_w[0], g_hud_digit_tex_h[0], digit_h, d_gap) : 0;
         ammo_w = g_hud_digit_tex[1] ? hud_three_slot_width(g_hud_digit_tex_w[1], g_hud_digit_tex_h[1], digit_h, d_gap) : 0;
     }
@@ -1277,9 +1278,9 @@ static void display_key_hud_sdl_overlay(const GameState *state)
 {
     if (!state || !g_sdl_ren) return;
 
-    int iw = renderer_get_width();
-    int ih = renderer_get_height();
-    if (iw < 8 || ih < 8) return;
+    int pw = g_present_dst_rect.w;
+    int ph = g_present_dst_rect.h;
+    if (pw < 8 || ph < 8) return;
 
     uintptr_t tag = renderer_key_sprite_hud_cache_tag(state);
     if (tag != g_key_hud_tex_tag) {
@@ -1288,7 +1289,7 @@ static void display_key_hud_sdl_overlay(const GameState *state)
     }
 
     int margin, kh, gap, group_w, ix0, iy;
-    hud_key_row_layout(iw, ih, &margin, &kh, &gap, &group_w, &ix0, &iy);
+    hud_key_row_layout(pw, ph, &margin, &kh, &gap, &group_w, &ix0, &iy);
 
     static const Uint8 fallback_rgb[4][3] = {
         { 255, 210, 32 },
@@ -1312,7 +1313,10 @@ static void display_key_hud_sdl_overlay(const GameState *state)
         if (tex) {
             SDL_SetTextureAlphaMod(tex, alpha);
             SDL_Rect dst;
-            display_map_internal_rect(ix, iy, kh, kh, &dst);
+            dst.x = g_present_dst_rect.x + ix;
+            dst.y = g_present_dst_rect.y + iy;
+            dst.w = kh;
+            dst.h = kh;
             SDL_RenderCopy(g_sdl_ren, tex, NULL, &dst);
             continue;
         }
