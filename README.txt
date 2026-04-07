@@ -23,6 +23,7 @@ WEAPONS
 - Mouse Wheel: Cycle weapons
 
 GAME / UI
+- Quit: Alt + F4
 - P: Pause
 - Tab: Toggle automap
 - Page Up / Page Down: Automap zoom in/out
