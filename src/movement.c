@@ -1601,8 +1601,13 @@ void head_towards_angle(MoveContext* ctx, int16_t* facing,
 {
     int32_t dx = target_x - ctx->oldx;
     int32_t dz = target_z - ctx->oldz;
+    int32_t dist = newton_sqrt(dx, dz);
+    int32_t move_dist = speed;
 
-    if (dx == 0 && dz == 0) return;
+    if (move_dist < 0) move_dist = -move_dist;
+
+    if (dist == 0) return;
+    if (move_dist > dist) move_dist = dist;
 
     {
         double angle_rad = atan2((double)-dx, (double)-dz);
@@ -1626,8 +1631,8 @@ void head_towards_angle(MoveContext* ctx, int16_t* facing,
             int16_t sin_val = sin_lookup(current);
             int16_t cos_val = cos_lookup(current);
 
-            ctx->newx = ctx->oldx - ((int32_t)sin_val * speed) / 16384;
-            ctx->newz = ctx->oldz - ((int32_t)cos_val * speed) / 16384;
+            ctx->newx = ctx->oldx - ((int32_t)sin_val * move_dist) / 16384;
+            ctx->newz = ctx->oldz - ((int32_t)cos_val * move_dist) / 16384;
         }
     }
 }

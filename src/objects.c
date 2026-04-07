@@ -732,78 +732,74 @@ static bool enemy_player_vertical_overlap(const GameObject *obj,
     }
 }
 
-static void enemy_enforce_min_distance_from_player(const GameObject *obj,
-                                                   const PlayerState *plr,
-                                                   int16_t min_dist,
-                                                   int16_t *x, int16_t *z)
+static bool enemy_step_within_limit(const MoveContext *ctx, int32_t max_step)
 {
-    if (!obj || !plr || !x || !z || min_dist <= 0) return;
+    if (!ctx) return true;
+    if (max_step < 0) max_step = -max_step;
+    max_step += 16; /* allow some extra room for wall-slide adjustments */
 
-    int16_t plr_x = (int16_t)(plr->xoff >> 16);
-    int16_t plr_z = (int16_t)(plr->zoff >> 16);
-    int32_t dx = (int32_t)(*x) - (int32_t)plr_x;
-    int32_t dz = (int32_t)(*z) - (int32_t)plr_z;
-    int32_t adx = (dx < 0) ? -dx : dx;
-    int32_t adz = (dz < 0) ? -dz : dz;
-
-    /* Amiga Collision does axis-threshold checks, not radial distance.
-     * Keep at least one axis strictly outside width sum to avoid overlap. */
-    if (adx > min_dist || adz > min_dist) return;
-
-    int32_t nx = *x;
-    int32_t nz = *z;
-    if (adx >= adz) {
-        int32_t sx;
-        if (dx > 0) sx = 1;
-        else if (dx < 0) sx = -1;
-        else {
-            sx = ((int32_t)sin_lookup(NASTY_FACING(*obj)) >= 0) ? 1 : -1;
-        }
-        nx = (int32_t)plr_x + sx * (int32_t)(min_dist + 1);
-    } else {
-        int32_t sz;
-        if (dz > 0) sz = 1;
-        else if (dz < 0) sz = -1;
-        else {
-            sz = ((int32_t)cos_lookup(NASTY_FACING(*obj)) >= 0) ? 1 : -1;
-        }
-        nz = (int32_t)plr_z + sz * (int32_t)(min_dist + 1);
+    {
+        int64_t dx = (int64_t)ctx->newx - (int64_t)ctx->oldx;
+        int64_t dz = (int64_t)ctx->newz - (int64_t)ctx->oldz;
+        int64_t moved_sq = dx * dx + dz * dz;
+        int64_t max_sq = (int64_t)max_step * (int64_t)max_step;
+        return moved_sq <= max_sq;
     }
-
-    if (nx < -32768) nx = -32768;
-    if (nx >  32767) nx =  32767;
-    if (nz < -32768) nz = -32768;
-    if (nz >  32767) nz =  32767;
-    *x = (int16_t)nx;
-    *z = (int16_t)nz;
 }
 
-static void enemy_enforce_player_separation(const GameObject *obj, const GameState *state,
-                                            int8_t mover_in_top,
-                                            int16_t *x, int16_t *z)
+static int32_t enemy_player_overlap_depth_at(const GameObject *obj,
+                                             const PlayerState *plr,
+                                             int8_t player_type,
+                                             int16_t x, int16_t z,
+                                             int16_t min_dist)
+{
+    if (!obj || !plr || min_dist <= 0) return -1;
+    if (!enemy_player_vertical_overlap(obj, plr, player_type)) return -1;
+
+    {
+        int32_t dx = (int32_t)x - (int32_t)(plr->xoff >> 16);
+        int32_t dz = (int32_t)z - (int32_t)(plr->zoff >> 16);
+        int32_t adx = (dx < 0) ? -dx : dx;
+        int32_t adz = (dz < 0) ? -dz : dz;
+        if (adx > min_dist || adz > min_dist) return -1;
+        return (int32_t)(min_dist - adx) + (int32_t)(min_dist - adz);
+    }
+}
+
+static void enemy_prevent_deeper_player_overlap(const GameObject *obj, const GameState *state,
+                                                int16_t oldx, int16_t oldz,
+                                                int16_t *x, int16_t *z)
 {
     if (!obj || !state || !x || !z) return;
     if (obj->obj.number < 0 || obj->obj.number > 20) return;
-    (void)mover_in_top;
 
     {
         int16_t extra_dist = enemy_min_player_separation_for_type(obj->obj.number);
 
-        if (state->plr1.zone >= 0 &&
-            enemy_player_vertical_overlap(obj, &state->plr1, OBJ_NBR_PLR1)) {
+        if (state->plr1.zone >= 0) {
             int16_t min_dist = enemy_base_player_collision_separation(obj->obj.number, OBJ_NBR_PLR1);
+            int32_t old_depth, new_depth;
             if (extra_dist > min_dist) min_dist = extra_dist;
-            if (min_dist > 0)
-                enemy_enforce_min_distance_from_player(obj, &state->plr1, min_dist, x, z);
+            old_depth = enemy_player_overlap_depth_at(obj, &state->plr1, OBJ_NBR_PLR1, oldx, oldz, min_dist);
+            new_depth = enemy_player_overlap_depth_at(obj, &state->plr1, OBJ_NBR_PLR1, *x, *z, min_dist);
+            if (new_depth >= 0 && (old_depth < 0 || new_depth > old_depth)) {
+                *x = oldx;
+                *z = oldz;
+                return;
+            }
         }
 
-        if (state->mode != MODE_SINGLE &&
-            state->plr2.zone >= 0 &&
-            enemy_player_vertical_overlap(obj, &state->plr2, OBJ_NBR_PLR2)) {
+        if (state->mode != MODE_SINGLE && state->plr2.zone >= 0) {
             int16_t min_dist = enemy_base_player_collision_separation(obj->obj.number, OBJ_NBR_PLR2);
+            int32_t old_depth, new_depth;
             if (extra_dist > min_dist) min_dist = extra_dist;
-            if (min_dist > 0)
-                enemy_enforce_min_distance_from_player(obj, &state->plr2, min_dist, x, z);
+            old_depth = enemy_player_overlap_depth_at(obj, &state->plr2, OBJ_NBR_PLR2, oldx, oldz, min_dist);
+            new_depth = enemy_player_overlap_depth_at(obj, &state->plr2, OBJ_NBR_PLR2, *x, *z, min_dist);
+            if (new_depth >= 0 && (old_depth < 0 || new_depth > old_depth)) {
+                *x = oldx;
+                *z = oldz;
+                return;
+            }
         }
     }
 }
@@ -938,13 +934,20 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
         move_object(&ctx, &state->level);
     }
 
-    /* Gameplay guardrail: red enemies must keep minimum spacing from players. */
+    /* Safety: never let contact resolution produce a huge enemy jump. */
+    if (!enemy_step_within_limit(&ctx, (int32_t)speed * (int32_t)state->temp_frames)) {
+        ctx.newx = ctx.oldx;
+        ctx.newz = ctx.oldz;
+    }
+
+    /* Block movement that would deepen player overlap, without snapping away. */
     {
-        int16_t sep_x = (int16_t)ctx.newx;
-        int16_t sep_z = (int16_t)ctx.newz;
-        enemy_enforce_player_separation(obj, state, ctx.stood_in_top, &sep_x, &sep_z);
-        ctx.newx = sep_x;
-        ctx.newz = sep_z;
+        int16_t contact_x = (int16_t)ctx.newx;
+        int16_t contact_z = (int16_t)ctx.newz;
+        enemy_prevent_deeper_player_overlap(obj, state, (int16_t)ctx.oldx, (int16_t)ctx.oldz,
+                                            &contact_x, &contact_z);
+        ctx.newx = contact_x;
+        ctx.newz = contact_z;
     }
 
     if (state->level.object_points) {
@@ -1483,7 +1486,11 @@ void objects_update(GameState *state)
                                    (uint8_t)obj->raw[6] != (uint8_t)OBJ_3D_SPRITE);
             int flying_hover = (obj_type == OBJ_NBR_FLYING_NASTY ||
                                 obj_type == OBJ_NBR_EYEBALL);
-            if ((obj_type >= 0 || corpse_on_floor) && !flying_hover) {
+            /* Players: USEPLR* already wrote objY from live physics; floor-based Y is for
+             * enemies/pickups. Overwriting PLR1/PLR2 here leaves feet-level Y and breaks
+             * bullet vs player height tests (ItsABullet vs ColBox half_height). */
+            if ((obj_type >= 0 || corpse_on_floor) && !flying_hover &&
+                obj_type != OBJ_NBR_PLR1 && obj_type != OBJ_NBR_PLR2) {
                 int16_t obj_zone = OBJ_ZONE(obj);
                 if (obj_zone >= 0 && obj_zone < zone_slots &&
                     state->level.zone_adds && state->level.data) {
@@ -2039,13 +2046,7 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
     int32_t dz = target_z - obj_z;
     int32_t dist = calc_dist_approx(dx, dz);
 
-    if (obj->obj.number == OBJ_NBR_SMALL_RED_THING && dist > 0
-        && dist < SMALL_RED_STANDOFF_DIST) {
-        /* Mirror chase target across the enemy so head_towards_angle walks backward,
-         * keeping them at a hittable range instead of under the barrel. */
-        target_x = obj_x + (obj_x - target_x);
-        target_z = obj_z + (obj_z - target_z);
-    }
+    /* Keep close-range pathing direct: proximity should not force retreat. */
 
     int16_t speed = NASTY_MAXSPD(*obj);
     if (speed == 0) speed = 6;
@@ -2145,13 +2146,20 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
         ctx.newz = ctx.oldz;
     }
 
-    /* Gameplay guardrail: red enemies must keep minimum spacing from players. */
+    /* Safety: never let contact resolution produce a huge enemy jump. */
+    if (!enemy_step_within_limit(&ctx, (int32_t)speed * (int32_t)state->temp_frames)) {
+        ctx.newx = ctx.oldx;
+        ctx.newz = ctx.oldz;
+    }
+
+    /* Block movement that would deepen player overlap, without snapping away. */
     {
-        int16_t sep_x = (int16_t)ctx.newx;
-        int16_t sep_z = (int16_t)ctx.newz;
-        enemy_enforce_player_separation(obj, state, ctx.stood_in_top, &sep_x, &sep_z);
-        ctx.newx = sep_x;
-        ctx.newz = sep_z;
+        int16_t contact_x = (int16_t)ctx.newx;
+        int16_t contact_z = (int16_t)ctx.newz;
+        enemy_prevent_deeper_player_overlap(obj, state, (int16_t)ctx.oldx, (int16_t)ctx.oldz,
+                                            &contact_x, &contact_z);
+        ctx.newx = contact_x;
+        ctx.newz = contact_z;
     }
 
     if (state->level.object_points) {
@@ -2628,7 +2636,7 @@ void object_handle_gas_pipe(GameObject *obj, GameState *state)
     int32_t zvel = (((int32_t)c << 4) >> 16);
     SHOT_SET_XVEL(*bullet, xvel << 16);
     SHOT_SET_ZVEL(*bullet, zvel << 16);
-    NASTY_SET_EFLAGS(*bullet, 0x00100020);
+    NASTY_SET_EFLAGS(*bullet, (1u << OBJ_NBR_PLR1) | (1u << OBJ_NBR_PLR2));
     bullet->obj.worry = 127;
 }
 
@@ -4257,8 +4265,8 @@ void enemy_fire_at_player(GameObject *obj, GameState *state,
     SHOT_SIZE(*bullet) = (int8_t)shot_type;
     SHOT_SET_LIFE(*bullet, 0);
 
-    /* EnemyFlags = both players (bits 5 and 11) */
-    NASTY_SET_EFLAGS(*bullet, 0x00100020);
+    /* EnemyFlags = both players (bits 5 and 11: OBJ_NBR_PLR1 / OBJ_NBR_PLR2) */
+    NASTY_SET_EFLAGS(*bullet, (1u << OBJ_NBR_PLR1) | (1u << OBJ_NBR_PLR2));
 
     /* Y position and vertical aim (AlienControl.s lines 415-439) */
     int16_t obj_y = (int16_t)((obj->raw[4] << 8) | obj->raw[5]);
