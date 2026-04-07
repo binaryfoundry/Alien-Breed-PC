@@ -174,7 +174,7 @@ typedef struct {
     int32_t floor_uv_dist_max;
     int32_t floor_uv_dist_near;
 
-    /* Framebuffer (double-buffered) */
+    /* Framebuffer (double-buffered); base pointers are cache-line-aligned. */
     uint8_t *buffer;          /* Current render target (width * height bytes) */
     uint8_t *back_buffer;     /* Back buffer for swap */
 

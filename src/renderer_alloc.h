@@ -9,6 +9,12 @@
 #ifndef RENDERER_ALLOC_H
 #define RENDERER_ALLOC_H
 
+/* Typical CPU L1 cache line size (x86/x64, AArch64). Used for framebuffer and
+ * clip-buffer base pointers so hot loops see aligned store streams. */
+#ifndef AB3D_CACHE_LINE_SIZE
+#define AB3D_CACHE_LINE_SIZE 64u
+#endif
+
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>

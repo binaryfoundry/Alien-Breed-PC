@@ -287,7 +287,7 @@ static PolyThreadContext *poly_thread_context_get(void)
 
     PolyThreadContext *ctx = (PolyThreadContext*)SDL_TLSGet(g_poly_thread_tls_id);
     if (!ctx) {
-        ctx = (PolyThreadContext *)ab3d_aligned_calloc(64, 1, sizeof(*ctx));
+        ctx = (PolyThreadContext *)ab3d_aligned_calloc(AB3D_CACHE_LINE_SIZE, 1, sizeof(*ctx));
         if (!ctx) return NULL;
         if (SDL_TLSSet(g_poly_thread_tls_id, ctx, poly_thread_context_destroy) != 0) {
             ab3d_aligned_free(ctx);
