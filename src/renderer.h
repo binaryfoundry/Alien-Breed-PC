@@ -348,6 +348,8 @@ int renderer_key_sprite_frame_for_condition_bit(const GameState *state, int bit_
 uintptr_t renderer_key_sprite_hud_cache_tag(const GameState *state);
 /* Rasterize key sprite frame to 32 rows; stride_pixels >= 32; ARGB with alpha 0 = transparent. */
 int renderer_key_sprite_rasterize_frame_argb(int frame_index, uint32_t *out, int stride_pixels);
+/* Return nearest wall-span depth at (col,row), or 0 when no wall span covers that pixel. */
+int32_t renderer_column_clip_nearest_z_at(int col, int row);
 
 /* Sub-routines (called by draw_display) */
 void renderer_rotate_level_pts(GameState *state);

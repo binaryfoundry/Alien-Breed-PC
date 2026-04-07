@@ -793,15 +793,10 @@ static uint32_t sample_poly_palette(uint8_t pal_idx, int shade_level)
 
 static inline int poly_pixel_behind_wall(int x, int y, int32_t z_view)
 {
-    if (!g_renderer.clip.top || !g_renderer.clip.bot || !g_renderer.clip.z) return 0;
     if (x < 0 || x >= g_renderer.width || y < 0 || y >= g_renderer.height) return 1;
-
-    int16_t wall_top = g_renderer.clip.top[x];
-    int16_t wall_bot = g_renderer.clip.bot[x];
-    if (wall_top <= wall_bot && y >= wall_top && y <= wall_bot) {
-        int32_t wall_z = g_renderer.clip.z[x];
-        if (wall_z > 0 && z_view >= wall_z) return 1;
-    }
+    /* Reuse the exact same wall-span depth query used by billboard sprites. */
+    int32_t wall_z = renderer_column_clip_nearest_z_at(x, y);
+    if (wall_z > 0 && z_view >= wall_z) return 1;
     return 0;
 }
 

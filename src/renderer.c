@@ -2653,7 +2653,7 @@ write_back:
     clip->z2[col] = zs[1];
 }
 
-static inline int32_t renderer_column_clip_nearest_z(int col, int row)
+int32_t renderer_column_clip_nearest_z_at(int col, int row)
 {
     const ColumnClip *clip = &g_renderer.clip;
     int32_t nearest_z = 0;
@@ -4058,7 +4058,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
             /* Wall clip test: only skip sprite pixels that are inside any stored wall span
              * in this column and behind the nearest wall depth for that row. */
             {
-                int32_t wall_z = renderer_column_clip_nearest_z(screen_col, screen_row);
+                int32_t wall_z = renderer_column_clip_nearest_z_at(screen_col, screen_row);
                 if (wall_z > 0 && (int32_t)z >= wall_z) continue;
             }
 
