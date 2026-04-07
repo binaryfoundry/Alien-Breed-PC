@@ -2,9 +2,9 @@
  * Alien Breed 3D I - PC Port
  * display.c - SDL2 display backend
  *
- * Creates a window and presents the 12-bit Amiga color-word framebuffer:
- * OpenGL renderer uploads GL_R16UI and unpacks in a fragment shader; other
- * drivers unpack on the CPU to an ARGB8888 SDL texture.
+ * Creates a window and presents the 12-bit Amiga color-word framebuffer.
+ * Default: SDL OpenGL render driver + GL_R16UI + fragment shader (raw uint16 upload, no SDL BlitNtoN).
+ * Fallback: Direct3D + SDL texture (UpdateTexture / RenderCopy may use internal blit). Opt-out: AB3D_DISABLE_GL_UNPACK=1.
  *
  * Base window size comes from ab3d.ini (render_width/render_height).
  * Internal render size is base size multiplied by supersampling.
@@ -70,6 +70,8 @@ typedef void (APIENTRY *DisplayGlTexParameteriFn)(GLenum target, GLenum pname, G
 static SDL_Window   *g_window   = NULL;
 static SDL_Renderer *g_sdl_ren  = NULL;
 static SDL_Texture  *g_texture  = NULL;
+/* True when g_texture accepts native packed 0x0RGB words directly (XRGB4444/ARGB4444). */
+static int g_texture_is_4444_direct = 0;
 /* Key HUD: one SDL texture per key sprite frame 0..3 (invalidated when level/assets change). */
 static SDL_Texture *g_key_hud_tex[4];
 static uintptr_t    g_key_hud_tex_tag;
@@ -103,9 +105,11 @@ static int g_fb_mipmap_ok_logged;
 static int g_fb_mipmap_fail_logged;
 #endif
 
-/* Fullscreen-desktop means borderless desktop-sized window (no display mode switch). */
+/* ini display_mode=fullscreen: same SDL window flags as windowed (no SDL fullscreen APIs).
+ * Window client area is sized to the primary display bounds; internal render size is still
+ * from ab3d.ini (render_width/height × supersampling), letterboxed into the window. */
 
-/* Non-GL path: g_texture is ARGB8888 after CPU unpack. GL path uses g_gl_tex_cw (R16UI). */
+/* Non-GL path: g_texture is XRGB4444/ARGB4444 direct (preferred) or ARGB8888 fallback. */
 
 #if SDL_VERSION_ATLEAST(2, 0, 12)
 /* GL enums (avoid pulling full GL headers); values from GL spec */
@@ -176,7 +180,7 @@ static void display_regenerate_framebuffer_mipmaps_if_downscaled(int tex_w, int 
 
 /* -----------------------------------------------------------------------
  * OpenGL: unpack 12-bit Amiga color words (GPU) — GL_R16UI + fragment shader
- * Fallback: CPU unpack to ARGB8888 SDL texture (D3D / no GL context).
+ * Fallback: direct CPU upload to 4444 texture (ARGB8888 fallback expands).
  * ----------------------------------------------------------------------- */
 #ifndef GL_NEAREST
 #define GL_NEAREST 0x2600
@@ -281,7 +285,8 @@ static const char display_gl_fs_src[] =
     "in vec2 v_uv;\n"
     "out vec4 o_col;\n"
     "void main() {\n"
-    "  vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);\n"
+    "  /* Top-down CPU rows match default GL unpack (row 0 -> t=0); do not flip v_uv. */\n"
+    "  vec2 uv = v_uv;\n"
     "  uint w = texture(u_cw, uv).r;\n"
     "  uint c = w & 0xFFFu;\n"
     "  uint r4 = (c >> 8) & 0xFu;\n"
@@ -452,10 +457,26 @@ static int display_gl_try_init_unpack(void)
     return 1;
 }
 
+/* GL client-unpack state (pixel store + PBO) is global; SDL's renderer may leave
+ * GL_UNPACK_ROW_LENGTH / SKIP_* non-zero or GL_PIXEL_UNPACK_BUFFER bound, which makes
+ * glTex(Sub)Image2D read tightly packed CPU rows with the wrong stride (diagonal shear). */
+static void display_gl_reset_client_pixel_unpack(void)
+{
+    if (g_gl_bind_buffer)
+        g_gl_bind_buffer(0x0EC0 /* GL_PIXEL_UNPACK_BUFFER */, 0);
+    if (g_gl_pixel_storei) {
+        g_gl_pixel_storei(0x0CF5 /* GL_UNPACK_ALIGNMENT */, 2);
+        g_gl_pixel_storei(0x0CF2 /* GL_UNPACK_ROW_LENGTH */, 0);
+        g_gl_pixel_storei(0x0CF3 /* GL_UNPACK_SKIP_ROWS */, 0);
+        g_gl_pixel_storei(0x0CF4 /* GL_UNPACK_SKIP_PIXELS */, 0);
+    }
+}
+
 static void display_gl_resize_cw_texture(int w, int h)
 {
     if (!g_gl_unpack_ok || w < 1 || h < 1) return;
-    g_gl_pixel_storei(0x0CF5 /* GL_UNPACK_ALIGNMENT */, 2);
+    display_gl_reset_client_pixel_unpack();
+    g_gl_active_texture(GL_TEXTURE0);
     g_gl_bind_texture(0x0DE1 /* GL_TEXTURE_2D */, g_gl_tex_cw);
     g_gl_tex_image_2d(0x0DE1, 0, (GLint)GL_R16UI, w, h, 0, GL_RED_INTEGER, 0x1403 /* GL_UNSIGNED_SHORT */, NULL);
     g_gl_bind_texture(0x0DE1, 0);
@@ -473,7 +494,8 @@ static void display_gl_present_cw(const uint16_t *src, int w, int h)
     if (win_w < 1) win_w = 1;
     if (win_h < 1) win_h = 1;
 
-    g_gl_pixel_storei(0x0CF5 /* GL_UNPACK_ALIGNMENT */, 2);
+    display_gl_reset_client_pixel_unpack();
+    g_gl_active_texture(GL_TEXTURE0);
     g_gl_bind_texture(0x0DE1 /* GL_TEXTURE_2D */, g_gl_tex_cw);
     g_gl_tex_sub_image_2d(0x0DE1, 0, 0, 0, w, h, GL_RED_INTEGER, 0x1403 /* GL_UNSIGNED_SHORT */, src);
     g_gl_bind_texture(0x0DE1, 0);
@@ -508,9 +530,19 @@ static void display_gl_present_cw(const uint16_t *src, int w, int h)
 
 static void display_cpu_unpack_cw_to_texture(const uint16_t *src, int w, int h)
 {
+    if (!g_texture || !src || w < 1 || h < 1) return;
+
+    /* Fast path: cw_buffer is already packed 0x0RGB words. Push directly; no per-pixel CPU work. */
+    if (g_texture_is_4444_direct) {
+        if (SDL_UpdateTexture(g_texture, NULL, src, (int)((size_t)w * sizeof(uint16_t))) != 0) {
+            return;
+        }
+        return;
+    }
+
     void *pixels;
     int pitch;
-    if (!g_texture || SDL_LockTexture(g_texture, NULL, &pixels, &pitch) < 0) return;
+    if (SDL_LockTexture(g_texture, NULL, &pixels, &pitch) < 0) return;
     for (int y = 0; y < h; y++) {
         uint32_t *dst_row = (uint32_t*)((uint8_t*)pixels + (size_t)y * (size_t)pitch);
         const uint16_t *srow = src + (size_t)y * (size_t)w;
@@ -579,14 +611,31 @@ static void display_set_renderer_target_size(int w, int h)
         SDL_DestroyTexture(g_texture);
         g_texture = NULL;
     }
+    g_texture_is_4444_direct = 0;
     if (g_gl_unpack_ok) {
         display_gl_resize_cw_texture(w, h);
     } else {
         g_texture = SDL_CreateTexture(g_sdl_ren,
-            SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-            g_internal_w, g_internal_h);
+            SDL_PIXELFORMAT_XRGB4444, SDL_TEXTUREACCESS_STREAMING, g_internal_w, g_internal_h);
+        if (g_texture) {
+            g_texture_is_4444_direct = 1;
+        } else {
+            g_texture = SDL_CreateTexture(g_sdl_ren,
+                SDL_PIXELFORMAT_ARGB4444, SDL_TEXTUREACCESS_STREAMING, g_internal_w, g_internal_h);
+            if (g_texture) {
+                g_texture_is_4444_direct = 1;
+            } else {
+                g_texture = SDL_CreateTexture(g_sdl_ren,
+                    SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, g_internal_w, g_internal_h);
+                if (g_texture) {
+                    printf("[DISPLAY] CPU fallback texture: 4444 unavailable, using ARGB8888\n");
+                }
+            }
+        }
         if (g_texture) {
             SDL_SetTextureScaleMode(g_texture, SDL_ScaleModeLinear);
+            /* Opaque blit: cw uses XRGB4444 (high nibble unused). */
+            SDL_SetTextureBlendMode(g_texture, SDL_BLENDMODE_NONE);
         }
     }
 }
@@ -682,13 +731,25 @@ void display_init(GameState *state)
     }
     display_log_display_mode_snapshot("startup-before-window");
 
-    /* Request GL 3.0+ so integer textures (GL_R16UI) work when using the OpenGL render driver. */
+    /* Request GL 3.0+ so integer textures (GL_R16UI) work when using the OpenGL render driver.
+     * Upload raw color words on the GPU and avoid SDL CPU blit (BlitNtoN) on present.
+     *
+     * On Windows/Linux use the compatibility profile: SDL2's OpenGL renderer still relies on
+     * fixed-function state (glMatrixMode/glOrtho) for SDL_RenderClear and 2D overlays. A 3.0+
+     * *core* context removes those entry points, which breaks mixing SDL_Renderer with our
+     * custom GL unpack pass and corrupts the framebuffer. macOS only exposes core profiles
+     * for GL 3.2+, so we keep core there. */
+#if defined(__APPLE__)
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#else
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+#endif
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     if (fullscreen_desktop) {
-        printf("[DISPLAY] SDL2 init (display_mode=fullscreen-desktop, base=%dx%d, internal render=%dx%d, supersampling=%d)\n",
+        printf("[DISPLAY] SDL2 init (display_mode=fullscreen: desktop-sized window, base=%dx%d, internal render=%dx%d, supersampling=%d)\n",
                base_rw, base_rh, g_internal_w, g_internal_h, supersampling);
     } else {
         printf("[DISPLAY] SDL2 init (display_mode=windowed, window %dx%d, internal render %dx%d, supersampling=%d; resize to letterbox)\n",
@@ -698,6 +759,13 @@ void display_init(GameState *state)
     renderer_init();
 
     const char *driver_override = SDL_getenv("AB3D_RENDER_DRIVER");
+    /* Set AB3D_DISABLE_GL_UNPACK=1 to force D3D + SDL texture (CPU blit path). Otherwise prefer GL_R16UI. */
+    const char *disable_gl_unpack = SDL_getenv("AB3D_DISABLE_GL_UNPACK");
+    int prefer_gpu_unpack = 1;
+    if (disable_gl_unpack && disable_gl_unpack[0] != '\0') {
+        if (disable_gl_unpack[0] == '1' || disable_gl_unpack[0] == 'y' || disable_gl_unpack[0] == 'Y')
+            prefer_gpu_unpack = 0;
+    }
     int window_w = base_rw;
     int window_h = base_rh;
     Uint32 window_flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
@@ -705,6 +773,7 @@ void display_init(GameState *state)
     int window_y = SDL_WINDOWPOS_CENTERED;
     g_release_borderless_desktop = 0;
     if (fullscreen_desktop) {
+        /* Same flags as windowed — no SDL_WINDOW_FULLSCREEN* (those can alter the display mode). */
         SDL_Rect desktop_bounds;
         SDL_DisplayMode desktop_mode;
         if (SDL_GetDesktopDisplayMode(0, &desktop_mode) == 0 &&
@@ -720,13 +789,20 @@ void display_init(GameState *state)
                 window_h = desktop_bounds.h;
             }
         }
-        window_flags = SDL_WINDOW_SHOWN | SDL_WINDOW_BORDERLESS;
+        window_flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
         g_release_borderless_desktop = 1;
+    }
+    {
+        int explicit_render_driver = (driver_override && driver_override[0] != '\0' &&
+                                      strcmp(driver_override, "auto") != 0);
+        if (prefer_gpu_unpack && !explicit_render_driver) {
+            window_flags |= SDL_WINDOW_OPENGL;
+        }
     }
     if (driver_override && strcmp(driver_override, "opengl") == 0) {
         window_flags |= SDL_WINDOW_OPENGL;
         if (fullscreen_desktop) {
-            printf("[DISPLAY] OpenGL override: borderless desktop window + SDL_WINDOW_OPENGL\n");
+            printf("[DISPLAY] OpenGL override: desktop-sized window + SDL_WINDOW_OPENGL\n");
         } else {
             printf("[DISPLAY] OpenGL override: windowed SDL_WINDOW_OPENGL enabled\n");
         }
@@ -742,6 +818,7 @@ void display_init(GameState *state)
         printf("[DISPLAY] SDL_CreateWindow failed: %s\n", SDL_GetError());
         return;
     }
+    SDL_GetWindowSize(g_window, &window_w, &window_h);
 
     {
         const char *driver_try[4];
@@ -751,18 +828,16 @@ void display_init(GameState *state)
         if (driver_override && driver_override[0] != '\0' && strcmp(driver_override, "auto") != 0) {
             driver_try[driver_try_count++] = driver_override;
             driver_try[driver_try_count++] = "";
+        } else if (prefer_gpu_unpack) {
+            /* OpenGL first: enables GL_R16UI present (no SDL CPU blit for the 3D buffer). */
+            driver_try[driver_try_count++] = "opengl";
+            driver_try[driver_try_count++] = "direct3d11";
+            driver_try[driver_try_count++] = "direct3d";
+            driver_try[driver_try_count++] = "";
         } else {
-#ifdef AB3D_RELEASE
-            /* Release: avoid forced OpenGL to reduce fullscreen mode-switch regressions. */
             driver_try[driver_try_count++] = "direct3d11";
             driver_try[driver_try_count++] = "direct3d";
             driver_try[driver_try_count++] = "";
-#else
-            /* Dev/debug: prefer D3D first to match release stability; OpenGL remains opt-in via AB3D_RENDER_DRIVER. */
-            driver_try[driver_try_count++] = "direct3d11";
-            driver_try[driver_try_count++] = "direct3d";
-            driver_try[driver_try_count++] = "";
-#endif
         }
 
         g_sdl_ren = NULL;
@@ -787,15 +862,15 @@ void display_init(GameState *state)
         SDL_RendererInfo ri;
         if (SDL_GetRendererInfo(g_sdl_ren, &ri) == 0) {
             printf("[DISPLAY] SDL renderer driver: %s\n", ri.name);
-#ifdef AB3D_RELEASE
-            if (ri.name && strcmp(ri.name, "opengl") == 0) {
-                printf("[DISPLAY] warning: Release selected OpenGL driver; set AB3D_RENDER_DRIVER=direct3d11 to force D3D\n");
-            }
-#endif
         }
     }
 
     display_gl_try_init_unpack();
+    if (!g_gl_unpack_ok && prefer_gpu_unpack) {
+        printf("[DISPLAY] GL_R16UI present unavailable (no GL 3.0+ context). Using SDL texture path; "
+               "try AB3D_RENDER_DRIVER=opengl or install updated GPU drivers. "
+               "To force D3D+texture: set AB3D_DISABLE_GL_UNPACK=1\n");
+    }
     display_set_renderer_target_size(rw, rh);
 
     int out_w = window_w;

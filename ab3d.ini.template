@@ -40,8 +40,8 @@ billboard_sprite_rendering_enhancement=1
 
 # Internal software render resolution (game draws at this size). The window is
 # scaled to fit, centered, preserving aspect ratio (letterboxing as needed).
-render_width=1280
-render_height=720
+render_width=1920
+render_height=1080
 
 # Internal renderer multiplier.
 # 1 = normal internal size, 2 = 2x, 4 = 4x (supersampled, then downscaled).

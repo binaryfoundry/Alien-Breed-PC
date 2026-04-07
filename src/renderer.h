@@ -386,7 +386,7 @@ void renderer_draw_gun(GameState *state);
 /* Get pointer to the current rendered frame for display */
 const uint8_t *renderer_get_buffer(void);
 const uint32_t *renderer_get_rgb_buffer(void);
-/* Completed frame: 16-bit Amiga color words (0x0RGB in low 12 bits), same layout as cw_buffer. */
+/* Completed frame: 16-bit packed 4444, 0x0RGB (high nibble unused). Matches SDL ARGB4444 with A=0. */
 const uint16_t *renderer_get_cw_buffer(void);
 uint32_t *renderer_get_active_rgb_target(void);
 uint16_t *renderer_get_active_cw_target(void);

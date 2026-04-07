@@ -238,7 +238,7 @@ typedef struct {
     bool            cfg_all_weapons;    /* 1 = all guns visible + full ammo (plr1/plr2) */
     bool            cfg_all_keys;       /* 1 = OR in key condition bits from level key objects (doors/lifts) */
 
-    /* ab3d.ini: display mode override (-1=auto by build default, 0=windowed, 1=fullscreen-desktop borderless) */
+    /* ab3d.ini: display mode (-1=auto by build, 0=windowed, 1=desktop-sized window — same SDL flags as 0, no mode switch) */
     int8_t          cfg_display_mode;
 
     /* ab3d.ini: internal software render resolution (window is scaled to fit, letterboxed) */

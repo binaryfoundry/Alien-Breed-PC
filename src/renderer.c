@@ -1843,6 +1843,30 @@ static inline uint32_t blend_argb(uint32_t bg, uint32_t fg, uint32_t alpha_fg)
     return RENDER_RGB_RASTER_PIXEL((r << 16) | (g << 8) | b);
 }
 
+static inline uint16_t blend_amiga12(uint16_t bg, uint16_t fg, uint32_t alpha_fg)
+{
+    if (alpha_fg >= 255u) return (uint16_t)(fg & 0x0FFFu);
+    if (alpha_fg == 0u) return (uint16_t)(bg & 0x0FFFu);
+    uint32_t inv = 255u - alpha_fg;
+
+    uint32_t br = (((uint32_t)bg >> 8) & 0xFu) * 0x11u;
+    uint32_t bg_g = (((uint32_t)bg >> 4) & 0xFu) * 0x11u;
+    uint32_t bb = ((uint32_t)bg & 0xFu) * 0x11u;
+
+    uint32_t fr = (((uint32_t)fg >> 8) & 0xFu) * 0x11u;
+    uint32_t fg_g = (((uint32_t)fg >> 4) & 0xFu) * 0x11u;
+    uint32_t fb = ((uint32_t)fg & 0xFu) * 0x11u;
+
+    uint32_t r = (uint32_t)div255_lut[br * inv + fr * alpha_fg];
+    uint32_t g = (uint32_t)div255_lut[bg_g * inv + fg_g * alpha_fg];
+    uint32_t b = (uint32_t)div255_lut[bb * inv + fb * alpha_fg];
+
+    uint16_t r4 = (uint16_t)byte_to_nibble_lut[r];
+    uint16_t g4 = (uint16_t)byte_to_nibble_lut[g];
+    uint16_t b4 = (uint16_t)byte_to_nibble_lut[b];
+    return (uint16_t)((r4 << 8) | (g4 << 4) | b4);
+}
+
 static void floor_span_prepare_pal_cache(RenderSliceContext *ctx,
                                          const uint8_t *pal_lut_src, int level,
                                          const uint16_t **cw_out)
@@ -3157,8 +3181,12 @@ static void draw_wall_column(RenderSliceContext *ctx,
         size_t last_pix = (size_t)cb * (size_t)width + (size_t)x;
         uint16_t edge_top_cw = cw[first_pix];
         uint16_t edge_bot_cw = cw[last_pix];
-        uint32_t edge_top_rgb = expand ? rgb[first_pix] : amiga12_to_argb(edge_top_cw);
-        uint32_t edge_bot_rgb = expand ? rgb[last_pix] : amiga12_to_argb(edge_bot_cw);
+        uint32_t edge_top_rgb = 0;
+        uint32_t edge_bot_rgb = 0;
+        if (expand) {
+            edge_top_rgb = rgb[first_pix];
+            edge_bot_rgb = rgb[last_pix];
+        }
         if (ct > ctx->top_clip) {
             size_t up = first_pix - (size_t)width;
             buf[up] = 2;
@@ -3180,7 +3208,9 @@ static void draw_wall_column(RenderSliceContext *ctx,
         for (int row = ct; row <= cb; row++) {
             size_t mid = (size_t)row * (size_t)width + (size_t)x;
             uint16_t wv = cw[mid];
-            uint32_t c = expand ? rgb[mid] : amiga12_to_argb(wv);
+            uint32_t c = 0;
+            if (expand)
+                c = rgb[mid];
             if (x > ctx->slice_left) {
                 size_t L = mid - 1;
                 buf[L] = 2;
@@ -3863,7 +3893,9 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
             }
 
             uint16_t bg_cw0 = cwbuf[bg_i0];
-            uint32_t bg0 = g_renderer_rgb_raster_expand ? rgb[bg_i0] : amiga12_to_argb(bg_cw0);
+            uint32_t bg0 = 0;
+            if (expand)
+                bg0 = rgb[bg_i0];
             if ((buf[bg_i0] == 0 || buf[bg_i0] == 4) && water_has_back_buffers) {
                 /* AB3DI texturedwater samples from display memory while floor lines are streamed.
                  * When refraction points at rows not written yet this frame, those pixels still
@@ -3871,7 +3903,8 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
                  * Also avoid water-over-water feedback between adjacent zones in this port's
                  * per-zone streaming path by treating existing water-tagged pixels the same way. */
                 bg_cw0 = rs->cw_back_buffer[bg_i0];
-                bg0 = g_renderer_rgb_raster_expand ? rs->rgb_back_buffer[bg_i0] : amiga12_to_argb(bg_cw0);
+                if (expand)
+                    bg0 = rs->rgb_back_buffer[bg_i0];
             }
             uint8_t bg_sample0 = (uint8_t)(bg_cw0 & 0xFFu);
 
@@ -3880,68 +3913,105 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
             uint8_t bg_sample1 = bg_sample0;
             if (water_has_next_refr) {
                 bg_cw1 = cwbuf[bg_i1];
-                bg1 = g_renderer_rgb_raster_expand ? rgb[bg_i1] : amiga12_to_argb(bg_cw1);
+                if (expand)
+                    bg1 = rgb[bg_i1];
                 if ((buf[bg_i1] == 0 || buf[bg_i1] == 4) && water_has_back_buffers) {
                     bg_cw1 = rs->cw_back_buffer[bg_i1];
-                    bg1 = g_renderer_rgb_raster_expand ? rs->rgb_back_buffer[bg_i1] : amiga12_to_argb(bg_cw1);
+                    if (expand)
+                        bg1 = rs->rgb_back_buffer[bg_i1];
                 }
                 bg_sample1 = (uint8_t)(bg_cw1 & 0xFFu);
             }
 
-            uint32_t out;
+            uint32_t out = 0;
             uint16_t out_cw;
             if (water_has_brighten) {
                 /* Amiga texturedwater:
                  *   d0 = WaterFile word, then move.b sampled_pixel_lowbyte,d0,
                  *   output = brightentab[d0]. */
                 size_t bi0 = (size_t)dist_off + ((size_t)water_level << 9) + (size_t)bg_sample0 * 2u;
-                uint32_t out0;
+                uint32_t out0 = 0;
                 uint16_t out_cw0;
                 if (bi0 + 1u < g_water_brighten_size) {
                     out_cw0 = (uint16_t)((g_water_brighten[bi0] << 8) | g_water_brighten[bi0 + 1u]);
-                    out0 = amiga12_to_argb(out_cw0);
+                    if (expand)
+                        out0 = amiga12_to_argb(out_cw0);
                 } else {
                     out_cw0 = bg_cw0;
-                    out0 = bg0;
+                    if (expand)
+                        out0 = bg0;
                 }
 
                 if (water_has_next_refr) {
                     size_t bi1 = (size_t)dist_off + ((size_t)water_level << 9) + (size_t)bg_sample1 * 2u;
-                    uint32_t out1;
+                    uint32_t out1 = 0;
                     uint16_t out_cw1;
                     if (bi1 + 1u < g_water_brighten_size) {
                         out_cw1 = (uint16_t)((g_water_brighten[bi1] << 8) | g_water_brighten[bi1 + 1u]);
-                        out1 = amiga12_to_argb(out_cw1);
+                        if (expand)
+                            out1 = amiga12_to_argb(out_cw1);
                     } else {
                         out_cw1 = bg_cw1;
-                        out1 = bg1;
+                        if (expand)
+                            out1 = bg1;
                     }
-                    out = blend_argb(out0, out1, (uint32_t)water_refr_frac);
-                    out_cw = argb_to_amiga12(out);
+                    if (expand) {
+                        out = blend_argb(out0, out1, (uint32_t)water_refr_frac);
+                        out_cw = argb_to_amiga12(out);
+                    } else {
+                        out_cw = blend_amiga12(out_cw0, out_cw1, (uint32_t)water_refr_frac);
+                    }
                 } else {
-                    out = out0;
+                    if (expand)
+                        out = out0;
                     out_cw = out_cw0;
                 }
             } else {
-                /* Fallback when brighten table is missing: keep prior blended behavior. */
-                uint32_t bg = water_has_next_refr ? blend_argb(bg0, bg1, (uint32_t)water_refr_frac) : bg0;
-                uint32_t br = (bg >> 16) & 0xFFu;
-                uint32_t bg_g = (bg >> 8) & 0xFFu;
-                uint32_t bb = bg & 0xFFu;
-                uint32_t shade = 160u + ((uint32_t)water_level * 6u);
-                uint32_t r = (br * ((shade > 96u) ? (shade - 96u) : 0u)) >> 8;
-                uint32_t g = (bg_g * shade) >> 8;
-                uint32_t b = (bb * (shade + 28u)) >> 8;
-                b += 10u;
-                if (r > 255u) r = 255u;
-                if (g > 255u) g = 255u;
-                if (b > 255u) b = 255u;
-                out = blend_argb(bg, RENDER_RGB_RASTER_PIXEL((r << 16) | (g << 8) | b), 120u);
-                out_cw = argb_to_amiga12(out);
+                /* Fallback when brighten table is missing. */
+                if (expand) {
+                    uint32_t bg = water_has_next_refr ? blend_argb(bg0, bg1, (uint32_t)water_refr_frac) : bg0;
+                    uint32_t br = (bg >> 16) & 0xFFu;
+                    uint32_t bg_g = (bg >> 8) & 0xFFu;
+                    uint32_t bb = bg & 0xFFu;
+                    uint32_t shade = 160u + ((uint32_t)water_level * 6u);
+                    uint32_t r = (br * ((shade > 96u) ? (shade - 96u) : 0u)) >> 8;
+                    uint32_t g = (bg_g * shade) >> 8;
+                    uint32_t b = (bb * (shade + 28u)) >> 8;
+                    b += 10u;
+                    if (r > 255u) r = 255u;
+                    if (g > 255u) g = 255u;
+                    if (b > 255u) b = 255u;
+                    out = blend_argb(bg, RENDER_RGB_RASTER_PIXEL((r << 16) | (g << 8) | b), 120u);
+                    out_cw = argb_to_amiga12(out);
+                } else {
+                    uint16_t bg_cw = water_has_next_refr
+                        ? blend_amiga12(bg_cw0, bg_cw1, (uint32_t)water_refr_frac)
+                        : bg_cw0;
+                    uint32_t br = (((uint32_t)bg_cw >> 8) & 0xFu) * 0x11u;
+                    uint32_t bg_g = (((uint32_t)bg_cw >> 4) & 0xFu) * 0x11u;
+                    uint32_t bb = ((uint32_t)bg_cw & 0xFu) * 0x11u;
+                    uint32_t shade = 160u + ((uint32_t)water_level * 6u);
+                    uint32_t r = (br * ((shade > 96u) ? (shade - 96u) : 0u)) >> 8;
+                    uint32_t g = (bg_g * shade) >> 8;
+                    uint32_t b = (bb * (shade + 28u)) >> 8;
+                    b += 10u;
+                    if (r > 255u) r = 255u;
+                    if (g > 255u) g = 255u;
+                    if (b > 255u) b = 255u;
+                    {
+                        uint16_t tint_cw = (uint16_t)(((uint16_t)byte_to_nibble_lut[r] << 8)
+                                                    | ((uint16_t)byte_to_nibble_lut[g] << 4)
+                                                    |  (uint16_t)byte_to_nibble_lut[b]);
+                        out_cw = blend_amiga12(bg_cw, tint_cw, 120u);
+                    }
+                }
             }
 
             *p8++ = 4; /* water tag: avoid wall-join fill smearing */
-            RASTER_PUT_PP(&p32, out);
+            if (expand)
+                *p32++ = out;
+            else
+                p32++;
             *p16++ = out_cw;
         }
         return;
@@ -4019,7 +4089,10 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
 
                 uint16_t out_cw = gour_cw_levels[gour_level][texel];
                 *p8++ = 1;
-                RASTER_PUT_PP(&p32, amiga12_to_argb(out_cw));
+                if (expand)
+                    *p32++ = amiga12_to_argb(out_cw);
+                else
+                    p32++;
                 *p16++ = out_cw;
             }
             return;
