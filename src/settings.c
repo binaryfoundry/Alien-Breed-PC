@@ -174,6 +174,8 @@ static void apply_line(GameState *state, char *line)
     } else if (strcmp(key, "billboard sprite rendering enhancement") == 0 ||
                strcmp(key, "billboard_sprite_rendering_enhancement") == 0) {
         state->cfg_billboard_sprite_rendering_enhancement = parse_bool(val) ? true : false;
+    } else if (strcmp(key, "show_fps") == 0 || strcmp(key, "fps_counter") == 0) {
+        state->cfg_show_fps = parse_bool(val) ? true : false;
     }
 }
 
@@ -195,7 +197,7 @@ static void apply_runtime_constraints(GameState *state)
 static void log_effective_settings(const GameState *state, const char *source_label)
 {
     if (state->cfg_start_level >= 0) {
-        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d\n",
+        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d show_fps=%d\n",
                source_label,
                (int)state->cfg_start_level,
                state->infinite_health ? 1 : 0,
@@ -210,9 +212,10 @@ static void log_effective_settings(const GameState *state, const char *source_la
                (int)state->cfg_render_threads_max,
                (int)state->cfg_volume,
                (int)state->cfg_y_proj_scale,
-               state->cfg_billboard_sprite_rendering_enhancement ? 1 : 0);
+               state->cfg_billboard_sprite_rendering_enhancement ? 1 : 0,
+               state->cfg_show_fps ? 1 : 0);
     } else {
-        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d\n",
+        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d show_fps=%d\n",
                source_label,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
@@ -226,7 +229,8 @@ static void log_effective_settings(const GameState *state, const char *source_la
                (int)state->cfg_render_threads_max,
                (int)state->cfg_volume,
                (int)state->cfg_y_proj_scale,
-               state->cfg_billboard_sprite_rendering_enhancement ? 1 : 0);
+               state->cfg_billboard_sprite_rendering_enhancement ? 1 : 0,
+               state->cfg_show_fps ? 1 : 0);
     }
 }
 

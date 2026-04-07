@@ -76,6 +76,8 @@ void game_state_init(GameState *state)
     state->cfg_volume = 100;
     state->cfg_y_proj_scale = 100;
     state->cfg_billboard_sprite_rendering_enhancement = true;
+    state->cfg_show_fps = false;
+    state->fps_display = 0;
 }
 
 /*

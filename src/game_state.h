@@ -338,6 +338,10 @@ typedef struct {
     } pending_blasts[MAX_PENDING_BLASTS];
     int num_pending_blasts;
 
+    /* ab3d.ini + runtime (appended for save compatibility — older saves fail size check) */
+    bool            cfg_show_fps;       /* 1 = draw rounded FPS (ammo digits) top-left; updates ~1/s */
+    uint16_t        fps_display;        /* rounded Hz (game_loop updates ~1/s) */
+
 } GameState;
 
 /* -----------------------------------------------------------------------

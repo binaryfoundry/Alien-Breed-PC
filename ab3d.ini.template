@@ -38,6 +38,10 @@ y_proj_scale=100
 # 0 = legacy spill behavior.
 billboard_sprite_rendering_enhancement=1
 
+# 1 = show rounded FPS (same digit font as ammo) at top-left of the letterboxed game area; updates every second.
+# (Alias: fps_counter=1 — same as show_fps=1.)
+show_fps=0
+
 # Internal software render resolution (game draws at this size). The window is
 # scaled to fit, centered, preserving aspect ratio (letterboxing as needed).
 render_width=1920

@@ -409,11 +409,13 @@ void game_loop(GameState *state)
         {
             Uint32 fps_now = SDL_GetTicks();
             Uint32 fps_dt = fps_now - fps_log_start_ms;
-            if (fps_dt >= 10000u) {
+            if (fps_dt >= 1000u) {
                 double sec = fps_dt / 1000.0;
                 double fps = (double)fps_frames_in_period / sec;
-                printf("[FPS] %.2f Hz (%.1f s, %d frames)\n",
-                       fps, sec, fps_frames_in_period);
+                int rounded = (int)(fps + 0.5);
+                if (rounded < 0) rounded = 0;
+                if (rounded > 9999) rounded = 9999;
+                state->fps_display = (uint16_t)rounded;
                 fps_log_start_ms = fps_now;
                 fps_frames_in_period = 0;
             }

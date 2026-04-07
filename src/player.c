@@ -1706,6 +1706,7 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
     int16_t ini_cfg_volume = state->cfg_volume;
     int16_t ini_cfg_y_proj_scale = state->cfg_y_proj_scale;
     bool    ini_cfg_billboard_sprite_rendering_enhancement = state->cfg_billboard_sprite_rendering_enhancement;
+    bool    ini_cfg_show_fps = state->cfg_show_fps;
 
     *state = g_full_save_pending.game_state;
     state->level = live_level;
@@ -1724,6 +1725,7 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
     state->cfg_volume = ini_cfg_volume;
     state->cfg_y_proj_scale = ini_cfg_y_proj_scale;
     state->cfg_billboard_sprite_rendering_enhancement = ini_cfg_billboard_sprite_rendering_enhancement;
+    state->cfg_show_fps = ini_cfg_show_fps;
 
     door_data_dst = player_save_table_size_with_sentinel(state->level.door_data, 22u);
     switch_data_dst = player_save_table_size_with_sentinel(state->level.switch_data, 14u);

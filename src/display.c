@@ -1700,6 +1700,68 @@ static void hud_draw_three_slot_value(SDL_Texture *tex, int tex_w, int tex_h, in
     }
 }
 
+/* Top-left FPS (ammo_digits.png atlas); letterbox-relative coords match hud_key_row_layout margins. */
+static void display_fps_overlay(const GameState *state)
+{
+    if (!state || !state->cfg_show_fps || !g_sdl_ren) return;
+
+    int pw = g_present_dst_rect.w;
+    int ph = g_present_dst_rect.h;
+    if (pw < 8 || ph < 8) return;
+
+    display_hud_digits_ensure_loaded();
+    SDL_Texture *tex = g_hud_digit_tex[1];
+    if (!tex) return;
+
+    int tex_w = g_hud_digit_tex_w[1];
+    int tex_h = g_hud_digit_tex_h[1];
+    SDL_SetTextureAlphaMod(tex, 255);
+
+    int margin = ph / 64;
+    if (margin < 2) margin = 2;
+    int digit_h = ph / 32;
+    if (digit_h < 11) digit_h = 11;
+    int d_gap = digit_h / 16;
+    if (d_gap < 1) d_gap = 1;
+
+    int value = (int)state->fps_display;
+    if (value < 0) value = 0;
+    if (value > 9999) value = 9999;
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d", value);
+    size_t len = strlen(buf);
+
+    int slot_w = hud_max_digit_scaled_width(tex_w, tex_h, digit_h);
+    int bx = g_present_dst_rect.x;
+    int by = g_present_dst_rect.y;
+    int x_left = margin;
+    int y_top = margin;
+    int sy0 = by + y_top;
+    int sy1 = sy0 + digit_h;
+    int sh = sy1 - sy0;
+    if (sh < 1) sh = 1;
+
+    for (size_t i = 0; i < len; i++) {
+        int d = buf[i] - '0';
+        if (d < 0 || d > 9) continue;
+        SDL_Rect src;
+        hud_digit_src_rect(tex_w, tex_h, d, &src);
+        int dw = (src.w * digit_h + src.h / 2) / src.h;
+        if (dw < 1) dw = 1;
+        int slot_ix = x_left + (int)i * (slot_w + d_gap);
+        int dx = slot_ix + (slot_w - dw) / 2;
+        int px0i = bx + dx;
+        int px1i = bx + dx + dw;
+        SDL_Rect dst;
+        dst.x = px0i;
+        dst.y = sy0;
+        dst.w = px1i - px0i;
+        if (dst.w < 1) dst.w = 1;
+        dst.h = sh;
+        display_overlay_copy(tex, &src, &dst);
+    }
+}
+
 static void display_hud_stats_sdl_overlay(const GameState *state)
 {
     if (!state || !g_sdl_ren) return;
@@ -1913,6 +1975,7 @@ static void display_present_cw_frame(GameState *state)
         display_key_hud_sdl_overlay(state);
         if (state->automap_visible)
             display_automap_sdl_overlay(state);
+        display_fps_overlay(state);
     }
 
     if (g_screen_tint_enabled && g_screen_tint_a > 0) {
