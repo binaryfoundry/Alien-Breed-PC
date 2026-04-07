@@ -2619,10 +2619,12 @@ void object_handle_gas_pipe(GameObject *obj, GameState *state)
     SHOT_SET_LIFE(*bullet, 0);
 
     /* Copy position from gas pipe to bullet in ObjectPoints */
-    if (state->level.object_points && state->level.object_data) {
-        int self_idx = (int)(((uint8_t*)obj - state->level.object_data) / OBJECT_SIZE);
+    if (state->level.object_points) {
+        int self_idx = (int)OBJ_CID(obj);
         int bul_idx = (int)OBJ_CID(bullet);
-        if (bul_idx >= 0) {
+        if (self_idx >= 0 && bul_idx >= 0 &&
+            self_idx < state->level.num_object_points &&
+            bul_idx < state->level.num_object_points) {
             uint8_t *sp = state->level.object_points + self_idx * 8;
             uint8_t *dp = state->level.object_points + bul_idx * 8;
             memcpy(dp, sp, 8);
@@ -3246,50 +3248,10 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         timed_out = true; /* Non-bouncing bullet hit a wall */
     }
 
-    /* Impact handling */
-    if (timed_out) {
-        SHOT_STATUS(*obj) = 1;
-        SHOT_ANIM(*obj) = 0;
-        SHOT_SET_LIFE(*obj, 0);
-
-        /* Hit sound */
-        if (shot_size >= 0 && shot_size < 8 &&
-            bullet_types[shot_size].hit_noise >= 0) {
-            audio_play_sample(bullet_types[shot_size].hit_noise,
-                              bullet_types[shot_size].hit_volume);
-        }
-        /* Gibs: splatter sound when they hit floor/roof/wall (one per logic tick max). */
-        if (shot_size >= 50 && !gib_impact_splat_sound_this_update) {
-            gib_impact_splat_sound_this_update = true;
-            audio_play_sample(13, 64);  /* splotch */
-        }
-
-        /* Explosive force splash + blast particles */
-        if (shot_size >= 0 && shot_size < 8 &&
-            bullet_types[shot_size].explosive_force > 0) {
-            int16_t blast_zone = OBJ_ZONE(obj);
-            int8_t blast_top = obj->obj.in_top;
-            if (ctx.objroom && state->level.data) {
-                int zi = level_zone_index_from_room_ptr(&state->level, ctx.objroom);
-                if (zi < 0) {
-                    int16_t room_zone_word = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
-                    zi = level_connect_to_zone_index(&state->level, room_zone_word);
-                }
-                if (zi >= 0 && zi < zone_slots)
-                    blast_zone = (int16_t)zi;
-                blast_top = ctx.stood_in_top;
-            }
-            compute_blast(state, ctx.newx, ctx.newz, accypos,
-                          bullet_types[shot_size].explosive_force,
-                          blast_zone, blast_top);
-        }
-
-        /* Pop in place at impact position. */
-        obj_sl(bullet_pts, (int32_t)ctx.newx << 16);
-        obj_sl(bullet_pts + 4, (int32_t)ctx.newz << 16);
-        obj_sw(obj->raw + 4, (int16_t)(accypos >> 7));
-        return;
-    }
+    /* lab (Anims.s ~3195): commit position after MoveObject, before nasty scan.
+     * Amiga never returns on wall/lifetime timeout before "Check if hit a nasty";
+     * a corridor shot can register hitwall and still intersect the player on the
+     * same segment (oldx,oldz)-(newx,newz). */
 
     /* Update position in ObjectPoints */
     obj_sl(bullet_pts, final_bx_fp);
@@ -3309,11 +3271,8 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             OBJ_SET_ZONE(obj, (int16_t)new_zone);
     }
 
-    /* ---- Object-to-object hit detection (ObjectMove.s Collision) ---- */
+    /* ---- Object-to-object hit detection (Anims.s: Check if hit a nasty) ---- */
     uint32_t enemy_flags = NASTY_EFLAGS(*obj);
-    if (enemy_flags == 0) return;
-
-    if (!state->level.object_data) return;
 
     int32_t seg_start_x = bx;
     int32_t seg_start_z = bz;
@@ -3327,6 +3286,7 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     int best_hit_idx = -1;
     GameObject *best_target = NULL;
 
+    if (enemy_flags != 0 && state->level.object_data) {
     int check_idx = 0;
     while (1) {
         GameObject *target = (GameObject*)(state->level.object_data +
@@ -3350,8 +3310,9 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             check_idx++;
             continue;
         }
-        /* Check lives (barrels with 0 lives can still be hit to trigger explosion) */
-        if (NASTY_LIVES(*target) <= 0 && tgt_type != OBJ_NBR_BARREL) {
+        /* Anims.s uses tst.b numlives ; beq .notanasty:
+         * only zero is skipped, negative byte values are still treated nonzero. */
+        if (NASTY_LIVES(*target) == 0) {
             check_idx++;
             continue;
         }
@@ -3401,8 +3362,47 @@ void object_handle_bullet(GameObject *obj, GameState *state)
 
         check_idx++;
     }
+    }
 
-    if (!have_hit || !best_target) return;
+    if (!have_hit || !best_target) {
+        /* No object hit: wall/lifetime/floor/roof impact only (.hitsomething on Amiga). */
+        if (timed_out) {
+            SHOT_STATUS(*obj) = 1;
+            SHOT_ANIM(*obj) = 0;
+            SHOT_SET_LIFE(*obj, 0);
+
+            if (shot_size >= 0 && shot_size < 8 &&
+                bullet_types[shot_size].hit_noise >= 0) {
+                audio_play_sample(bullet_types[shot_size].hit_noise,
+                                  bullet_types[shot_size].hit_volume);
+            }
+            if (shot_size >= 50 && !gib_impact_splat_sound_this_update) {
+                gib_impact_splat_sound_this_update = true;
+                audio_play_sample(13, 64);  /* splotch */
+            }
+
+            if (shot_size >= 0 && shot_size < 8 &&
+                bullet_types[shot_size].explosive_force > 0) {
+                int16_t blast_zone = OBJ_ZONE(obj);
+                int8_t blast_top = obj->obj.in_top;
+                if (ctx.objroom && state->level.data) {
+                    int zi = level_zone_index_from_room_ptr(&state->level, ctx.objroom);
+                    if (zi < 0) {
+                        int16_t room_zone_word = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+                        zi = level_connect_to_zone_index(&state->level, room_zone_word);
+                    }
+                    if (zi >= 0 && zi < zone_slots)
+                        blast_zone = (int16_t)zi;
+                    blast_top = ctx.stood_in_top;
+                }
+                compute_blast(state, ctx.newx, ctx.newz, accypos,
+                              bullet_types[shot_size].explosive_force,
+                              blast_zone, blast_top);
+            }
+            /* Position already committed at lab above. */
+        }
+        return;
+    }
 
     bool explosive_projectile_hit = (shot_size >= 0 && shot_size < 8 &&
                                      bullet_types[shot_size].explosive_force > 0);
@@ -4211,12 +4211,15 @@ void enemy_fire_at_player(GameObject *obj, GameState *state,
     if (!bullet) return;
 
     /* Calculate direction to player (AlienControl.s FireAtPlayer1 lines 360-411) */
-    int idx = (int)(((uint8_t*)obj - state->level.object_data) / OBJECT_SIZE);
+    int idx = (int)OBJ_CID(obj);
     int16_t obj_x, obj_z;
+    if (idx < 0 || idx >= state->level.num_object_points) return;
     get_object_pos(&state->level, idx, &obj_x, &obj_z);
 
-    int32_t plr_x = plr->p_xoff;
-    int32_t plr_z = plr->p_zoff;
+    /* AlienControl.s FireAtPlayer uses PLR*_xoff / PLR*_zoff (world X/Z),
+     * not the pre-physics p_* inputs. */
+    int32_t plr_x = (int32_t)(plr->xoff >> 16);
+    int32_t plr_z = (int32_t)(plr->zoff >> 16);
 
     /* Lead prediction: offset target by player velocity * (dist/speed) */
     int32_t dx = plr_x - obj_x;
@@ -4829,14 +4832,17 @@ void use_player1(GameState *state)
     if (!state->level.plr1_obj) return;
 
     GameObject *plr_obj = (GameObject*)state->level.plr1_obj;
+    /* AB3DI main loop forces player object types each tick (#5 / #11). */
+    plr_obj->obj.number = OBJ_NBR_PLR1;
 
     /* Update position in ObjectPoints */
-    int idx = 0;
     if (state->level.object_points) {
-        idx = (int)(state->level.plr1_obj - state->level.object_data) / OBJECT_SIZE;
-        uint8_t *pts = state->level.object_points + idx * 8;
-        obj_sw(pts, (int16_t)(state->plr1.xoff >> 16));
-        obj_sw(pts + 4, (int16_t)(state->plr1.zoff >> 16));
+        int idx = (int)OBJ_CID(plr_obj);
+        if (idx >= 0 && idx < state->level.num_object_points) {
+            uint8_t *pts = state->level.object_points + idx * 8;
+            obj_sl(pts, state->plr1.xoff);
+            obj_sl(pts + 4, state->plr1.zoff);
+        }
     }
 
     /* Update zone */
@@ -4854,8 +4860,9 @@ void use_player1(GameState *state)
         audio_play_sample(19, amiga_noisevol_to_pc(PLAYER_PAIN_NOISEVOL));
     }
 
-    /* Update numlives from energy */
-    NASTY_LIVES(*plr_obj) = (int8_t)(state->plr1.energy + 1);
+    /* Amiga USEPLR1 does move.b PLR1_energy+1,numlives(a0):
+     * +1 is byte-addressing of the word (low byte), not arithmetic +1. */
+    NASTY_LIVES(*plr_obj) = (int8_t)state->plr1.energy;
 
     /* Zone brightness (AB3DI.s lines 2358-2366) */
     if (state->plr1.zone >= 0) {
@@ -4896,13 +4903,15 @@ void use_player2(GameState *state)
     if (!state->level.plr2_obj) return;
 
     GameObject *plr_obj = (GameObject*)state->level.plr2_obj;
+    plr_obj->obj.number = OBJ_NBR_PLR2;
 
-    int idx = 0;
     if (state->level.object_points) {
-        idx = (int)(state->level.plr2_obj - state->level.object_data) / OBJECT_SIZE;
-        uint8_t *pts = state->level.object_points + idx * 8;
-        obj_sw(pts, (int16_t)(state->plr2.xoff >> 16));
-        obj_sw(pts + 4, (int16_t)(state->plr2.zoff >> 16));
+        int idx = (int)OBJ_CID(plr_obj);
+        if (idx >= 0 && idx < state->level.num_object_points) {
+            uint8_t *pts = state->level.object_points + idx * 8;
+            obj_sl(pts, state->plr2.xoff);
+            obj_sl(pts + 4, state->plr2.zoff);
+        }
     }
 
     OBJ_SET_ZONE(plr_obj, state->plr2.zone);
@@ -4916,7 +4925,8 @@ void use_player2(GameState *state)
         audio_play_sample(19, amiga_noisevol_to_pc(PLAYER_PAIN_NOISEVOL));
     }
 
-    NASTY_LIVES(*plr_obj) = (int8_t)(state->plr2.energy + 1);
+    /* Same low-byte semantics as USEPLR1 above. */
+    NASTY_LIVES(*plr_obj) = (int8_t)state->plr2.energy;
 
     if (state->plr2.zone >= 0) {
         int16_t zb = level_get_zone_brightness(&state->level, state->plr2.zone,
