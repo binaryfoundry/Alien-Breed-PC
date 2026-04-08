@@ -3041,7 +3041,6 @@ static void draw_wall_rasterize_segment(
         bright_fp += bright_step;
 
         const int x = screen_x;
-        if (x < ctx->left_clip || x >= ctx->right_clip) continue;
 
         int yt = y_top_scr, yb = y_bot_scr;
         if (yb <= yt) yb = yt + 1;
@@ -7188,9 +7187,11 @@ static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
         }
         const uint8_t *clip_ptr = (clip_off >= 0) ? (state->level.clips + clip_off * 2) : NULL;
 
+        const int proj_x_scale = renderer_proj_x_scale_px();
         int invalid_clip = 0;
         int guard = 0;
 
+        /* --- Left clip boundary points --- */
         while (clip_ptr && rd16(clip_ptr) >= 0) {
             if (++guard > 1024) { invalid_clip = 1; break; }
             if (clip_word_count > 0) {
@@ -7199,39 +7200,55 @@ static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
             }
             int16_t pt = rd16(clip_ptr);
             clip_ptr += 2;
-            if (pt >= 0 && pt < num_level_points) {
-                if (!renderer_ensure_level_point_rotated(state, pt)) {
-                    if (trace_clip) {
-                        printf("[CLIP][frame %u] zone=%d left pt=%d rotate_failed\n",
-                               (unsigned)frame_idx, (int)zone_id, (int)pt);
-                    }
-                    continue;
+            if (pt < 0 || pt >= num_level_points) continue;
+            if (!renderer_ensure_level_point_rotated(state, pt)) {
+                if (trace_clip) {
+                    printf("[CLIP][frame %u] zone=%d left pt=%d rotate_failed\n",
+                           (unsigned)frame_idx, (int)zone_id, (int)pt);
                 }
-                int16_t z = (int16_t)r->rotated[pt].z;
-                if (z > 0) {
-                    int sxpx = project_x_to_pixels(r->rotated[pt].x, r->rotated[pt].z);
-                    int allow = 1;
-                    if (connect_table) {
-                        int16_t cpt = rd16(connect_table + (size_t)pt * 4u + 2u);
-                        if (cpt >= 0 && cpt < num_level_points) {
-                            if (!renderer_ensure_level_point_rotated(state, cpt)) {
-                                if (trace_clip) {
-                                    printf("[CLIP][frame %u] zone=%d left pt=%d cpt=%d rotate_failed\n",
-                                           (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
-                                }
-                                allow = 0;
+                continue;
+            }
+            int32_t pz = r->rotated[pt].z;
+            if (pz > 0) {
+                int sxpx = project_x_to_pixels(r->rotated[pt].x, pz);
+                int allow = 1;
+                if (connect_table) {
+                    int16_t cpt = rd16(connect_table + (size_t)pt * 4u + 2u);
+                    if (cpt >= 0 && cpt < num_level_points) {
+                        if (!renderer_ensure_level_point_rotated(state, cpt)) {
+                            if (trace_clip) {
+                                printf("[CLIP][frame %u] zone=%d left pt=%d cpt=%d rotate_failed\n",
+                                       (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
                             }
-                        }
-                        if (allow && cpt >= 0 && cpt < num_level_points) {
-                            int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
-                            if (csxpx > sxpx) allow = 0;
-                        } else if (trace_clip) {
-                            printf("[CLIP][frame %u] zone=%d left pt=%d bad cpt=%d\n",
-                                   (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
+                            allow = 0;
                         }
                     }
-                    if (allow && sxpx > left_clip_px) {
-                        left_clip_px = sxpx;
+                    if (allow && cpt >= 0 && cpt < num_level_points) {
+                        int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
+                        if (csxpx > sxpx) allow = 0;
+                    } else if (trace_clip) {
+                        printf("[CLIP][frame %u] zone=%d left pt=%d bad cpt=%d\n",
+                               (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
+                    }
+                }
+                if (allow && sxpx > left_clip_px) {
+                    left_clip_px = sxpx;
+                }
+            } else if (connect_table) {
+                /* Portal vertex behind camera — clip edge to near plane for a tighter bound. */
+                int16_t cpt = rd16(connect_table + (size_t)pt * 4u + 2u);
+                if (cpt >= 0 && cpt < num_level_points &&
+                    renderer_ensure_level_point_rotated(state, cpt)) {
+                    int32_t cz = r->rotated[cpt].z;
+                    if (cz > 0) {
+                        int32_t dz = cz - pz;
+                        if (dz > 0) {
+                            int32_t clip_x = r->rotated[pt].x +
+                                (int32_t)((int64_t)(r->rotated[cpt].x - r->rotated[pt].x) * (1 - pz) / dz);
+                            int sxpx = project_x_to_pixels(clip_x, 1);
+                            if (sxpx > left_clip_px)
+                                left_clip_px = sxpx;
+                        }
                     }
                 }
             }
@@ -7248,6 +7265,7 @@ static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
             clip_ptr += 2;
         }
 
+        /* --- Right clip boundary points --- */
         while (clip_ptr && rd16(clip_ptr) >= 0) {
             if (++guard > 2048) { invalid_clip = 1; break; }
             if (clip_word_count > 0) {
@@ -7256,39 +7274,56 @@ static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
             }
             int16_t pt = rd16(clip_ptr);
             clip_ptr += 2;
-            if (pt >= 0 && pt < num_level_points) {
-                if (!renderer_ensure_level_point_rotated(state, pt)) {
-                    if (trace_clip) {
-                        printf("[CLIP][frame %u] zone=%d right pt=%d rotate_failed\n",
-                               (unsigned)frame_idx, (int)zone_id, (int)pt);
-                    }
-                    continue;
+            if (pt < 0 || pt >= num_level_points) continue;
+            if (!renderer_ensure_level_point_rotated(state, pt)) {
+                if (trace_clip) {
+                    printf("[CLIP][frame %u] zone=%d right pt=%d rotate_failed\n",
+                           (unsigned)frame_idx, (int)zone_id, (int)pt);
                 }
-                int16_t z = (int16_t)r->rotated[pt].z;
-                if (z > 0) {
-                    int sxpx = project_x_to_pixels(r->rotated[pt].x, r->rotated[pt].z);
-                    int allow = 1;
-                    if (connect_table) {
-                        int16_t cpt = rd16(connect_table + (size_t)pt * 4u);
-                        if (cpt >= 0 && cpt < num_level_points) {
-                            if (!renderer_ensure_level_point_rotated(state, cpt)) {
-                                if (trace_clip) {
-                                    printf("[CLIP][frame %u] zone=%d right pt=%d cpt=%d rotate_failed\n",
-                                           (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
-                                }
-                                allow = 0;
+                continue;
+            }
+            int32_t pz = r->rotated[pt].z;
+            if (pz > 0) {
+                int sxpx = project_x_to_pixels(r->rotated[pt].x, pz);
+                int allow = 1;
+                if (connect_table) {
+                    int16_t cpt = rd16(connect_table + (size_t)pt * 4u);
+                    if (cpt >= 0 && cpt < num_level_points) {
+                        if (!renderer_ensure_level_point_rotated(state, cpt)) {
+                            if (trace_clip) {
+                                printf("[CLIP][frame %u] zone=%d right pt=%d cpt=%d rotate_failed\n",
+                                       (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
                             }
-                        }
-                        if (allow && cpt >= 0 && cpt < num_level_points) {
-                            int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
-                            if (csxpx < sxpx) allow = 0;
-                        } else if (trace_clip) {
-                            printf("[CLIP][frame %u] zone=%d right pt=%d bad cpt=%d\n",
-                                   (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
+                            allow = 0;
                         }
                     }
-                    if (allow && sxpx < right_clip_px) {
-                        right_clip_px = sxpx + renderer_proj_x_scale_px();
+                    if (allow && cpt >= 0 && cpt < num_level_points) {
+                        int csxpx = project_x_to_pixels(r->rotated[cpt].x, r->rotated[cpt].z);
+                        if (csxpx < sxpx) allow = 0;
+                    } else if (trace_clip) {
+                        printf("[CLIP][frame %u] zone=%d right pt=%d bad cpt=%d\n",
+                               (unsigned)frame_idx, (int)zone_id, (int)pt, (int)cpt);
+                    }
+                }
+                if (allow && sxpx < right_clip_px) {
+                    right_clip_px = sxpx + proj_x_scale;
+                }
+            } else if (connect_table) {
+                /* Portal vertex behind camera — clip edge to near plane for a tighter bound. */
+                int16_t cpt = rd16(connect_table + (size_t)pt * 4u);
+                if (cpt >= 0 && cpt < num_level_points &&
+                    renderer_ensure_level_point_rotated(state, cpt)) {
+                    int32_t cz = r->rotated[cpt].z;
+                    if (cz > 0) {
+                        int32_t dz = cz - pz;
+                        if (dz > 0) {
+                            int32_t clip_x = r->rotated[pt].x +
+                                (int32_t)((int64_t)(r->rotated[cpt].x - r->rotated[pt].x) * (1 - pz) / dz);
+                            int sxpx = project_x_to_pixels(clip_x, 1);
+                            int sxpx_r = sxpx + proj_x_scale;
+                            if (sxpx_r < right_clip_px)
+                                right_clip_px = sxpx_r;
+                        }
                     }
                 }
             }
