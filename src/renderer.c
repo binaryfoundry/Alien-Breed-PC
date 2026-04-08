@@ -2998,21 +2998,25 @@ static void draw_wall_rasterize_segment(
     const uint8_t *pal = ctx->cur_wall_pal;
     const int has_tex_pal = (texture != NULL && pal != NULL);
 
-    /* --- Incremental interpolation: step per column instead of divide-by-span --- */
+    /* --- Column interpolation ---
+     * inv_z_fp is computed exactly per column (accumulated step error propagates into projected
+     * screen Y with coefficient |top_proj|/INVZ_ONE, causing ~1px misalignment per 100 columns).
+     * tex_z and bright use cheap accumulators: their error is divided back by inv_z_fp so
+     * the resulting texture-column / brightness error is sub-pixel / sub-unit. */
     const int64_t start_col = (int64_t)(draw_start - scr_x1);
-    int64_t inv_z_cur  = inv_z1_fp      + (inv_z_delta_fp      * start_col) / span;
     int64_t tex_z_cur  = tex_over_z1_fp  + (tex_over_z_delta_fp * start_col) / span;
     int64_t bright_fp  = ((int64_t)left_brightness << 16) + (((int64_t)bright_delta << 16) * start_col) / span;
 
-    const int64_t inv_z_step  = inv_z_delta_fp      / span;
     const int64_t tex_z_step  = tex_over_z_delta_fp  / span;
     const int64_t bright_step = ((int64_t)bright_delta << 16) / span;
 
     for (int screen_x = draw_start; screen_x <= draw_end; screen_x++) {
-        int64_t inv_z_fp = inv_z_cur;
+        /* Exact inv_z per column — avoids accumulated integer-step error in screen Y projection. */
+        const int64_t col_num = (int64_t)(screen_x - scr_x1);
+        int64_t inv_z_fp = inv_z1_fp + (inv_z_delta_fp * col_num) / span;
         if (inv_z_fp <= 0) inv_z_fp = 1;
 
-        /* 32-bit reciprocal: both INVZ_ONE and inv_z_fp fit in 32 bits */
+        /* 32-bit reciprocal: both INVZ_ONE and inv_z_fp fit in 32 bits for typical Z values */
         const uint32_t inv_z_u = (uint32_t)inv_z_fp;
         int32_t col_z = (int32_t)((16777216u + inv_z_u / 2u) / inv_z_u);
         if (col_z < 1) col_z = 1;
@@ -3028,15 +3032,14 @@ static void draw_wall_rasterize_segment(
         int64_t bnum = bot_proj * inv_z_fp;
         int y_bot_scr = (int)((bnum >= 0 ? (bnum + (INVZ_ONE / 2)) : (bnum - (INVZ_ONE / 2))) / INVZ_ONE) + half_h;
 
-        /* Texture column via perspective divide */
+        /* Texture column via perspective divide (tex_z_cur has bounded accumulator error) */
         int64_t tex_t_fp64 = (tex_z_cur * INVZ_ONE) / inv_z_fp;
         int tex_col = ((int32_t)(tex_t_fp64 >> 24) & horand) + fromtile;
 
         int32_t depth_z = col_z;
         if (tex_id == SWITCHES_WALL_TEX_ID && col_z > 16) depth_z = col_z - 16;
 
-        /* Step accumulators for next column */
-        inv_z_cur += inv_z_step;
+        /* Step cheap accumulators */
         tex_z_cur += tex_z_step;
         bright_fp += bright_step;
 
