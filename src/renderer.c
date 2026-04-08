@@ -69,6 +69,14 @@
 #define AB3D_RESTRICT
 #endif
 
+#if defined(_MSC_VER)
+#define AB3D_CACHELINE_ALIGN __declspec(align(64))
+#elif defined(__GNUC__) || defined(__clang__)
+#define AB3D_CACHELINE_ALIGN __attribute__((aligned(64)))
+#else
+#define AB3D_CACHELINE_ALIGN
+#endif
+
 /* Floor/ceiling UV step per pixel: d1>>FLOOR_STEP_SHIFT (same at any width so texture scale is correct). */
 #define FLOOR_STEP_SHIFT  (6 + RENDER_SCALE_LOG2)  /* d1>>9 at RENDER_SCALE=8 */
 /* Camera UV scale in fixed-point, matching Amiga sxoff/szoff setup in pastsides:
@@ -1073,7 +1081,31 @@ static const uint8_t floor_bright_level_table[29] = {
 
 #define FLOOR_PAL_LEVEL_COUNT 15
 
-typedef struct {
+/*
+ * RenderSliceContext layout is tuned for cache efficiency:
+ *   - wall_cache_cw[32] (64 B) starts at offset 0 = exactly 1 cache line
+ *   - wall_cache_rgb[32] (128 B) follows at offset 64 = 2 cache lines
+ *   - Per-column metadata and clip fields pack into cache line 3
+ *   - Cold floor span caches (~23 KB, lazily filled) go last
+ * The struct itself is cache-line-aligned so the hot arrays land on
+ * cache-line boundaries for every stack / heap instance.
+ */
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324) /* structure was padded due to alignment specifier */
+#endif
+typedef AB3D_CACHELINE_ALIGN struct {
+    /* ---- Hot: per-pixel wall shade LUT (inner loop reads) ---- */
+    uint16_t wall_cache_cw[32];          /* 64 B — cache line 0 */
+    uint32_t wall_cache_rgb[32];         /* 128 B — cache lines 1-2 */
+
+    /* ---- Warm: per-column wall state ---- */
+    const uint8_t *wall_cache_pal;
+    const uint8_t *cur_wall_pal;
+    uint16_t wall_cache_block_off;
+    int16_t  wall_cache_valid;
+
+    /* ---- Warm: clip bounds (few reads per column) ---- */
     int16_t left_clip;
     int16_t right_clip;
     int16_t top_clip;
@@ -1084,23 +1116,18 @@ typedef struct {
     int16_t wall_bot_clip;
     int16_t slice_left;
     int16_t slice_right;
-    const uint8_t *cur_wall_pal;
-    int8_t fill_screen_water;
+    int8_t  fill_screen_water;
+    int8_t  update_column_clip;
 
-    /* Per-slice wall shade cache (replaces function-static mutable cache). */
-    const uint8_t *wall_cache_pal;
-    uint16_t wall_cache_block_off;
-    uint16_t wall_cache_cw[32];
-    uint32_t wall_cache_rgb[32];
-    int wall_cache_valid;
-
-    /* Per-slice floor palette cache (replaces global mutable cache). */
+    /* ---- Cold: floor palette span cache (lazily populated) ---- */
     const uint8_t *floor_pal_cache_src;
     uint8_t  floor_pal_cache_valid[FLOOR_PAL_LEVEL_COUNT];
     uint16_t floor_span_cw_cache[FLOOR_PAL_LEVEL_COUNT][256];
     uint32_t floor_span_rgb_cache[FLOOR_PAL_LEVEL_COUNT][256];
-    int update_column_clip;
 } RenderSliceContext;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 static void render_slice_context_reset(RenderSliceContext *ctx,
                                        int16_t left, int16_t right,
@@ -1122,7 +1149,16 @@ static void render_slice_context_init(RenderSliceContext *ctx,
                                       int16_t left, int16_t right,
                                       int16_t top, int16_t bot)
 {
-    memset(ctx, 0, sizeof(*ctx));
+    /* Zero only the hot/warm portion (wall caches + clip fields, ~240 B).
+     * The cold floor span caches (~23 KB) are lazily populated and guarded
+     * by floor_pal_cache_valid[], so we just zero the validity flags and
+     * the source pointer instead of memset'ing the entire struct. */
+    memset(ctx->wall_cache_cw, 0, sizeof(ctx->wall_cache_cw));
+    memset(ctx->wall_cache_rgb, 0, sizeof(ctx->wall_cache_rgb));
+    ctx->wall_cache_pal = NULL;
+    ctx->wall_cache_valid = 0;
+    ctx->floor_pal_cache_src = NULL;
+    memset(ctx->floor_pal_cache_valid, 0, sizeof(ctx->floor_pal_cache_valid));
     ctx->strip_left = left;
     ctx->strip_right = right;
     render_slice_context_reset(ctx, left, right, top, bot);
