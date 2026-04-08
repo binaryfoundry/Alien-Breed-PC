@@ -2824,7 +2824,7 @@ void renderer_rotate_object_pts(GameState *state)
     }
 }
 
-/* Wall texture index for switches (io.c wall_texture_table). Must be before draw_wall_column. */
+/* Wall texture index for switches (io.c wall_texture_table). Must be before wall raster helpers. */
 #define SWITCHES_WALL_TEX_ID  11
 
 static void renderer_column_clip_add_span(int col, int top, int bot, int32_t z)
@@ -2925,331 +2925,6 @@ int32_t renderer_column_clip_nearest_z_at(int col, int row)
     return nearest_z;
 }
 
-/* -----------------------------------------------------------------------
- * Wall rendering (column-by-column)
- *
- * Translated from WallRoutine3.ChipMem.s ScreenWallstripdraw.
- *
- * Draws a vertical strip of a textured wall.
- * Parameters:
- *   x         - screen column
- *   y_top     - top of wall on screen
- *   y_bot     - bottom of wall on screen
- *   tex_col   - texture column to sample (0-127)
- *   texture   - pointer to wall pixel data (past 2048-byte LUT header)
- *   amiga_d6  - Amiga dimming index (0-32): 0=brightest (close), 32=dimmest (far)
- *
- * Uses ctx->cur_wall_pal as the per-texture 2048-byte LUT.
- * ----------------------------------------------------------------------- */
-static void draw_wall_column(RenderSliceContext *ctx,
-                             int x, int y_top, int y_bot,
-                             int y_top_tex,
-                             int tex_col, const uint8_t *texture,
-                             int amiga_d6,
-                             uint8_t valand, uint8_t valshift,
-                             int16_t totalyoff, int32_t col_z,
-                             int16_t wall_height_world, int16_t tex_id,
-                             int16_t d6_max)
-{
-    uint8_t *buf = renderer_active_buf();
-    uint32_t *rgb = renderer_active_rgb();
-    uint16_t *cw = renderer_active_cw();
-    if (!buf || !rgb || !cw) return;
-    const int expand = g_renderer_rgb_raster_expand;
-    if (x < ctx->left_clip || x >= ctx->right_clip) return;
-
-    int width = g_renderer.width;
-
-    /* Short walls (e.g. step risers) can project to same row; ensure at least 1 pixel height */
-    int yt = y_top, yb = y_bot;
-    if (yb <= yt) yb = yt + 1;
-
-    /* Clip to screen. wall_top_clip/wall_bot_clip (multi-floor) let walls extend to meet ceiling/floor. */
-    int effective_top = (ctx->wall_top_clip >= 0) ? (int)ctx->wall_top_clip : ctx->top_clip;
-    int ct = (yt < effective_top) ? effective_top : yt;
-    int effective_bot = (ctx->wall_bot_clip >= 0) ? (int)ctx->wall_bot_clip : ctx->bot_clip;
-    int cb = (yb > effective_bot) ? effective_bot : yb;
-    if (ct > cb) return;
-
-    int wall_height = cb - ct;
-    if (wall_height <= 0) return;
-
-    /* Clamp d6 to SCALE table range.
-     * See-through wall path in Amiga clamps to 0..32; normal walls clamp to 0..64. */
-    if (d6_max < 0) d6_max = 0;
-    if (d6_max > 64) d6_max = 64;
-    if (amiga_d6 < 0) amiga_d6 = 0;
-    if (amiga_d6 > d6_max) amiga_d6 = d6_max;
-
-    /* Get the brightness block offset from the SCALE table */
-    uint16_t lut_block_off = wall_scale_table[amiga_d6];
-
-    /* Pointer to the per-texture LUT (NULL if no palette loaded) */
-    const uint8_t *pal = ctx->cur_wall_pal;
-
-    /* --- Packed texture addressing ---
-     *
-     * Amiga wall textures pack 3 five-bit texels per 16-bit word:
-     *   bits [4:0]   = texel A (PACK 0)
-     *   bits [9:5]   = texel B (PACK 1)
-     *   bits [14:10] = texel C (PACK 2)
-     *
-     * The texture data is arranged in vertical strips.  Each strip
-     * covers 3 adjacent columns and has (1 << valshift) rows, with
-     * 2 bytes per row (one 16-bit packed word).
-     *
-     *   strip_index  = tex_col / 3
-     *   pack_mode    = tex_col % 3
-     *   strip_offset = strip_index << (valshift + 1)
-     *   row_word     = data[strip_offset + (ty & valand) * 2 .. +1]
-     *
-     * (Derived from WallRoutine3.ChipMem.s ScreenWallstripdraw)   */
-    int strip_index = tex_col / 3;
-    int pack_mode   = tex_col % 3;
-    /* strip_offset = strip_index * 2 << valshift  =  strip_index << (valshift+1) */
-    int strip_offset = strip_index << (valshift + 1);
-
-    /* Texture mapping uses logical wall height (y_top_tex..y_bot). Caller may pass y_top one row
-     * above projected top to close ceiling gaps; tex_step and tex_y use y_top_tex so the extra
-     * row samples one texel above yoff (no stretch). */
-    int wall_pixels = yb - y_top_tex;
-    if (wall_pixels < 1) wall_pixels = 1;
-    int rows = 1 << valshift;
-    int h = (int)wall_height_world;
-    if (h < 1) h = 1;
-    /* Full-height short walls: show full texture.
-     * Switch texture is 32 rows; map exactly one switch texture vertically. */
-    if (tex_id == SWITCHES_WALL_TEX_ID) h = rows;
-    else if (rows < 64 && h < 64) h = 64;
-    /* Amiga d4 progression is independent of VALSHIFT/VALAND; those only affect row masking/addressing.
-     * Scaling by rows over-wraps 128-row door textures vertically. */
-    int32_t tex_step = (int32_t)(((int64_t)h << 16) / wall_pixels);
-    /* Vertical texture start offset (masked to texture row count). */
-    int32_t yoff = (int32_t)((unsigned)totalyoff & (unsigned)valand);
-    int32_t tex_y = (ct - y_top_tex) * tex_step + ((int32_t)yoff << 16);
-
-    uint32_t fallback = 0;
-    uint16_t fallback_cw = 0;
-    if (texture && pal) {
-        if (!ctx->wall_cache_valid || ctx->wall_cache_pal != pal || ctx->wall_cache_block_off != lut_block_off) {
-            for (int ti = 0; ti < 32; ti++) {
-                int lut_off = lut_block_off + ti * 2;
-                uint16_t c12 = ((uint16_t)pal[lut_off] << 8) | pal[lut_off + 1];
-                ctx->wall_cache_cw[ti] = c12;
-                ctx->wall_cache_rgb[ti] = amiga12_to_argb(c12);
-            }
-            ctx->wall_cache_pal = pal;
-            ctx->wall_cache_block_off = lut_block_off;
-            ctx->wall_cache_valid = 1;
-        }
-    } else {
-        int gray = (64 - amiga_d6) * 255 / 64;
-        if (gray < 0)   gray = 0;
-        if (gray > 255) gray = 255;
-        fallback = RENDER_RGB_RASTER_PIXEL(((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray);
-        fallback_cw = argb_to_amiga12(fallback);
-    }
-
-    size_t pix = (size_t)ct * (size_t)width + (size_t)x;
-    size_t wstride = (size_t)width;
-    const uint8_t pack_shift = (uint8_t)(pack_mode * 5);
-
-    if (texture && pal && strip_offset >= 0) {
-        const uint8_t *tex_strip = texture + strip_offset;
-
-        if (expand) {
-            int y = ct;
-            while (y <= cb - 1) {
-                AB3D_PREFETCH_WRITE(cw + pix + 16u * wstride);
-                AB3D_PREFETCH_WRITE(rgb + pix + 16u * wstride);
-                int32_t ty0 = tex_y;
-                int32_t ty1 = tex_y + tex_step;
-
-                int ra0 = ((int)(ty0 >> 16) & valand) << 1;
-                uint16_t w0 = ((uint16_t)tex_strip[ra0] << 8) | tex_strip[ra0 + 1];
-                uint8_t t0 = (uint8_t)((w0 >> pack_shift) & 31u);
-                buf[pix] = 2;
-                cw[pix] = ctx->wall_cache_cw[t0];
-                rgb[pix] = ctx->wall_cache_rgb[t0];
-
-                size_t pix1 = pix + wstride;
-                int ra1 = ((int)(ty1 >> 16) & valand) << 1;
-                uint16_t w1 = ((uint16_t)tex_strip[ra1] << 8) | tex_strip[ra1 + 1];
-                uint8_t t1 = (uint8_t)((w1 >> pack_shift) & 31u);
-                buf[pix1] = 2;
-                cw[pix1] = ctx->wall_cache_cw[t1];
-                rgb[pix1] = ctx->wall_cache_rgb[t1];
-
-                pix = pix1 + wstride;
-                tex_y = ty1 + tex_step;
-                y += 2;
-            }
-            while (y <= cb) {
-                AB3D_PREFETCH_WRITE(cw + pix + 8u * wstride);
-                AB3D_PREFETCH_WRITE(rgb + pix + 8u * wstride);
-                int ra = ((int)(tex_y >> 16) & valand) << 1;
-                uint16_t word = ((uint16_t)tex_strip[ra] << 8) | tex_strip[ra + 1];
-                uint8_t texel5 = (uint8_t)((word >> pack_shift) & 31u);
-                buf[pix] = 2;
-                cw[pix] = ctx->wall_cache_cw[texel5];
-                rgb[pix] = ctx->wall_cache_rgb[texel5];
-                pix += wstride;
-                tex_y += tex_step;
-                y++;
-            }
-        } else {
-            int y = ct;
-            while (y <= cb - 1) {
-                AB3D_PREFETCH_WRITE(cw + pix + 16u * wstride);
-                int32_t ty0 = tex_y;
-                int32_t ty1 = tex_y + tex_step;
-
-                int ra0 = ((int)(ty0 >> 16) & valand) << 1;
-                uint16_t w0 = ((uint16_t)tex_strip[ra0] << 8) | tex_strip[ra0 + 1];
-                uint8_t t0 = (uint8_t)((w0 >> pack_shift) & 31u);
-                buf[pix] = 2;
-                cw[pix] = ctx->wall_cache_cw[t0];
-
-                size_t pix1 = pix + wstride;
-                int ra1 = ((int)(ty1 >> 16) & valand) << 1;
-                uint16_t w1 = ((uint16_t)tex_strip[ra1] << 8) | tex_strip[ra1 + 1];
-                uint8_t t1 = (uint8_t)((w1 >> pack_shift) & 31u);
-                buf[pix1] = 2;
-                cw[pix1] = ctx->wall_cache_cw[t1];
-
-                pix = pix1 + wstride;
-                tex_y = ty1 + tex_step;
-                y += 2;
-            }
-            while (y <= cb) {
-                AB3D_PREFETCH_WRITE(cw + pix + 8u * wstride);
-                int ra = ((int)(tex_y >> 16) & valand) << 1;
-                uint16_t word = ((uint16_t)tex_strip[ra] << 8) | tex_strip[ra + 1];
-                uint8_t texel5 = (uint8_t)((word >> pack_shift) & 31u);
-                buf[pix] = 2;
-                cw[pix] = ctx->wall_cache_cw[texel5];
-                pix += wstride;
-                tex_y += tex_step;
-                y++;
-            }
-        }
-    } else if (texture && pal) {
-        uint16_t cw0 = ctx->wall_cache_cw[0];
-        uint32_t argb0 = expand ? ctx->wall_cache_rgb[0] : 0;
-        if (expand) {
-            for (int y = ct; y <= cb; y++) {
-                AB3D_PREFETCH_WRITE(cw + pix + 8u * wstride);
-                AB3D_PREFETCH_WRITE(rgb + pix + 8u * wstride);
-                buf[pix] = 2;
-                rgb[pix] = argb0;
-                cw[pix] = cw0;
-                pix += wstride;
-                tex_y += tex_step;
-            }
-        } else {
-            for (int y = ct; y <= cb; y++) {
-                AB3D_PREFETCH_WRITE(cw + pix + 8u * wstride);
-                buf[pix] = 2;
-                cw[pix] = cw0;
-                pix += wstride;
-                tex_y += tex_step;
-            }
-        }
-    } else {
-        if (expand) {
-            for (int y = ct; y <= cb; y++) {
-                AB3D_PREFETCH_WRITE(cw + pix + 8u * wstride);
-                AB3D_PREFETCH_WRITE(rgb + pix + 8u * wstride);
-                buf[pix] = 2;
-                rgb[pix] = fallback;
-                cw[pix] = fallback_cw;
-                pix += wstride;
-                tex_y += tex_step;
-            }
-        } else {
-            for (int y = ct; y <= cb; y++) {
-                AB3D_PREFETCH_WRITE(cw + pix + 8u * wstride);
-                buf[pix] = 2;
-                cw[pix] = fallback_cw;
-                pix += wstride;
-                tex_y += tex_step;
-            }
-        }
-    }
-
-    /* Extend column by one row above/below with the edge texel colour to hide thin gaps vs floor/ceiling. */
-    {
-        size_t first_pix = (size_t)ct * (size_t)width + (size_t)x;
-        size_t last_pix = (size_t)cb * (size_t)width + (size_t)x;
-        uint16_t edge_top_cw = cw[first_pix];
-        uint16_t edge_bot_cw = cw[last_pix];
-        uint32_t edge_top_rgb = 0;
-        uint32_t edge_bot_rgb = 0;
-        if (expand) {
-            edge_top_rgb = rgb[first_pix];
-            edge_bot_rgb = rgb[last_pix];
-        }
-        if (ct > ctx->top_clip) {
-            size_t up = first_pix - (size_t)width;
-            buf[up] = 2;
-            if (expand)
-                rgb[up] = edge_top_rgb;
-            cw[up] = edge_top_cw;
-        }
-        if (cb + 1 <= ctx->bot_clip) {
-            size_t dn = last_pix + (size_t)width;
-            buf[dn] = 2;
-            if (expand)
-                rgb[dn] = edge_bot_rgb;
-            cw[dn] = edge_bot_cw;
-        }
-    }
-
-    /* Extend strip by one column left/right with edge texel colours (cf. floor span horizontal extend). */
-    {
-        for (int row = ct; row <= cb; row++) {
-            size_t mid = (size_t)row * (size_t)width + (size_t)x;
-            uint16_t wv = cw[mid];
-            uint32_t c = 0;
-            if (expand)
-                c = rgb[mid];
-            if (x > ctx->slice_left) {
-                size_t L = mid - 1;
-                buf[L] = 2;
-                if (expand)
-                    rgb[L] = c;
-                cw[L] = wv;
-            }
-            if (x + 1 < ctx->slice_right) {
-                size_t R = mid + 1;
-                buf[R] = 2;
-                if (expand)
-                    rgb[R] = c;
-                cw[R] = wv;
-            }
-        }
-    }
-
-    /* Update wall column clip (walls occlude sprites behind them).
-     * Edge-expanded rows/columns also write coverage so sprites don't overdraw those pixels. */
-    if (ctx->update_column_clip) {
-        int occ_top = ct;
-        int occ_bot = cb;
-        if (ct > ctx->top_clip) occ_top = ct - 1;
-        if (cb + 1 <= ctx->bot_clip) occ_bot = cb + 1;
-        renderer_column_clip_add_span(x, occ_top, occ_bot, col_z);
-
-        if (x > ctx->slice_left) {
-            int nx = x - 1;
-            renderer_column_clip_add_span(nx, ct, cb, col_z);
-        }
-        if (x + 1 < ctx->slice_right) {
-            int nx = x + 1;
-            renderer_column_clip_add_span(nx, ct, cb, col_z);
-        }
-    }
-}
-
 /* Wall column loop uses inverse-Z in 8.24 (INVZ_ONE). Projecting Y as world_y*K/z with an
  * integer z from z = INVZ_ONE/inv_z truncates twice vs. world_y*K*inv_z/INVZ_ONE (one divide).
  * The latter matches true perspective along the span and reduces stair-steps at floor/ceiling. */
@@ -3262,6 +2937,255 @@ static int wall_proj_y_screen_invz(int16_t world_y, int64_t inv_z_fp, int32_t pr
         ? ((num + INVZ_ONE / 2) / INVZ_ONE)
         : ((num - INVZ_ONE / 2) / INVZ_ONE);
     return (int)q + height / 2;
+}
+
+/* -----------------------------------------------------------------------
+ * Wall rendering — one entry per wall segment (not per screen column).
+ *
+ * Translated from WallRoutine3.ChipMem.s ScreenWallstripdraw / walldraw.
+ * Perspective-correct 1/z and tex/z interpolation runs in the outer loop;
+ * each column runs the vertical strip raster (formerly draw_wall_column).
+ * ----------------------------------------------------------------------- */
+static void draw_wall_rasterize_segment(
+    RenderSliceContext *ctx,
+    int draw_start, int draw_end, int scr_x1, int span,
+    int64_t inv_z1_fp, int64_t inv_z_delta_fp,
+    int64_t tex_over_z1_fp, int64_t tex_over_z_delta_fp,
+    int32_t left_brightness, int32_t bright_delta,
+    int16_t top, int16_t bot,
+    const uint8_t *texture,
+    uint8_t valand, uint8_t valshift, int16_t horand,
+    int16_t totalyoff, int16_t fromtile,
+    int16_t tex_id, int16_t wall_height_for_tex,
+    int16_t d6_max)
+{
+    const int64_t INVZ_ONE = (1LL << 24);
+
+    uint8_t *buf = renderer_active_buf();
+    uint32_t *rgb = renderer_active_rgb();
+    uint16_t *cw = renderer_active_cw();
+    if (!buf || !rgb || !cw) return;
+
+    const int expand = g_renderer_rgb_raster_expand;
+    const int width = g_renderer.width;
+    const size_t wstride = (size_t)width;
+    const int32_t proj_y_scale = g_renderer.proj_y_scale;
+    const int height = g_renderer.height;
+    const int half_h = height / 2;
+
+    if (d6_max < 0) d6_max = 0;
+    if (d6_max > 64) d6_max = 64;
+
+    /* --- Hoisted constants (invariant across all columns) --- */
+    const int effective_top = (ctx->wall_top_clip >= 0) ? (int)ctx->wall_top_clip : (int)ctx->top_clip;
+    const int effective_bot = (ctx->wall_bot_clip >= 0) ? (int)ctx->wall_bot_clip : (int)ctx->bot_clip;
+    const int top_clip_val = (int)ctx->top_clip;
+    const int bot_clip_val = (int)ctx->bot_clip;
+
+    /* Precompute projection factors: top/bot * proj_y_scale * RENDER_SCALE */
+    const int64_t top_proj = (int64_t)top * (int64_t)proj_y_scale * (int64_t)RENDER_SCALE;
+    const int64_t bot_proj = (int64_t)bot * (int64_t)proj_y_scale * (int64_t)RENDER_SCALE;
+
+    /* Precompute texture height constants */
+    const int rows = 1 << valshift;
+    int tex_h = (int)wall_height_for_tex;
+    if (tex_h < 1) tex_h = 1;
+    if (tex_id == SWITCHES_WALL_TEX_ID) tex_h = rows;
+    else if (rows < 64 && tex_h < 64) tex_h = 64;
+    const int64_t h_shifted = (int64_t)tex_h << 16;
+    const int32_t yoff_base = (int32_t)((unsigned)totalyoff & (unsigned)valand);
+
+    const uint8_t *pal = ctx->cur_wall_pal;
+    const int has_tex_pal = (texture != NULL && pal != NULL);
+
+    /* --- Incremental interpolation: step per column instead of divide-by-span --- */
+    const int64_t start_col = (int64_t)(draw_start - scr_x1);
+    int64_t inv_z_cur  = inv_z1_fp      + (inv_z_delta_fp      * start_col) / span;
+    int64_t tex_z_cur  = tex_over_z1_fp  + (tex_over_z_delta_fp * start_col) / span;
+    int64_t bright_fp  = ((int64_t)left_brightness << 16) + (((int64_t)bright_delta << 16) * start_col) / span;
+
+    const int64_t inv_z_step  = inv_z_delta_fp      / span;
+    const int64_t tex_z_step  = tex_over_z_delta_fp  / span;
+    const int64_t bright_step = ((int64_t)bright_delta << 16) / span;
+
+    for (int screen_x = draw_start; screen_x <= draw_end; screen_x++) {
+        int64_t inv_z_fp = inv_z_cur;
+        if (inv_z_fp <= 0) inv_z_fp = 1;
+
+        /* 32-bit reciprocal: both INVZ_ONE and inv_z_fp fit in 32 bits */
+        const uint32_t inv_z_u = (uint32_t)inv_z_fp;
+        int32_t col_z = (int32_t)((16777216u + inv_z_u / 2u) / inv_z_u);
+        if (col_z < 1) col_z = 1;
+
+        int32_t wall_bright = (int32_t)(bright_fp >> 16);
+        int amiga_d6 = (col_z >> 7) + (wall_bright * 2);
+        if (amiga_d6 < 0) amiga_d6 = 0;
+        if (amiga_d6 > d6_max) amiga_d6 = d6_max;
+
+        /* Inline projection with precomputed factors */
+        int64_t tnum = top_proj * inv_z_fp;
+        int y_top_scr = (int)((tnum >= 0 ? (tnum + (INVZ_ONE / 2)) : (tnum - (INVZ_ONE / 2))) / INVZ_ONE) + half_h;
+        int64_t bnum = bot_proj * inv_z_fp;
+        int y_bot_scr = (int)((bnum >= 0 ? (bnum + (INVZ_ONE / 2)) : (bnum - (INVZ_ONE / 2))) / INVZ_ONE) + half_h;
+
+        /* Texture column via perspective divide */
+        int64_t tex_t_fp64 = (tex_z_cur * INVZ_ONE) / inv_z_fp;
+        int tex_col = ((int32_t)(tex_t_fp64 >> 24) & horand) + fromtile;
+
+        int32_t depth_z = col_z;
+        if (tex_id == SWITCHES_WALL_TEX_ID && col_z > 16) depth_z = col_z - 16;
+
+        /* Step accumulators for next column */
+        inv_z_cur += inv_z_step;
+        tex_z_cur += tex_z_step;
+        bright_fp += bright_step;
+
+        const int x = screen_x;
+        if (x < ctx->left_clip || x >= ctx->right_clip) continue;
+
+        int yt = y_top_scr, yb = y_bot_scr;
+        if (yb <= yt) yb = yt + 1;
+        int ct = (yt < effective_top) ? effective_top : yt;
+        int cb = (yb > effective_bot) ? effective_bot : yb;
+        if (ct > cb) continue;
+
+        /* Palette cache */
+        uint16_t lut_block_off = wall_scale_table[amiga_d6];
+        uint32_t fallback_rgb = 0;
+        uint16_t fallback_cw = 0;
+        if (has_tex_pal) {
+            if (!ctx->wall_cache_valid || ctx->wall_cache_pal != pal || ctx->wall_cache_block_off != lut_block_off) {
+                for (int ti = 0; ti < 32; ti++) {
+                    int lut_off = lut_block_off + ti * 2;
+                    uint16_t c12 = ((uint16_t)pal[lut_off] << 8) | pal[lut_off + 1];
+                    ctx->wall_cache_cw[ti] = c12;
+                    ctx->wall_cache_rgb[ti] = amiga12_to_argb(c12);
+                }
+                ctx->wall_cache_pal = pal;
+                ctx->wall_cache_block_off = lut_block_off;
+                ctx->wall_cache_valid = 1;
+            }
+        } else {
+            int gray = (64 - amiga_d6) * 255 / 64;
+            if (gray < 0)   gray = 0;
+            if (gray > 255) gray = 255;
+            fallback_rgb = RENDER_RGB_RASTER_PIXEL(((uint32_t)gray << 16) | ((uint32_t)gray << 8) | (uint32_t)gray);
+            fallback_cw = argb_to_amiga12(fallback_rgb);
+        }
+
+        /* Texture addressing */
+        int strip_index = tex_col / 3;
+        int pack_mode   = tex_col % 3;
+        int strip_offset = strip_index << (valshift + 1);
+        const uint8_t pack_shift = (uint8_t)(pack_mode * 5);
+
+        int wall_pixels = yb - y_top_scr;
+        if (wall_pixels < 1) wall_pixels = 1;
+        int32_t tex_step = (int32_t)(h_shifted / wall_pixels);
+        int32_t tex_y = (ct - y_top_scr) * tex_step + ((int32_t)yoff_base << 16);
+
+        /* Edge extension flags (constant per column) */
+        const int do_ext_l = (x > ctx->slice_left);
+        const int do_ext_r = (x + 1 < ctx->slice_right);
+
+        size_t pix = (size_t)ct * wstride + (size_t)x;
+
+        /* ---- Main vertical raster with merged horizontal edge extension ---- */
+        if (has_tex_pal && strip_offset >= 0) {
+            const uint8_t *tex_strip = texture + strip_offset;
+            const uint16_t *cache_cw  = ctx->wall_cache_cw;
+            const uint32_t *cache_rgb = ctx->wall_cache_rgb;
+
+            if (expand) {
+                for (int y = ct; y <= cb; y++) {
+                    int ra = ((int)(tex_y >> 16) & valand) << 1;
+                    uint16_t word = ((uint16_t)tex_strip[ra] << 8) | tex_strip[ra + 1];
+                    uint8_t t = (uint8_t)((word >> pack_shift) & 31u);
+                    uint16_t cv = cache_cw[t];
+                    uint32_t rv = cache_rgb[t];
+                    buf[pix] = 2; cw[pix] = cv; rgb[pix] = rv;
+                    if (do_ext_l) { buf[pix - 1] = 2; cw[pix - 1] = cv; rgb[pix - 1] = rv; }
+                    if (do_ext_r) { buf[pix + 1] = 2; cw[pix + 1] = cv; rgb[pix + 1] = rv; }
+                    pix += wstride;
+                    tex_y += tex_step;
+                }
+            } else {
+                for (int y = ct; y <= cb; y++) {
+                    int ra = ((int)(tex_y >> 16) & valand) << 1;
+                    uint16_t word = ((uint16_t)tex_strip[ra] << 8) | tex_strip[ra + 1];
+                    uint8_t t = (uint8_t)((word >> pack_shift) & 31u);
+                    uint16_t cv = cache_cw[t];
+                    buf[pix] = 2; cw[pix] = cv;
+                    if (do_ext_l) { buf[pix - 1] = 2; cw[pix - 1] = cv; }
+                    if (do_ext_r) { buf[pix + 1] = 2; cw[pix + 1] = cv; }
+                    pix += wstride;
+                    tex_y += tex_step;
+                }
+            }
+        } else if (has_tex_pal) {
+            uint16_t cw0 = ctx->wall_cache_cw[0];
+            uint32_t rgb0 = ctx->wall_cache_rgb[0];
+            if (expand) {
+                for (int y = ct; y <= cb; y++) {
+                    buf[pix] = 2; cw[pix] = cw0; rgb[pix] = rgb0;
+                    if (do_ext_l) { buf[pix - 1] = 2; cw[pix - 1] = cw0; rgb[pix - 1] = rgb0; }
+                    if (do_ext_r) { buf[pix + 1] = 2; cw[pix + 1] = cw0; rgb[pix + 1] = rgb0; }
+                    pix += wstride;
+                }
+            } else {
+                for (int y = ct; y <= cb; y++) {
+                    buf[pix] = 2; cw[pix] = cw0;
+                    if (do_ext_l) { buf[pix - 1] = 2; cw[pix - 1] = cw0; }
+                    if (do_ext_r) { buf[pix + 1] = 2; cw[pix + 1] = cw0; }
+                    pix += wstride;
+                }
+            }
+        } else {
+            if (expand) {
+                for (int y = ct; y <= cb; y++) {
+                    buf[pix] = 2; rgb[pix] = fallback_rgb; cw[pix] = fallback_cw;
+                    if (do_ext_l) { buf[pix - 1] = 2; rgb[pix - 1] = fallback_rgb; cw[pix - 1] = fallback_cw; }
+                    if (do_ext_r) { buf[pix + 1] = 2; rgb[pix + 1] = fallback_rgb; cw[pix + 1] = fallback_cw; }
+                    pix += wstride;
+                }
+            } else {
+                for (int y = ct; y <= cb; y++) {
+                    buf[pix] = 2; cw[pix] = fallback_cw;
+                    if (do_ext_l) { buf[pix - 1] = 2; cw[pix - 1] = fallback_cw; }
+                    if (do_ext_r) { buf[pix + 1] = 2; cw[pix + 1] = fallback_cw; }
+                    pix += wstride;
+                }
+            }
+        }
+
+        /* Vertical edge extension (one row above/below) */
+        {
+            size_t first_pix = (size_t)ct * wstride + (size_t)x;
+            size_t last_pix  = (size_t)cb * wstride + (size_t)x;
+            if (ct > top_clip_val) {
+                size_t up = first_pix - wstride;
+                buf[up] = 2;
+                cw[up] = cw[first_pix];
+                if (expand) rgb[up] = rgb[first_pix];
+            }
+            if (cb + 1 <= bot_clip_val) {
+                size_t dn = last_pix + wstride;
+                buf[dn] = 2;
+                cw[dn] = cw[last_pix];
+                if (expand) rgb[dn] = rgb[last_pix];
+            }
+        }
+
+        /* Column clip update */
+        if (ctx->update_column_clip) {
+            int occ_top = ct, occ_bot = cb;
+            if (ct > top_clip_val) occ_top = ct - 1;
+            if (cb + 1 <= bot_clip_val) occ_bot = cb + 1;
+            renderer_column_clip_add_span(x, occ_top, occ_bot, col_z);
+            if (do_ext_l) renderer_column_clip_add_span(x - 1, ct, cb, col_z);
+            if (do_ext_r) renderer_column_clip_add_span(x + 1, ct, cb, col_z);
+        }
+    }
 }
 
 /* Reference Z used to project two-level zone split height to screen Y (same scale as orp->z). */
@@ -3356,44 +3280,14 @@ static void renderer_draw_wall_ctx(RenderSliceContext *ctx,
     int64_t tex_over_z_delta_fp = tex_over_z2_fp - tex_over_z1_fp;
     int32_t bright_delta = (int32_t)right_brightness - (int32_t)left_brightness;
 
-    for (int screen_x = draw_start; screen_x <= draw_end; screen_x++) {
-        /* Interpolate directly from full-span numerator to avoid 16-bit t quantization.
-         * This removes angle-dependent texcoord jitter when wall spans get very large. */
-        int64_t col_num = (int64_t)(screen_x - scr_x1);
-        if (col_num < 0) col_num = 0;
-        if (col_num > span) col_num = span;
-
-        int64_t inv_z_fp = inv_z1_fp + (inv_z_delta_fp * col_num) / span;
-        if (inv_z_fp <= 0) inv_z_fp = 1;
-        /* Rounded reciprocal: closer to true z than INVZ_ONE/inv_z truncation alone. */
-        int32_t col_z = (int32_t)((INVZ_ONE + inv_z_fp / 2) / inv_z_fp);
-        if (col_z < 1) col_z = 1;
-
-        int32_t wall_bright = left_brightness + (int32_t)((int64_t)bright_delta * col_num / span);
-        int amiga_d6 = (col_z >> 7) + (wall_bright * 2);
-        if (amiga_d6 < 0) amiga_d6 = 0;
-        if (amiga_d6 > 64) amiga_d6 = 64;
-
-        int y_top = wall_proj_y_screen_invz(top, inv_z_fp, g_renderer.proj_y_scale, g_renderer.height);
-        int y_bot = wall_proj_y_screen_invz(bot, inv_z_fp, g_renderer.proj_y_scale, g_renderer.height);
-        /* Strict Amiga parity: do not apply port-side wall-top seam expansion. */
-        int ext = 0;
-        int y_top_draw = y_top - ext;
-
-        /* tex = (tex/z) / (1/z). Keep full 8.24 precision to reduce angle jitter. */
-        int64_t tex_over_z_fp = tex_over_z1_fp + (tex_over_z_delta_fp * col_num) / span;
-        int64_t tex_t_fp64 = (tex_over_z_fp * INVZ_ONE) / inv_z_fp; /* 8.24 */
-        int32_t tex_t_int = (int32_t)(tex_t_fp64 >> 24);
-        int tex_col = ((int32_t)(tex_t_int & horand)) + fromtile;
-
-        /* Switch walls: depth bias so they draw in front of the wall behind them. */
-        int32_t depth_z = col_z;
-        if (tex_id == SWITCHES_WALL_TEX_ID && col_z > 16) depth_z = col_z - 16;
-
-        draw_wall_column(ctx, screen_x, y_top_draw, y_bot, y_top, tex_col, texture,
-                         amiga_d6, valand, valshift, totalyoff, depth_z,
-                         wall_height_for_tex, tex_id, d6_max);
-    }
+    draw_wall_rasterize_segment(ctx,
+                                draw_start, draw_end, scr_x1, span,
+                                inv_z1_fp, inv_z_delta_fp,
+                                tex_over_z1_fp, tex_over_z_delta_fp,
+                                (int32_t)left_brightness, bright_delta,
+                                top, bot, texture,
+                                valand, valshift, horand, totalyoff, fromtile,
+                                tex_id, wall_height_for_tex, d6_max);
 }
 
 void renderer_draw_wall(int32_t x1, int32_t z1, int32_t x2, int32_t z2,
