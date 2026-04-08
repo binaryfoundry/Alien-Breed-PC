@@ -1721,21 +1721,23 @@ static int renderer_take_clip_trace_slot(void)
     return 0;
 }
 
-/* Project rotated X/Z to current render pixel-space X, matching wall path math. */
+/* Project rotated X/Z to current render pixel-space X, matching wall path math.
+ * vz is in 24.8 fixed-point (ROT_Z_FRAC_BITS fractional bits). */
 static inline int project_x_to_pixels(int32_t vx, int32_t vz)
 {
     if (vz <= 0) return (vx >= 0) ? g_renderer.width : -g_renderer.width;
     int center_x = (g_renderer.width * 47) / 96;
     int proj_x = renderer_proj_x_scale_px();
-    return (int)((int64_t)vx * (int64_t)proj_x / (int64_t)vz) + center_x;
+    return (int)(((int64_t)vx * (int64_t)proj_x << ROT_Z_FRAC_BITS) / (int64_t)vz) + center_x;
 }
 
 /* Project world Y to current render pixel-space Y using nearest-pixel rounding.
- * Matching wall/floor rounding avoids 1px seams along shared edges. */
+ * Matching wall/floor rounding avoids 1px seams along shared edges.
+ * vz is in 24.8 fixed-point (ROT_Z_FRAC_BITS fractional bits). */
 static inline int project_y_to_pixels_round(int32_t vy, int32_t vz, int32_t proj_y_scale, int center_y)
 {
     int64_t den = (vz > 0) ? (int64_t)vz : 1;
-    int64_t num = (int64_t)vy * (int64_t)proj_y_scale * (int64_t)RENDER_SCALE;
+    int64_t num = ((int64_t)vy * (int64_t)proj_y_scale * (int64_t)RENDER_SCALE) << ROT_Z_FRAC_BITS;
     int64_t q = (num >= 0) ? ((num + den / 2) / den) : ((num - den / 2) / den);
     return (int)q + center_y;
 }
@@ -2669,29 +2671,29 @@ static void rotate_one_point(RendererState *r, const uint8_t *pts, int idx)
 
     /* Rotation (from ASM):
      * view_x = dx * cos - dz * sin    (d2 = d0*d6 - d1*d6_swapped)
-     * view_z = dx * sin + dz * cos    (d1 = d0*d6_swapped + d1*d6) */
+     * view_z = dx * sin + dz * cos    (d1 = d0*d6_swapped + d1*d6)
+     *
+     * Amiga used swap (>>16) then <<7 for X, losing 7 fractional bits.
+     * We keep full precision: (vx*2) >> 9 == (vx>>16)<<7 but without
+     * the intermediate int16 truncation. Z is stored in 24.8 fixed-point
+     * instead of integer to eliminate single-step jitter in projection. */
     int32_t vx = (int32_t)dx * cos_v - (int32_t)dz * sin_v;
     vx <<= 1;              /* add.l d2,d2 in ASM */
-    int16_t vx16 = (int16_t)(vx >> 16);  /* swap d2 */
-    int32_t vx_fine = (int32_t)vx16 << 7; /* asl.l #7 */
-    vx_fine += r->xwobble;
+    int32_t vx_fine = (vx >> 9) + r->xwobble;
 
     int32_t vz = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
     vz <<= 2;              /* asl.l #2 in ASM */
-    int16_t vz16 = (int16_t)(vz >> 16);  /* swap d1 */
 
     r->rotated[idx].x = vx_fine;
-    r->rotated[idx].z = (int32_t)vz16;
+    r->rotated[idx].z = vz >> (16 - ROT_Z_FRAC_BITS);
 
-    /* Project to screen column in Amiga 96-column space.
-     * ASM: divs d1,d2 ; add.w #47,d2 */
+    /* Legacy on_screen: Amiga 96-column projection (kept for portal clip code). */
+    int16_t vz16 = (int16_t)(vz >> 16);
     if (vz16 > 0) {
         int32_t screen_x = (vx_fine / vz16) + 47;
         r->on_screen[idx].screen_x = (int16_t)screen_x;
         r->on_screen[idx].flags = 0;
     } else {
-        /* Behind camera.
-         * Amiga uses hard edge sentinels (0 or right edge), with tst.w on d2. */
         r->on_screen[idx].screen_x = (int16_t)(((int16_t)vx_fine > 0) ? 96 : 0);
         r->on_screen[idx].flags = 1;
     }
@@ -2806,20 +2808,17 @@ void renderer_rotate_object_pts(GameState *state)
         int16_t dx = (int16_t)(px - cam_x);
         int16_t dz = (int16_t)(pz - cam_z);
 
-        /* Same rotation as level points */
+        /* Same rotation as level points — full-precision X and 24.8 Z */
         int32_t vx = (int32_t)dx * cos_v - (int32_t)dz * sin_v;
         vx <<= 1;
-        int16_t vx16 = (int16_t)(vx >> 16);
 
         int32_t vz = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
         vz <<= 2;
-        int16_t vz16 = (int16_t)(vz >> 16);
 
-        int32_t vx_fine = (int32_t)vx16 << 7;
-        vx_fine += r->xwobble;
+        int32_t vx_fine = (vx >> 9) + r->xwobble;
 
-        r->obj_rotated[pt].x = vx16;
-        r->obj_rotated[pt].z = (int32_t)vz16;
+        r->obj_rotated[pt].x = (int16_t)(vx >> 16);
+        r->obj_rotated[pt].z = vz >> (16 - ROT_Z_FRAC_BITS);
         r->obj_rotated[pt].x_fine = vx_fine;
     }
 }
@@ -3219,15 +3218,14 @@ static void renderer_draw_wall_ctx(RenderSliceContext *ctx,
     int32_t cx2 = x2, cz2 = z2;
     int16_t ct1 = tex_start, ct2 = tex_end;
 
-    /* Amiga wall clip tests use z>0; keep near plane at 1 for parity. */
-    const int32_t NEAR_PLANE = 1;
+    /* Z values are 24.8 fixed-point; near plane = 1 in world units = ROT_Z_ONE in fp. */
+    const int32_t NEAR_PLANE = ROT_Z_FROM_INT(1);
     
     if (cz1 < NEAR_PLANE) {
-        /* Clip left endpoint to near plane */
         int32_t dz = cz2 - cz1;
         if (dz == 0) { cz1 = NEAR_PLANE; cx1 = (int16_t)((cx1 + cx2) / 2); ct1 = (int16_t)((ct1 + ct2) / 2); }
         else {
-            int32_t t = (NEAR_PLANE - cz1) * 65536 / dz;
+            int32_t t = (int32_t)((int64_t)(NEAR_PLANE - cz1) * 65536 / dz);
             cx1 = (int32_t)(cx1 + (int64_t)(cx2 - cx1) * t / 65536);
             cz1 = NEAR_PLANE;
             ct1 = (int16_t)(ct1 + (int32_t)(ct2 - ct1) * t / 65536);
@@ -3237,7 +3235,7 @@ static void renderer_draw_wall_ctx(RenderSliceContext *ctx,
         int32_t dz = cz1 - cz2;
         if (dz == 0) { cz2 = NEAR_PLANE; cx2 = cx1; ct2 = ct1; }
         else {
-            int32_t t = (NEAR_PLANE - cz2) * 65536 / dz;
+            int32_t t = (int32_t)((int64_t)(NEAR_PLANE - cz2) * 65536 / dz);
             cx2 = (int32_t)(cx2 + (int64_t)(cx1 - cx2) * t / 65536);
             cz2 = NEAR_PLANE;
             ct2 = (int16_t)(ct2 + (int32_t)(ct1 - ct2) * t / 65536);
@@ -3272,12 +3270,14 @@ static void renderer_draw_wall_ctx(RenderSliceContext *ctx,
     if (span <= 0) span = 1;
 
     /* Perspective-correct: interpolate 1/z and tex/z with higher fixed-point precision.
-     * 16.16 inv_z causes visible quantization on far walls; use 8.24 here. */
-    const int64_t INVZ_ONE = (1LL << 24); /* 8.24 */
-    int64_t inv_z1_fp = INVZ_ONE / cz1;
-    int64_t inv_z2_fp = INVZ_ONE / cz2;
-    int64_t tex_over_z1_fp = (int64_t)ct1 * INVZ_ONE / cz1;
-    int64_t tex_over_z2_fp = (int64_t)ct2 * INVZ_ONE / cz2;
+     * cz1/cz2 are 24.8 fixed-point Z; scale INVZ numerator by ROT_Z_ONE so the
+     * resulting inv_z is in the same scale as the old integer-Z path. */
+    const int64_t INVZ_ONE = (1LL << 24); /* 8.24 — used in the rasterizer denominator */
+    const int64_t INVZ_FP_SCALE = ((int64_t)INVZ_ONE << ROT_Z_FRAC_BITS);
+    int64_t inv_z1_fp = INVZ_FP_SCALE / cz1;
+    int64_t inv_z2_fp = INVZ_FP_SCALE / cz2;
+    int64_t tex_over_z1_fp = (int64_t)ct1 * INVZ_FP_SCALE / cz1;
+    int64_t tex_over_z2_fp = (int64_t)ct2 * INVZ_FP_SCALE / cz2;
     int64_t inv_z_delta_fp = inv_z2_fp - inv_z1_fp;
     int64_t tex_over_z_delta_fp = tex_over_z2_fp - tex_over_z1_fp;
     int32_t bright_delta = (int32_t)right_brightness - (int32_t)left_brightness;
@@ -5168,7 +5168,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             /* Amiga parity:
              * - BitMapObj: near reject at z <= 50
              * - PolygonObj: near reject at z <= 0 (see PolygonObj ble polybehind) */
-            int near_clip_z = is_poly_object ? 0 : SPRITE_NEAR_CLIP_Z;
+            int32_t near_clip_z = is_poly_object ? 0 : ROT_Z_FROM_INT(SPRITE_NEAR_CLIP_Z);
             if (orp->z <= near_clip_z) continue;
         }
 
@@ -5176,7 +5176,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         {
             int world_w = (int)obj[6];
             if (world_w <= 0) world_w = 32;
-            int z_for_size = (orp->z > 0) ? orp->z : 1;
+            int z_for_size = ROT_Z_INT(orp->z);
+            if (z_for_size < 1) z_for_size = 1;
             int sprite_w_est = (int)((int32_t)world_w * sprite_scale_x_for_estimate / z_for_size) * SPRITE_SIZE_MULTIPLIER;
             if (sprite_w_est < 1) sprite_w_est = 1;
             int scr_x_est = project_x_to_pixels(orp->x_fine, orp->z);
@@ -5244,12 +5245,13 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                     continue;
             }
             ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
-            if (orp->z <= SPRITE_NEAR_CLIP_Z) continue;
+            if (orp->z <= ROT_Z_FROM_INT(SPRITE_NEAR_CLIP_Z)) continue;
 
             {
                 int world_w = (int)obj[6];
                 if (world_w <= 0) world_w = 32;
-                int z_for_size = (orp->z > 0) ? orp->z : 1;
+                int z_for_size = ROT_Z_INT(orp->z);
+                if (z_for_size < 1) z_for_size = 1;
                 int sprite_w_est = (int)((int32_t)world_w * sprite_scale_x_for_estimate / z_for_size) * SPRITE_SIZE_MULTIPLIER;
                 if (sprite_w_est < 1) sprite_w_est = 1;
                 int scr_x_est = project_x_to_pixels(orp->x_fine, orp->z);
@@ -5318,11 +5320,12 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int16_t dz = (int16_t)(state->explosions[ei].z - cam_z);
             int32_t vz = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
             vz <<= 2;
-            int32_t orp_z = (int32_t)(int16_t)(vz >> 16);
-            if (orp_z <= SPRITE_NEAR_CLIP_Z) continue;
+            int32_t orp_z = vz >> (16 - ROT_Z_FRAC_BITS);
+            if (orp_z <= ROT_Z_FROM_INT(SPRITE_NEAR_CLIP_Z)) continue;
 
             {
-                int z_for_size = (orp_z > 0) ? orp_z : 1;
+                int z_for_size = ROT_Z_INT(orp_z);
+                if (z_for_size < 1) z_for_size = 1;
                 int scale = (int)state->explosions[ei].size_scale;
                 if (scale <= 0) scale = 100;
                 int expl_w_est = (100 * scale) / 100;
@@ -5332,9 +5335,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 if (sprite_w_est < 1) sprite_w_est = 1;
                 int32_t vx = (int32_t)dx * cos_v - (int32_t)dz * sin_v;
                 vx <<= 1;
-                int16_t vx16 = (int16_t)(vx >> 16);
-                int32_t vx_fine = (int32_t)vx16 << 7;
-                vx_fine += r->xwobble;
+                int32_t vx_fine = (vx >> 9) + r->xwobble;
                 int scr_x_est = project_x_to_pixels(vx_fine, orp_z);
                 int spr_l = scr_x_est - sprite_w_est / 2;
                 int spr_r = spr_l + sprite_w_est;
@@ -5440,20 +5441,17 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int16_t dz = (int16_t)(state->explosions[ei].z - cam_z);
             int32_t vx = (int32_t)dx * cos_v - (int32_t)dz * sin_v;
             vx <<= 1;
-            int16_t vx16 = (int16_t)(vx >> 16);
             int32_t vz = (int32_t)dx * sin_v + (int32_t)dz * cos_v;
             vz <<= 2;
-            int16_t vz16 = (int16_t)(vz >> 16);
-            int32_t vx_fine = (int32_t)vx16 << 7;
-            vx_fine += r->xwobble;
-            int32_t orp_z = (int32_t)vz16;
-            if (orp_z <= SPRITE_NEAR_CLIP_Z) continue;
+            int32_t vx_fine = (vx >> 9) + r->xwobble;
+            int32_t orp_z = vz >> (16 - ROT_Z_FRAC_BITS);
+            if (orp_z <= ROT_Z_FROM_INT(SPRITE_NEAR_CLIP_Z)) continue;
 
-            int scr_x = project_x_to_pixels(vx_fine, (int32_t)orp_z);
+            int scr_x = project_x_to_pixels(vx_fine, orp_z);
             int32_t rel_y_8 = (state->explosions[ei].y_floor - y_off) >> WORLD_Y_FRAC_BITS;
             int center_y = r->height / 2;
-            int scr_y = (int)((int64_t)rel_y_8 * (int64_t)r->proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp_z) + center_y;
-            int z_for_size = orp_z;
+            int scr_y = (int)(((int64_t)rel_y_8 * (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE << ROT_Z_FRAC_BITS) / (int64_t)orp_z) + center_y;
+            int z_for_size = ROT_Z_INT(orp_z);
             if (z_for_size < 1) z_for_size = 1;
             int expl_h_port = explosion_world_h_to_port(r, expl_h, explosion_sprite_scale_x);
             int sprite_w = (int)((int32_t)expl_w * explosion_sprite_scale_x / z_for_size) * SPRITE_SIZE_MULTIPLIER;
@@ -5470,14 +5468,16 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 down_strip = expl_ft[frame_num].down_strip;
             }
 
-            int32_t clip_top_y = (int)((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE / orp_z) + center_y;
-            int32_t clip_bot_y = (int)((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE / orp_z) + center_y;
-            int bright = (orp_z >> 7);
+            int32_t clip_top_y = (int)(((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE << ROT_Z_FRAC_BITS) / orp_z) + center_y;
+            int32_t clip_bot_y = (int)(((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE << ROT_Z_FRAC_BITS) / orp_z) + center_y;
+            int bright = (ROT_Z_INT(orp_z) >> 7);
             const uint8_t *obj_pal = r->sprite_pal_data[expl_vect];
             size_t obj_pal_size = r->sprite_pal_size[expl_vect];
+            {   int32_t orp_z_i16 = ROT_Z_INT(orp_z);
+                if (orp_z_i16 > 32767) orp_z_i16 = 32767;
             renderer_draw_sprite_ctx(ctx, (int16_t)scr_x, (int16_t)scr_y,
                                      (int16_t)sprite_w, (int16_t)sprite_h,
-                                     (int16_t)(orp_z > 32767 ? 32767 : orp_z),
+                                     (int16_t)orp_z_i16,
                                      r->sprite_wad[expl_vect], r->sprite_wad_size[expl_vect],
                                      r->sprite_ptr[expl_vect], r->sprite_ptr_size[expl_vect],
                                      obj_pal, obj_pal_size,
@@ -5485,6 +5485,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                      32, 32,
                                      (int16_t)bright, expl_vect,
                                      clip_top_y, clip_bot_y);
+            }
             continue;
         }
 
@@ -5517,24 +5518,22 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
 
         /* Use actual view Z for size so sprites scale at all distances. Guard only vs div-by-zero. */
-        int32_t z_for_size = orp->z;
+        int32_t z_for_size = ROT_Z_INT(orp->z);
         if (z_for_size < 1) z_for_size = 1;
 
-        /* Project Y boundaries from room top/bottom (same PROJ_Y_SCALE as walls). */
-        int32_t clip_top_y = (int)((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * g_renderer.proj_y_scale * RENDER_SCALE / orp->z) + (g_renderer.height / 2);
-        int32_t clip_bot_y = (int)((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * g_renderer.proj_y_scale * RENDER_SCALE / orp->z) + (g_renderer.height / 2);
+        /* Project Y boundaries from room top/bottom (same PROJ_Y_SCALE as walls).
+         * orp->z is 24.8 fixed-point; shift numerator to compensate. */
+        int32_t clip_top_y = (int)(((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * g_renderer.proj_y_scale * RENDER_SCALE << ROT_Z_FRAC_BITS) / orp->z) + (g_renderer.height / 2);
+        int32_t clip_bot_y = (int)(((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * g_renderer.proj_y_scale * RENDER_SCALE << ROT_Z_FRAC_BITS) / orp->z) + (g_renderer.height / 2);
         if (clip_top_y >= clip_bot_y) continue;
 
         /* Project to screen X (PROJ_X_SCALE/2 = horizontal focal length). */
         int32_t obj_vx_fine = orp->x_fine;
-        int scr_x = project_x_to_pixels(obj_vx_fine, (int32_t)orp->z);
+        int scr_x = project_x_to_pixels(obj_vx_fine, orp->z);
 
-        /* Get brightness + distance attenuation
-         * ASM: asr.w #7,d6 ; add.w (a0)+,d6 (distance>>7 + obj brightness) */
-        /* Raw brightness d6 = (z >> 7) + objVectBright.
-         * Passed to renderer_draw_sprite which uses objscalecols to map to palette level. */
-        int16_t obj_bright = rd16(obj + 2);  /* objVectBright */
-        int bright = (orp->z >> 7) + obj_bright;
+        /* Get brightness + distance attenuation (uses integer Z) */
+        int16_t obj_bright = rd16(obj + 2);
+        int bright = (ROT_Z_INT(orp->z) >> 7) + obj_bright;
         if (bright < 0) bright = 0;
 
         int8_t obj_number = (int8_t)obj[16];
@@ -5679,17 +5678,16 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         int32_t rel_y = (((int32_t)obj_y) << 7) - y_off;
         int32_t rel_y_8 = rel_y >> WORLD_Y_FRAC_BITS;
         int center_y = g_renderer.height / 2;
-        int scr_y = (int)((int64_t)rel_y_8 * (int64_t)g_renderer.proj_y_scale * (int32_t)RENDER_SCALE / (int32_t)orp->z) + center_y;
+        int scr_y = (int)(((int64_t)rel_y_8 * (int64_t)g_renderer.proj_y_scale * (int64_t)RENDER_SCALE << ROT_Z_FRAC_BITS) / (int64_t)orp->z) + center_y;
 
-        /* Use dedicated .pal if loaded; no fallback to WAD header because
-         * sprite .pal format (15 levels x 32 x 2 bytes = 960) differs from
-         * the wall LUT format in the WAD header (17 blocks x 32 x 2 = 2048). */
         const uint8_t *obj_pal = r->sprite_pal_data[vect_num];
         size_t obj_pal_size = r->sprite_pal_size[vect_num];
 
+        {   int32_t orp_z_int = ROT_Z_INT(orp->z);
+            if (orp_z_int > 32767) orp_z_int = 32767;
         renderer_draw_sprite_ctx(ctx, (int16_t)scr_x, (int16_t)scr_y,
                                  (int16_t)sprite_w, (int16_t)sprite_h,
-                                 (int16_t)(orp->z > 32767 ? 32767 : orp->z),
+                                 (int16_t)orp_z_int,
                                  r->sprite_wad[vect_num], r->sprite_wad_size[vect_num],
                                  r->sprite_ptr[vect_num], r->sprite_ptr_size[vect_num],
                                  obj_pal, obj_pal_size,
@@ -5697,6 +5695,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                  src_cols, src_rows,
                                  (int16_t)bright, vect_num,
                                  clip_top_y, clip_bot_y);
+        }
     }
 }
 
@@ -6046,7 +6045,7 @@ static void renderer_tessellate_sky_ceiling_ctx(RenderSliceContext *ctx,
     int y_max = half_h - 1;
     if (y_max > ctx->bot_clip) y_max = ctx->bot_clip;
 
-    const int32_t NEAR = 1;
+    const int32_t NEAR = ROT_Z_FROM_INT(1);
     int32_t rel_h_8 = rel_h >> WORLD_Y_FRAC_BITS;
 
     for (int s = 0; s < sides; s++) {
@@ -6062,12 +6061,12 @@ static void renderer_tessellate_sky_ceiling_ctx(RenderSliceContext *ctx,
         int32_t ez1 = z1, ez2 = z2, ex1 = x1, ex2 = x2;
         if (ez1 < NEAR) {
             int32_t dz = ez2 - ez1;
-            ex1 = dz ? (x1 + (int32_t)((int64_t)(x2-x1)*((NEAR-ez1)<<16)/dz/65536)) : (x1+x2)/2;
+            ex1 = dz ? (x1 + (int32_t)((int64_t)(x2-x1) * (NEAR-ez1) / dz)) : (x1+x2)/2;
             ez1 = NEAR;
         }
         if (ez2 < NEAR) {
             int32_t dz = ez1 - ez2;
-            ex2 = dz ? (x2 + (int32_t)((int64_t)(x1-x2)*((NEAR-ez2)<<16)/dz/65536)) : (x1+x2)/2;
+            ex2 = dz ? (x2 + (int32_t)((int64_t)(x1-x2) * (NEAR-ez2) / dz)) : (x1+x2)/2;
             ez2 = NEAR;
         }
 
@@ -6726,8 +6725,9 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
              * screen X values (otherwise on_screen[].screen_x is garbage and
              * the edge table doesn't reach the screen sides). */
             /* Water needs a tighter near clip than floor/roof so a surface just
-             * above the camera can still project up to the top rows. */
-            const int32_t FLOOR_NEAR = 1;
+             * above the camera can still project up to the top rows.
+             * Z values are 24.8 fixed-point. */
+            const int32_t FLOOR_NEAR = ROT_Z_FROM_INT(1);
             for (int s = 0; s < sides; s++) {
                 int i1 = pt_indices[s];
                 int i2 = pt_indices[(s + 1) % sides];
@@ -6755,13 +6755,13 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                 if (ez1 < FLOOR_NEAR) {
                     int32_t dz = ez2 - ez1;
                     if (dz != 0) {
-                        int32_t t = ((int32_t)(FLOOR_NEAR - ez1) << 16) / dz;
+                        int32_t t = (int32_t)((int64_t)(FLOOR_NEAR - ez1) * 65536 / dz);
                         ex1 = rx1 + (int32_t)((int64_t)(rx2 - rx1) * t / 65536);
                         if (use_gour_floor) {
                             eb1 = eb1 + (int32_t)((int64_t)(eb2 - eb1) * t / 65536);
                         }
                     } else {
-                        ex1 = (rx1 + rx2) / 2;  /* degenerate edge: use midpoint */
+                        ex1 = (rx1 + rx2) / 2;
                         if (use_gour_floor) eb1 = (eb1 + eb2) / 2;
                     }
                     ez1 = FLOOR_NEAR;
@@ -6769,7 +6769,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                 if (ez2 < FLOOR_NEAR) {
                     int32_t dz = ez1 - ez2;
                     if (dz != 0) {
-                        int32_t t = ((int32_t)(FLOOR_NEAR - ez2) << 16) / dz;
+                        int32_t t = (int32_t)((int64_t)(FLOOR_NEAR - ez2) * 65536 / dz);
                         ex2 = rx2 + (int32_t)((int64_t)(rx1 - rx2) * t / 65536);
                         if (use_gour_floor) {
                             eb2 = eb2 + (int32_t)((int64_t)(eb1 - eb2) * t / 65536);
@@ -7247,8 +7247,8 @@ static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
                         int32_t dz = cz - pz;
                         if (dz > 0) {
                             int32_t clip_x = r->rotated[pt].x +
-                                (int32_t)((int64_t)(r->rotated[cpt].x - r->rotated[pt].x) * (1 - pz) / dz);
-                            int sxpx = project_x_to_pixels(clip_x, 1);
+                                (int32_t)((int64_t)(r->rotated[cpt].x - r->rotated[pt].x) * (ROT_Z_FROM_INT(1) - pz) / dz);
+                            int sxpx = project_x_to_pixels(clip_x, ROT_Z_FROM_INT(1));
                             if (sxpx > left_clip_px)
                                 left_clip_px = sxpx;
                         }
@@ -7321,8 +7321,8 @@ static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
                         int32_t dz = cz - pz;
                         if (dz > 0) {
                             int32_t clip_x = r->rotated[pt].x +
-                                (int32_t)((int64_t)(r->rotated[cpt].x - r->rotated[pt].x) * (1 - pz) / dz);
-                            int sxpx = project_x_to_pixels(clip_x, 1);
+                                (int32_t)((int64_t)(r->rotated[cpt].x - r->rotated[pt].x) * (ROT_Z_FROM_INT(1) - pz) / dz);
+                            int sxpx = project_x_to_pixels(clip_x, ROT_Z_FROM_INT(1));
                             int sxpx_r = sxpx + proj_x_scale;
                             if (sxpx_r < right_clip_px)
                                 right_clip_px = sxpx_r;

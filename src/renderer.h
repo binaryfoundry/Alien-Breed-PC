@@ -86,6 +86,14 @@
 #define WORLD_Y_FRAC_BITS  8
 #define WORLD_Y_SUBUNITS   (1 << WORLD_Y_FRAC_BITS)
 
+/* Rotation Z precision: view-space Z stored as 24.8 fixed-point instead of integer.
+ * Eliminates single-integer-step jitter in wall edges, floor/ceiling boundaries,
+ * and sprite positions that was visible at high render resolutions. */
+#define ROT_Z_FRAC_BITS    8
+#define ROT_Z_ONE           (1 << ROT_Z_FRAC_BITS)
+#define ROT_Z_INT(z)        ((int32_t)(z) >> ROT_Z_FRAC_BITS)
+#define ROT_Z_FROM_INT(i)   ((int32_t)(i) << ROT_Z_FRAC_BITS)
+
 /* Sprite size: (world * SPRITE_SIZE_SCALE / z) * SPRITE_SIZE_MULTIPLIER.
  * Keep multiplier at 1 so billboard scale matches the existing projection path. */
 #define SPRITE_SIZE_SCALE      (128 * RENDER_SCALE)
@@ -104,8 +112,8 @@
 #define MAX_OBJ_POINTS   1024
 
 typedef struct {
-    int32_t x;       /* View-space X (fixed 16.16 or scaled) */
-    int32_t z;       /* View-space Z (depth) */
+    int32_t x;       /* View-space X (scaled, high precision: vx>>9 + wobble) */
+    int32_t z;       /* View-space Z (depth, 24.8 fixed-point — use ROT_Z_INT for integer) */
 } RotatedPoint;
 
 typedef struct {
@@ -114,9 +122,9 @@ typedef struct {
 } OnScreenPoint;
 
 typedef struct {
-    int16_t x;       /* View-space X (16-bit) */
-    int32_t z;       /* View-space Z (depth, 32-bit so far sprites scale) */
-    int32_t x_fine;  /* View-space X (high precision for xwobble) */
+    int16_t x;       /* View-space X (16-bit, legacy — prefer x_fine) */
+    int32_t z;       /* View-space Z (depth, 24.8 fixed-point — use ROT_Z_INT for integer) */
+    int32_t x_fine;  /* View-space X (high precision: vx>>9 + wobble) */
 } ObjRotatedPoint;
 
 /* -----------------------------------------------------------------------

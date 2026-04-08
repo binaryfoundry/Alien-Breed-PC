@@ -444,7 +444,7 @@ int32_t poly_object_front_z_for_sort(const uint8_t *obj, const ObjRotatedPoint *
         int16_t lx = vec_rd16(pts + i * 6 + 0);
         int16_t lz = vec_rd16(pts + i * 6 + 4);
         int16_t rz = (int16_t)(((int32_t)lx * cos_v + (int32_t)lz * sin_v) >> 14);
-        int32_t world_z = orp->z + (int32_t)rz;
+        int32_t world_z = orp->z + ((int32_t)rz << ROT_Z_FRAC_BITS);
         if (world_z < min_world_z) min_world_z = world_z;
     }
 
@@ -475,10 +475,8 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
     /* ---- 1. Brightness (objBright) ----------------------------------- */
     /* Amiga: d3 = zpos>>7; d2 = objVectBright + d3. */
     int16_t obj_bright = vec_rd16(obj + 2);    /* objVectBright */
-    int32_t z_mid      = orp->z;
-    /* Amiga keeps raw brightness index here (distance term + objVectBright)
-     * and only maps/clamps when indexing objscalecols in doapoly. */
-    int obj_bright_base = (int)(z_mid >> 7) + (int)obj_bright;
+    int32_t z_mid      = orp->z;              /* 24.8 fixed-point */
+    int obj_bright_base = (int)(ROT_Z_INT(z_mid) >> 7) + (int)obj_bright;
 
     /* ---- 2. Relative rotation angle ---------------------------------- */
     /* Amiga: angpos = (objAng - 2048 - viewer_angpos) & 8191
@@ -564,7 +562,7 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
     for (int i = 0; i < np; i++) {
         int32_t worldX = boxrot[i].x + xpos_mid;
         int32_t worldY = boxrot[i].y + y_adjust;
-        int32_t worldZ = (int32_t)boxrot[i].z + zpos_mid;
+        int32_t worldZ = ((int32_t)boxrot[i].z << ROT_Z_FRAC_BITS) + zpos_mid;
         world[i].x = worldX;
         world[i].y = worldY;
         world[i].z = worldZ;
@@ -590,10 +588,11 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
         int sort_pt = (int)vo->part_sort_off[p] / 10;
         if (sort_pt < 0 || sort_pt >= np) sort_pt = 0;
 
-        /* Match Amiga data source: translated coords (our world[]). */
+        /* Match Amiga data source: translated coords (our world[]).
+         * world[].z is 24.8 fixed-point; convert to integer for the key. */
         int16_t sx = (int16_t)(world[sort_pt].x >> 7);
         int16_t sy = (int16_t)(world[sort_pt].y >> 7);
-        int16_t sz = (int16_t)world[sort_pt].z;
+        int16_t sz = (int16_t)ROT_Z_INT(world[sort_pt].z);
         int32_t key = (int32_t)sx * (int32_t)sx +
                       (int32_t)sy * (int32_t)sy +
                       (int32_t)sz * (int32_t)sz;
@@ -686,7 +685,7 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
 
             PolyVertex clipped_poly[MAX_CLIP_VERTS];
             int clipped_n = clip_polygon_to_near(in_poly, num_verts, clipped_poly,
-                                                 MAX_CLIP_VERTS, OBJ_NEAR_Z);
+                                                 MAX_CLIP_VERTS, ROT_Z_FROM_INT(OBJ_NEAR_Z));
             if (clipped_n < 3) continue;
 
             int sx[MAX_CLIP_VERTS], sy[MAX_CLIP_VERTS];
@@ -696,10 +695,10 @@ void draw_3d_vector_object(const uint8_t *obj, const ObjRotatedPoint *orp, GameS
             for (int v = 0; v < clipped_n; v++) {
                 int32_t wz = clipped_poly[v].z;
                 if (wz <= 0) wz = 1;
-                sx[v] = (int)(((int64_t)clipped_poly[v].x * (int64_t)proj_xs) / (int64_t)wz) + center_x;
-                sy[v] = (int)((int64_t)(clipped_poly[v].y >> WORLD_Y_FRAC_BITS) * proj_ys * RENDER_SCALE
-                              / wz) + half_h;
-                sz[v] = wz;
+                sx[v] = (int)(((int64_t)clipped_poly[v].x * (int64_t)proj_xs << ROT_Z_FRAC_BITS) / (int64_t)wz) + center_x;
+                sy[v] = (int)(((int64_t)(clipped_poly[v].y >> WORLD_Y_FRAC_BITS) * proj_ys * RENDER_SCALE
+                              << ROT_Z_FRAC_BITS) / wz) + half_h;
+                sz[v] = ROT_Z_INT(wz);
                 su[v] = clipped_poly[v].u;
                 svt[v] = clipped_poly[v].v;
                 int vb = (int)clipped_poly[v].vb;
