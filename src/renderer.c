@@ -3045,22 +3045,37 @@ static void draw_wall_rasterize_segment(
     const uint8_t *pal = ctx->cur_wall_pal;
     const int has_tex_pal = (texture != NULL && pal != NULL);
 
-    /* --- Column interpolation ---
-     * inv_z_fp is computed exactly per column (accumulated step error propagates into projected
-     * screen Y with coefficient |top_proj|/INVZ_ONE, causing ~1px misalignment per 100 columns).
-     * tex_z and bright use cheap accumulators: their error is divided back by inv_z_fp so
-     * the resulting texture-column / brightness error is sub-pixel / sub-unit. */
+    /* --- Endpoint-anchored interpolation ---
+     * Compute start/end from the full line equation, then walk with extra fractional precision.
+     * This keeps motion stable while preserving accurate segment endpoints when clipping shifts. */
+    enum { INTERP_SUB_BITS = 16 };
     const int64_t start_col = (int64_t)(draw_start - scr_x1);
-    int64_t tex_z_cur  = tex_over_z1_fp  + (tex_over_z_delta_fp * start_col) / span;
-    int64_t bright_fp  = ((int64_t)left_brightness << 16) + (((int64_t)bright_delta << 16) * start_col) / span;
+    const int64_t end_col = (int64_t)(draw_end - scr_x1);
+    const int64_t draw_cols = end_col - start_col;
 
-    const int64_t tex_z_step  = tex_over_z_delta_fp  / span;
-    const int64_t bright_step = ((int64_t)bright_delta << 16) / span;
+    const int64_t inv_z_start = inv_z1_fp + (inv_z_delta_fp * start_col) / span;
+    const int64_t inv_z_end = inv_z1_fp + (inv_z_delta_fp * end_col) / span;
+    const int64_t tex_z_start = tex_over_z1_fp + (tex_over_z_delta_fp * start_col) / span;
+    const int64_t tex_z_end = tex_over_z1_fp + (tex_over_z_delta_fp * end_col) / span;
+    const int64_t bright_start_fp = ((int64_t)left_brightness << 16) +
+                                    (((int64_t)bright_delta << 16) * start_col) / span;
+    const int64_t bright_end_fp = ((int64_t)left_brightness << 16) +
+                                  (((int64_t)bright_delta << 16) * end_col) / span;
+
+    int64_t inv_z_acc = inv_z_start << INTERP_SUB_BITS;
+    int64_t tex_z_acc = tex_z_start << INTERP_SUB_BITS;
+    int64_t bright_acc = bright_start_fp << INTERP_SUB_BITS;
+    int64_t inv_z_step_acc = 0;
+    int64_t tex_z_step_acc = 0;
+    int64_t bright_step_acc = 0;
+    if (draw_cols > 0) {
+        inv_z_step_acc = ((inv_z_end - inv_z_start) << INTERP_SUB_BITS) / draw_cols;
+        tex_z_step_acc = ((tex_z_end - tex_z_start) << INTERP_SUB_BITS) / draw_cols;
+        bright_step_acc = ((bright_end_fp - bright_start_fp) << INTERP_SUB_BITS) / draw_cols;
+    }
 
     for (int screen_x = draw_start; screen_x <= draw_end; screen_x++) {
-        /* Exact inv_z per column — avoids accumulated integer-step error in screen Y projection. */
-        const int64_t col_num = (int64_t)(screen_x - scr_x1);
-        int64_t inv_z_fp = inv_z1_fp + (inv_z_delta_fp * col_num) / span;
+        int64_t inv_z_fp = inv_z_acc >> INTERP_SUB_BITS;
         if (inv_z_fp <= 0) inv_z_fp = 1;
 
         /* 32-bit reciprocal: both INVZ_ONE and inv_z_fp fit in 32 bits for typical Z values */
@@ -3068,7 +3083,7 @@ static void draw_wall_rasterize_segment(
         int32_t col_z = (int32_t)((16777216u + inv_z_u / 2u) / inv_z_u);
         if (col_z < 1) col_z = 1;
 
-        int32_t wall_bright = (int32_t)(bright_fp >> 16);
+        int32_t wall_bright = (int32_t)(bright_acc >> (16 + INTERP_SUB_BITS));
         int amiga_d6 = (col_z >> 7) + (wall_bright * 2);
         if (amiga_d6 < 0) amiga_d6 = 0;
         if (amiga_d6 > d6_max) amiga_d6 = d6_max;
@@ -3079,16 +3094,17 @@ static void draw_wall_rasterize_segment(
         int64_t bnum = bot_proj * inv_z_fp;
         int y_bot_scr = (int)((bnum >= 0 ? (bnum + (INVZ_ONE / 2)) : (bnum - (INVZ_ONE / 2))) / INVZ_ONE) + half_h;
 
-        /* Texture column via perspective divide (tex_z_cur has bounded accumulator error) */
-        int64_t tex_t_fp64 = (tex_z_cur * INVZ_ONE) / inv_z_fp;
+        /* Texture column via perspective divide */
+        int64_t tex_t_fp64 = ((tex_z_acc >> INTERP_SUB_BITS) * INVZ_ONE) / inv_z_fp;
         int tex_col = ((int32_t)(tex_t_fp64 >> 24) & horand) + fromtile;
 
         int32_t depth_z = col_z;
         if (tex_id == SWITCHES_WALL_TEX_ID && col_z > 16) depth_z = col_z - 16;
 
-        /* Step cheap accumulators */
-        tex_z_cur += tex_z_step;
-        bright_fp += bright_step;
+        /* Step interpolators */
+        inv_z_acc += inv_z_step_acc;
+        tex_z_acc += tex_z_step_acc;
+        bright_acc += bright_step_acc;
 
         const int x = screen_x;
 
