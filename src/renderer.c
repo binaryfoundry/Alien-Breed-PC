@@ -3149,9 +3149,12 @@ static void draw_wall_rasterize_segment(
         int32_t tex_step = (int32_t)(h_shifted / wall_pixels);
         int32_t tex_y = (ct - y_top_scr) * tex_step + ((int32_t)yoff_base << 16);
 
-        /* Edge extension flags (constant per column) */
-        const int do_ext_l = (x > ctx->slice_left);
-        const int do_ext_r = (x + 1 < ctx->slice_right);
+        /* Edge extension only on segment boundary columns.  Interior columns
+         * of the same segment are consecutive, so the ±1 extension from one
+         * column is immediately overwritten by the adjacent column's center
+         * pixel — pure redundant overdraw (~67% of wall pixel writes). */
+        const int do_ext_l = (screen_x == draw_start) && (x > ctx->slice_left);
+        const int do_ext_r = (screen_x == draw_end) && (x + 1 < ctx->slice_right);
 
         size_t pix = (size_t)ct * wstride + (size_t)x;
 
