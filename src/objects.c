@@ -1548,6 +1548,8 @@ void objects_update(GameState *state)
         /* Update rendering Y from live zone floor (lift_routine / doors write ToZoneFloor each tick).
          * ObjectDataHandler (Anims.s): objNumber < 0 skips ItsA* — we still skip for decorative 3D
          * (obj[6]==OBJ_3D_SPRITE) so level-authored obj[4] is preserved (e.g. exit sign).
+         * Gas pipes: Amiga ItsAGasPipe never writes objY (4(a0)); height/orientation come from the
+         * level for floor- and ceiling-mounted variants — do not derive Y from zone floor here.
          * Billboard corpses (OBJ_NBR_DEAD, not 3D) must refresh like pickups or they stay fixed
          * while a moving lift changes the floor under them. */
         {
@@ -1560,7 +1562,8 @@ void objects_update(GameState *state)
              * enemies/pickups. Overwriting PLR1/PLR2 here leaves feet-level Y and breaks
              * bullet vs player height tests (ItsABullet vs ColBox half_height). */
             if ((obj_type >= 0 || corpse_on_floor) && !flying_hover &&
-                obj_type != OBJ_NBR_PLR1 && obj_type != OBJ_NBR_PLR2) {
+                obj_type != OBJ_NBR_PLR1 && obj_type != OBJ_NBR_PLR2 &&
+                obj_type != OBJ_NBR_GAS_PIPE) {
                 int16_t obj_zone = OBJ_ZONE(obj);
                 if (obj_zone >= 0 && obj_zone < zone_slots &&
                     state->level.zone_adds && state->level.data) {
