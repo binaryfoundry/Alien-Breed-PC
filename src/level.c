@@ -441,16 +441,23 @@ int level_parse(LevelState *level)
         }
     }
 
-    /* Long 8: Offset to switches - 14 bytes per entry (match standalone), zone at 0, zone < 0 = end. Big-endian. */
-    if (switch_offset > 16) {
-        const uint8_t *sw_src = lg + switch_offset;
-        int16_t zone_id = read_word(sw_src);
-        if (zone_id < 0)
-            level->switch_data = NULL;
-        else
-            level->switch_data = (uint8_t *)(lg + switch_offset);
-    } else {
-        level->switch_data = NULL;
+    /* Long 8: Offset to switches.
+     * Amiga SwitchRoutine iterates a fixed 8 entries (14 bytes each), not a sentinel table.
+     * Individual slots can be disabled with zone_id < 0, including slot 0. */
+    {
+        const size_t switch_table_bytes = 8u * 14u;
+        size_t gbc = level->graphics_byte_count;
+        bool in_range = false;
+        if (switch_offset > 16) {
+            if (gbc == 0) {
+                in_range = true; /* unknown size (e.g. synthetic/test); trust offset */
+            } else if (switch_offset >= 0) {
+                size_t off = (size_t)(uint32_t)switch_offset;
+                if (off <= gbc && switch_table_bytes <= (gbc - off))
+                    in_range = true;
+            }
+        }
+        level->switch_data = in_range ? (uint8_t *)(lg + switch_offset) : NULL;
     }
 
     /* Long 12: Offset to zone graph adds */

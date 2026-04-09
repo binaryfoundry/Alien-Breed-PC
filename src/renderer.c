@@ -6592,19 +6592,30 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
     int16_t viewer_zone = viewer->zone;
     int half_h = g_renderer.height / 2;
 
+    int has_split_water = (zone_water > zone_roof && zone_water < zone_floor);
+
     /* ObjDraw beforewat/afterwat clip bounds (ObjDraw3.ChipRam.s BEFOREWAT and AFTERWAT labels).
-     * Bounds swap depending on whether the viewer is above or below the water plane. */
+     * Bounds swap depending on whether the viewer is above or below the water plane.
+     * In dry/non-split rooms, keep both passes as full-room so authored clip mode 0/1
+     * cannot collapse to a zero-height band. */
     int32_t before_wat_top, before_wat_bot, after_wat_top, after_wat_bot;
-    if (zone_water < y_off) {
-        before_wat_top = zone_roof;
-        before_wat_bot = zone_water;
-        after_wat_top = zone_water;
-        after_wat_bot = zone_floor;
+    if (has_split_water) {
+        if (zone_water < y_off) {
+            before_wat_top = zone_roof;
+            before_wat_bot = zone_water;
+            after_wat_top = zone_water;
+            after_wat_bot = zone_floor;
+        } else {
+            before_wat_top = zone_water;
+            before_wat_bot = zone_floor;
+            after_wat_top = zone_roof;
+            after_wat_bot = zone_water;
+        }
     } else {
-        before_wat_top = zone_water;
+        before_wat_top = zone_roof;
         before_wat_bot = zone_floor;
         after_wat_top = zone_roof;
-        after_wat_bot = zone_water;
+        after_wat_bot = zone_floor;
     }
 
     int zone_has_door_flag = zone_has_door(level->door_data, zone_id);
@@ -7221,7 +7232,6 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
             int is_multi_floor = (zone_upper_gfx > 0) &&
                                  (level->graphics_byte_count == 0 ||
                                   ((size_t)zone_upper_gfx + 2u <= level->graphics_byte_count));
-            int has_split_water = (zone_water > zone_roof && zone_water < zone_floor);
             int ignore_sky_top_clip = (zone_roof < 0) ? 1 : 0;
             int allow_adjacent_spill = 0;
             if (obj_clip_mode == 1) {
