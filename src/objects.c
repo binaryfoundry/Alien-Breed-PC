@@ -210,6 +210,9 @@ static int marine_pick_target_player(GameObject *obj, GameState *state);
 static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *params,
                                             GameState *state, int player_num,
                                             bool apply_translation, int16_t turn_speed);
+static int32_t robot_track_target(GameObject *obj, const EnemyParams *params,
+                                  GameState *state, int player_num,
+                                  bool *out_can_shootgun);
 static int32_t marine_track_target(GameObject *obj, const EnemyParams *params,
                                    GameState *state, int player_num,
                                    bool apply_translation);
@@ -962,18 +965,27 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
         ctx.newx = ctx.oldx;
         ctx.newz = ctx.oldz;
     } else {
-        /* Amiga enemy movement uses a single MoveObject pass per tick. */
-        move_object(&ctx, &state->level);
+        /* Robot movement is especially sensitive in narrow passages; run it
+         * sub-stepped to match expected traversal and avoid wall-edge snagging. */
+        if (obj->obj.number == OBJ_NBR_ROBOT)
+            move_object_substepped(&ctx, &state->level);
+        else
+            move_object(&ctx, &state->level);
     }
 
-    /* Safety: never let contact resolution produce a huge enemy jump. */
-    if (!enemy_step_within_limit(&ctx, (int32_t)speed * (int32_t)state->temp_frames)) {
-        ctx.newx = ctx.oldx;
-        ctx.newz = ctx.oldz;
+    /* Robot.s does not clamp MoveObject displacement here; clamping the robot
+     * can cause false stalls in tight passages due to conservative wall-slide
+     * corrections in the port geometry path. */
+    if (obj->obj.number != OBJ_NBR_ROBOT) {
+        if (!enemy_step_within_limit(&ctx, (int32_t)speed * (int32_t)state->temp_frames)) {
+            ctx.newx = ctx.oldx;
+            ctx.newz = ctx.oldz;
+        }
     }
 
-    /* Block movement that would deepen player overlap, without snapping away. */
-    {
+    /* Robot.s does not run the extra anti-overlap guard; keeping it disabled
+     * here avoids mech stalls at close range in parity-critical battles. */
+    if (obj->obj.number != OBJ_NBR_ROBOT) {
         int16_t contact_x = (int16_t)ctx.newx;
         int16_t contact_z = (int16_t)ctx.newz;
         enemy_prevent_deeper_player_overlap(obj, state, (int16_t)ctx.oldx, (int16_t)ctx.oldz,
@@ -1925,6 +1937,7 @@ void object_handle_robot(GameObject *obj, GameState *state)
     int can_see = obj->obj.can_see & 0x03;
     int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
     bool attacking = false;
+    bool can_shootgun = false;
     bool fired_this_tick = false;
     int target_player = 0;
 
@@ -1934,14 +1947,14 @@ void object_handle_robot(GameObject *obj, GameState *state)
     }
 
     if (attacking) {
-        (void)enemy_track_target_with_turn(obj, params, state, target_player, true, 240);
+        (void)robot_track_target(obj, params, state, target_player, &can_shootgun);
 
         int16_t fourth_timer = OBJ_TD_W(obj, ENEMY_FOURTH_TIMER_OFF);
         fourth_timer -= state->temp_frames;
 
         if (fourth_timer < 20) {
             /* Robot.s gates shooting with canshootgun (must be facing target enough). */
-            if (enemy_is_facing_player_cone(obj, state, target_player, 8192)) { /* cos >= 0.5 */
+            if (can_shootgun) {
                 fourth_timer = 50;
                 {
                     /* Robot.s shot cadence (single/co-op branches differ slightly):
@@ -2095,6 +2108,134 @@ static int marine_pick_target_player(GameObject *obj, GameState *state)
     return (d1 <= d2) ? 1 : 2;
 }
 
+static int32_t robot_track_target(GameObject *obj, const EnemyParams *params,
+                                  GameState *state, int player_num,
+                                  bool *out_can_shootgun)
+{
+    PlayerState *plr = (player_num == 1) ? &state->plr1 : &state->plr2;
+    int16_t obj_x = 0, obj_z = 0;
+    get_object_pos(&state->level, (int)OBJ_CID(obj), &obj_x, &obj_z);
+
+    int32_t target_x = (int32_t)plr->p_xoff;
+    int32_t target_z = (int32_t)plr->p_zoff;
+    int32_t dx = target_x - obj_x;
+    int32_t dz = target_z - obj_z;
+    int32_t dist = calc_dist_euclidean(dx, dz);
+    int16_t facing = NASTY_FACING(*obj);
+    int16_t base_turn = (player_num == 2) ? 120 : 240;
+    bool can_shootgun = false;
+
+    if (dist <= 0) {
+        can_shootgun = true;
+    } else {
+        int64_t fwd = (int64_t)dx * (int64_t)sin_lookup(facing) +
+                      (int64_t)dz * (int64_t)cos_lookup(facing);
+        can_shootgun = (fwd > (int64_t)dist * 8192);
+    }
+
+    {
+        int16_t speed = NASTY_MAXSPD(*obj);
+        if (speed <= 0) speed = 10;
+
+        MoveContext ctx;
+        move_context_init(&ctx);
+        ctx.oldx = obj_x;
+        ctx.oldz = obj_z;
+        ctx.thing_height = params->thing_height;
+        {
+            int zone_slots = level_zone_slot_count(&state->level);
+            int32_t move_y = enemy_move_y_for_context(obj, params, state, zone_slots);
+            ctx.oldy = move_y;
+            ctx.newy = move_y;
+            if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data) {
+                int src_zone = level_connect_to_zone_index(&state->level, OBJ_ZONE(obj));
+                if (src_zone < 0 && OBJ_ZONE(obj) < zone_slots)
+                    src_zone = OBJ_ZONE(obj);
+                if (src_zone >= 0 && src_zone < zone_slots) {
+                    int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)src_zone * 4u);
+                    ctx.objroom = (uint8_t *)(state->level.data + zo);
+                }
+            }
+        }
+        ctx.step_up_val = params->step_up;
+        ctx.step_down_val = params->step_down;
+        ctx.extlen = params->extlen;
+        ctx.awayfromwall = params->awayfromwall;
+        ctx.wall_flags = 0x0200; /* Robot.s uses wallflags #%1000000000 */
+        ctx.collide_flags = 0xFFDE1;
+        ctx.coll_id = OBJ_CID(obj);
+        ctx.pos_shift = 0;
+        ctx.stood_in_top = obj->obj.in_top;
+
+        {
+            int32_t move_dist = (int32_t)speed * (int32_t)state->temp_frames;
+            int32_t toward_dist = dist - 300; /* Robot.s attack standoff range. */
+            if (toward_dist < 0) toward_dist = 0;
+            if (move_dist > toward_dist) move_dist = toward_dist;
+
+            if (move_dist > 0) {
+                if (move_dist > 32767) move_dist = 32767;
+                head_towards(&ctx, target_x, target_z, (int16_t)move_dist);
+            } else {
+                ctx.newx = ctx.oldx;
+                ctx.newz = ctx.oldz;
+            }
+        }
+
+        move_object_substepped(&ctx, &state->level);
+
+        if (state->level.object_points) {
+            int cid = (int)OBJ_CID(obj);
+            uint8_t *pts = state->level.object_points + cid * 8;
+            obj_sw(pts, (int16_t)ctx.newx);
+            obj_sw(pts + 4, (int16_t)ctx.newz);
+        }
+
+        if (ctx.objroom && state->level.data) {
+            int zone_slots = level_zone_slot_count(&state->level);
+            int new_zone = level_zone_index_from_room_ptr(&state->level, ctx.objroom);
+            if (new_zone < 0) {
+                int16_t room_zone_word = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
+                new_zone = level_connect_to_zone_index(&state->level, room_zone_word);
+            }
+            if (new_zone >= 0 && new_zone < zone_slots)
+                OBJ_SET_ZONE(obj, (int16_t)new_zone);
+            obj->obj.in_top = ctx.stood_in_top;
+        }
+    }
+
+    {
+        int16_t turn_delta = 0;
+        if (dist > 0) {
+            int32_t denom = dist + 1;
+            int32_t sin_ret = (int32_t)(((int64_t)dx << 15) / denom);
+            int32_t cos_ret = (int32_t)(((int64_t)dz << 15) / denom);
+            int64_t cross = (int64_t)sin_lookup(facing) * (int64_t)cos_ret -
+                            (int64_t)cos_lookup(facing) * (int64_t)sin_ret;
+            int32_t turn_thresh = sin_lookup(120);
+            if (turn_thresh < 0) turn_thresh = -turn_thresh;
+            turn_thresh >>= 1;
+
+            if (cross > turn_thresh) {
+                turn_delta = (int16_t)(-base_turn);
+            } else if (cross < -turn_thresh) {
+                turn_delta = base_turn;
+            }
+        }
+
+        if (!can_shootgun) {
+            turn_delta = (int16_t)(turn_delta * 2);
+            if (turn_delta == 0) turn_delta = (int16_t)(base_turn * 2);
+        }
+
+        facing = (int16_t)((facing + turn_delta) & ANGLE_MASK);
+        NASTY_SET_FACING(*obj, facing);
+    }
+
+    if (out_can_shootgun) *out_can_shootgun = can_shootgun;
+    return dist;
+}
+
 static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *params,
                                             GameState *state, int player_num,
                                             bool apply_translation, int16_t turn_speed)
@@ -2216,8 +2357,9 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
         ctx.newz = ctx.oldz;
     }
 
-    /* Block movement that would deepen player overlap, without snapping away. */
-    {
+    /* Robot.s does not run the extra anti-overlap guard; keeping it disabled
+     * here avoids mech stalls at close range in parity-critical battles. */
+    if (obj->obj.number != OBJ_NBR_ROBOT) {
         int16_t contact_x = (int16_t)ctx.newx;
         int16_t contact_z = (int16_t)ctx.newz;
         enemy_prevent_deeper_player_overlap(obj, state, (int16_t)ctx.oldx, (int16_t)ctx.oldz,
