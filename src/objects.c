@@ -1167,7 +1167,10 @@ static void enemy_tick_sec_timer_vocal(GameObject *obj, GameState *state,
     OBJ_SET_TD_W(obj, ENEMY_SEC_TIMER_OFF, sec);
 }
 
-/* Amiga ObjectDataHandler only runs enemy logic when objWorry != 0. */
+/* Amiga ObjectDataHandler gates *all* ItsA* handlers on objWorry != 0 (Anims.s Objectloop).
+ * AB3DI.s then does: for each object in a zone whose bit is set in WorkSpace (built from the
+ * player's visible room graph), or.b #127,objWorry — so off-screen / non-visible-zone objects
+ * do not run (including gas pipes: ItsAGasPipe clears worry each tick). */
 static bool object_type_uses_worry_gate(int8_t obj_type)
 {
     switch (obj_type) {
@@ -1183,6 +1186,7 @@ static bool object_type_uses_worry_gate(int8_t obj_type)
     case OBJ_NBR_TREE:
     case OBJ_NBR_TOUGH_MARINE:
     case OBJ_NBR_FLAME_MARINE:
+    case OBJ_NBR_GAS_PIPE:
         return true;
     default:
         return false;
