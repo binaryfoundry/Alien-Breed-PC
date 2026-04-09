@@ -1358,10 +1358,6 @@ void move_object(MoveContext* ctx, LevelState* level)
             if (ctx->extlen != 0) {
                 if (total_iterations >= max_total) goto phase3;
 
-                /* Amiga checkotherwalls is skipped when movement has become stationary
-                 * after checkwalls (ObjectMove.s notstill/mustbeinsameroom path). */
-                if (xdiff == 0 && zdiff == 0) goto phase3;
-
                 {
                     int16_t list_off = read_be16(zone_data + ZONE_EXIT_LIST);
                     const uint8_t* list_ptr = zone_data + list_off;

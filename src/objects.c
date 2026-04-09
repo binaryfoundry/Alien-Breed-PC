@@ -542,7 +542,7 @@ static void enemy_convert_to_blue_key(GameObject *obj, GameState *state)
                 const uint8_t *zd = state->level.data + zo;
                 int32_t floor_h = be32(zd + ZONE_OFF_FLOOR);
                 int32_t upper_floor = be32(zd + ZONE_OFF_UPPER_FLOOR);
-                if (obj->obj.in_top)
+                if (upper_floor != 0 && obj->obj.in_top)
                     floor_h = upper_floor;
                 obj_sw(obj->raw + 4, (int16_t)((floor_h >> 7) - 32));
             }
@@ -1573,7 +1573,7 @@ void objects_update(GameState *state)
                         int32_t floor_h = be32(zd + 2);  /* ToZoneFloor */
 
                         int32_t upper_floor = be32(zd + 10);
-                        if (obj->obj.in_top)
+                        if (upper_floor != 0 && obj->obj.in_top)
                             floor_h = upper_floor;
 
                         int world_h = object_floor_render_offset_units(obj, obj_type);
