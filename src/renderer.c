@@ -6541,6 +6541,54 @@ static void renderer_draw_zone_backdrop_sky_ctx(RenderSliceContext *ctx,
     }
 }
 
+/* Targeted compatibility hack:
+ * Level 13 (index 12), zone 74 lower stream can miss expected backdrop sky.
+ * Force sky synthesis from authored floor polygons in this exact case. */
+static void renderer_force_zone74_level13_sky_hack_ctx(RenderSliceContext *ctx,
+                                                        const GameState *state,
+                                                        int16_t zone_id, int use_upper,
+                                                        int32_t zone_roof, int32_t y_off,
+                                                        const uint8_t *gfx_data)
+{
+    if (!ctx || !state || !gfx_data) return;
+    if (state->current_level != 13) return; /* level 13 only */
+    if (zone_id != 74) return;
+    if (!use_upper) return; /* upper stream only */
+    if (zone_roof >= 0) return;
+
+    const uint8_t *scan = gfx_data + 2; /* skip gfx zone id word */
+    int scan_iter = 500;
+    while (scan_iter-- > 0) {
+        int16_t t = rd16(scan);
+        scan += 2;
+        if (t < 0) break;
+
+        if (t == 1) { /* floor polygon -> sky ceiling */
+            int sides = (int)rd16(scan + 2) + 1;
+            if (sides < 3) sides = 0;
+            if (sides > 100) sides = 100;
+            if (sides >= 3) {
+                int16_t pt_indices[100];
+                const uint8_t *pp = scan + 4;
+                for (int i = 0; i < sides; i++) {
+                    pt_indices[i] = rd16(pp);
+                    pp += 2;
+                }
+                renderer_tessellate_sky_ceiling_ctx(ctx, pt_indices, sides, zone_roof, y_off);
+            }
+        }
+
+        {
+            size_t skip = zone_gfx_entry_data_skip(t, scan);
+            if (skip == 0) {
+                if (t != 3 && t != 12) break;
+                continue;
+            }
+            scan += skip;
+        }
+    }
+}
+
 static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, int16_t zone_id, int use_upper)
 {
     RendererState *r = &g_renderer;
@@ -6634,6 +6682,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
         zone_bright = level_get_zone_brightness(level, zone_id, use_upper ? 1 : 0);
 
     renderer_draw_zone_backdrop_sky_ctx(ctx, zone_id, use_upper, zone_roof, y_off);
+    renderer_force_zone74_level13_sky_hack_ctx(ctx, state, zone_id, use_upper, zone_roof, y_off, gfx_data);
 
     /* Amiga: draw walls and arcs in stream order (no deferral). */
 
