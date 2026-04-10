@@ -3274,14 +3274,18 @@ static void draw_wall_rasterize_segment(
             }
         }
 
-        /* Column clip update */
+        /* Column clip update.
+         * Only register the main column x.  The extension pixels written to
+         * x±1 (do_ext_l / do_ext_r) are a purely cosmetic sub-pixel blend at
+         * wall segment boundaries — they have no actual wall geometry at those
+         * columns.  Adding clips for them causes sprites near a stepped / angled
+         * wall to have their boundary columns incorrectly marked as occluded,
+         * producing the staircase of missing sprite columns. */
         if (ctx->update_column_clip) {
             int occ_top = ct, occ_bot = cb;
             if (ct > top_clip_val) occ_top = ct - 1;
             if (cb + 1 <= bot_clip_val) occ_bot = cb + 1;
             renderer_column_clip_add_span(x, occ_top, occ_bot, col_z);
-            if (do_ext_l) renderer_column_clip_add_span(x - 1, ct, cb, col_z);
-            if (do_ext_r) renderer_column_clip_add_span(x + 1, ct, cb, col_z);
         }
     }
 }
