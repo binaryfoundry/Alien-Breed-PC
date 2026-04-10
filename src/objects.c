@@ -848,8 +848,8 @@ static void enemy_prevent_deeper_player_overlap(const GameObject *obj, const Gam
  *   step-up and a bounded step-down so down-steps work without making
  *   enemies walk off high platforms too aggressively.
  */
-#define ENEMY_STEP_UP_MIN      (40 * 256)
-#define ENEMY_STEP_DOWN_MIN    (40 * 256)
+#define ENEMY_STEP_UP_MIN      (35 * 256)
+#define ENEMY_STEP_DOWN_MIN    (35 * 256)
 
 static void enemy_apply_step_limits(const GameObject *obj,
                                     const EnemyParams *params,

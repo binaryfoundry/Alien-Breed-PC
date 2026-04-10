@@ -2989,6 +2989,39 @@ int32_t renderer_column_clip_nearest_z_at(int col, int row)
     return nearest_z;
 }
 
+/* Nearest wall Z in a column that overlaps [top, bot]. Used to decide whether
+ * boundary extension pixels (x+/-1) have matching real wall geometry nearby. */
+static int32_t renderer_column_clip_nearest_z_overlap(const ColumnClip *clip, int col, int top, int bot)
+{
+    int32_t nearest_z = 0;
+    if (!clip) return 0;
+    if (col < 0 || col >= g_renderer.width) return 0;
+    if (top > bot) {
+        int t = top;
+        top = bot;
+        bot = t;
+    }
+
+    if (!clip->top || !clip->bot || !clip->z ||
+        !clip->top2 || !clip->bot2 || !clip->z2) {
+        return 0;
+    }
+
+    if (clip->z[col] > 0 && clip->top[col] <= clip->bot[col]) {
+        if (!(bot < clip->top[col] || top > clip->bot[col])) {
+            nearest_z = clip->z[col];
+        }
+    }
+    if (clip->z2[col] > 0 && clip->top2[col] <= clip->bot2[col]) {
+        if (!(bot < clip->top2[col] || top > clip->bot2[col])) {
+            if (nearest_z <= 0 || clip->z2[col] < nearest_z) {
+                nearest_z = clip->z2[col];
+            }
+        }
+    }
+    return nearest_z;
+}
+
 /* Wall column loop uses inverse-Z in 8.24 (INVZ_ONE). Projecting Y as world_y*K/z with an
  * integer z from z = INVZ_ONE/inv_z truncates twice vs. world_y*K*inv_z/INVZ_ONE (one divide).
  * The latter matches true perspective along the span and reduces stair-steps at floor/ceiling. */
@@ -3292,17 +3325,39 @@ static void draw_wall_rasterize_segment(
         }
 
         /* Column clip update.
-         * Only register the main column x.  The extension pixels written to
-         * x±1 (do_ext_l / do_ext_r) are a purely cosmetic sub-pixel blend at
-         * wall segment boundaries — they have no actual wall geometry at those
-         * columns.  Adding clips for them causes sprites near a stepped / angled
-         * wall to have their boundary columns incorrectly marked as occluded,
-         * producing the staircase of missing sprite columns. */
+         * Register real wall geometry at x unconditionally.
+         *
+         * For extension pixels at x+/-1, add clip spans only when neighboring
+         * columns already contain overlapping wall spans. This preserves seam
+         * occlusion while avoiding phantom occluders at stepped boundaries. */
         if (ctx->update_column_clip) {
             int occ_top = ct, occ_bot = cb;
             if (ct > top_clip_val) occ_top = ct - 1;
             if (cb + 1 <= bot_clip_val) occ_bot = cb + 1;
             renderer_column_clip_add_span(x, occ_top, occ_bot, col_z);
+
+            if (do_ext_l) {
+                int32_t nz = renderer_column_clip_nearest_z_overlap(&g_renderer.clip, x - 1, ct, cb);
+                if (nz > 0) {
+                    int32_t dz = nz - col_z;
+                    if (dz < 0) dz = -dz;
+                    if (dz <= 3) {
+                        int32_t ext_z = (nz < col_z) ? nz : col_z;
+                        renderer_column_clip_add_span(x - 1, ct, cb, ext_z);
+                    }
+                }
+            }
+            if (do_ext_r) {
+                int32_t nz = renderer_column_clip_nearest_z_overlap(&g_renderer.clip, x + 1, ct, cb);
+                if (nz > 0) {
+                    int32_t dz = nz - col_z;
+                    if (dz < 0) dz = -dz;
+                    if (dz <= 3) {
+                        int32_t ext_z = (nz < col_z) ? nz : col_z;
+                        renderer_column_clip_add_span(x + 1, ct, cb, ext_z);
+                    }
+                }
+            }
         }
     }
 }
@@ -4355,7 +4410,8 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                      uint32_t ptr_offset, uint16_t down_strip,
                                      int src_cols, int src_rows,
                                      int16_t brightness, int sprite_type,
-                                     int32_t clip_top_sy, int32_t clip_bot_sy)
+                                     int32_t clip_top_sy, int32_t clip_bot_sy,
+                                     int respect_scene_tags)
 {
     (void)sprite_type;
     uint8_t *buf = renderer_active_buf();
@@ -4486,8 +4542,10 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
         const int max_row_idx = (int)((wad_size - wad_off) / 2) - 1;
         if (max_row_idx < 0) continue;
 
-        /* Build visible segments from wall occlusion (unchanged logic). */
-        int seg_top[3], seg_bot[3], seg_count = 0;
+        /* Per-column zone clip: compute one top/bottom interval and only
+         * rasterize between those bounds. */
+        int col_top = draw_top;
+        int col_bot = draw_bot;
         {
             int occ_top[2], occ_bot[2], occ_count = 0;
             if (have_wall_clip) {
@@ -4519,70 +4577,87 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                     }
                 }
             }
-            int cursor = draw_top;
+
+            /* Clip from top/bottom by spans touching each boundary. */
             for (int i = 0; i < occ_count; i++) {
-                if (occ_top[i] > cursor) {
-                    seg_top[seg_count] = cursor;
-                    seg_bot[seg_count] = occ_top[i] - 1;
-                    seg_count++;
+                if (occ_top[i] <= col_top && occ_bot[i] >= col_top) {
+                    col_top = occ_bot[i] + 1;
                 }
-                if (occ_bot[i] + 1 > cursor) cursor = occ_bot[i] + 1;
+                if (occ_top[i] <= col_bot && occ_bot[i] >= col_bot) {
+                    col_bot = occ_top[i] - 1;
+                }
             }
-            if (cursor <= draw_bot) {
-                seg_top[seg_count] = cursor;
-                seg_bot[seg_count] = draw_bot;
-                seg_count++;
+
+            /* If an interior occluder remains, choose the side that keeps the
+             * sprite anchor row (or the larger side when the anchor is inside). */
+            for (int i = 0; i < occ_count && col_top <= col_bot; i++) {
+                if (occ_top[i] <= col_bot && occ_bot[i] >= col_top) {
+                    if (screen_y < occ_top[i]) {
+                        col_bot = occ_top[i] - 1;
+                    } else if (screen_y > occ_bot[i]) {
+                        col_top = occ_bot[i] + 1;
+                    } else {
+                        int keep_top = occ_top[i] - col_top;
+                        int keep_bot = col_bot - occ_bot[i];
+                        if (keep_top >= keep_bot) col_bot = occ_top[i] - 1;
+                        else                      col_top = occ_bot[i] + 1;
+                    }
+                }
             }
         }
-        if (seg_count == 0) continue;
+        if (col_top > col_bot) continue;
 
-        /* Rasterize visible segments with split expand/non-expand paths.
-         * Uses pixel-offset stepping (pix += rw_stride) instead of
-         * per-row pointer recomputation. */
+        /* Rasterize one visible interval for this column. */
         if (expand) {
-            for (int seg = 0; seg < seg_count; seg++) {
-                const int row_start = seg_top[seg];
-                const int row_end = seg_bot[seg];
-                int32_t row_fp = (int32_t)(row_start - sy) * src_row_step;
-                size_t pix = (size_t)row_start * rw_stride + (size_t)screen_col;
-                for (int screen_row = row_start; screen_row <= row_end; screen_row++) {
-                    int src_row = row_fp >> 16;
-                    row_fp += src_row_step;
-                    if (src_row >= eff_rows) src_row = eff_rows - 1;
+            int32_t row_fp = (int32_t)(col_top - sy) * src_row_step;
+            size_t pix = (size_t)col_top * rw_stride + (size_t)screen_col;
+            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                int src_row = row_fp >> 16;
+                row_fp += src_row_step;
+                if (src_row >= eff_rows) src_row = eff_rows - 1;
                     const int row_idx = down_strip_i + src_row;
                     if (row_idx <= max_row_idx) {
                         const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
                         const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                         if (texel != 0) {
+                            if (respect_scene_tags) {
+                                uint8_t dst_tag = buf[pix];
+                                if (dst_tag != 0 && dst_tag != 3) {
+                                    pix += rw_stride;
+                                    continue;
+                                }
+                            }
                             buf[pix] = 3;
                             rgb[pix] = spr_rgb[texel];
                             cw[pix] = spr_cw[texel];
                         }
                     }
-                    pix += rw_stride;
-                }
+                pix += rw_stride;
             }
         } else {
-            for (int seg = 0; seg < seg_count; seg++) {
-                const int row_start = seg_top[seg];
-                const int row_end = seg_bot[seg];
-                int32_t row_fp = (int32_t)(row_start - sy) * src_row_step;
-                size_t pix = (size_t)row_start * rw_stride + (size_t)screen_col;
-                for (int screen_row = row_start; screen_row <= row_end; screen_row++) {
-                    int src_row = row_fp >> 16;
-                    row_fp += src_row_step;
-                    if (src_row >= eff_rows) src_row = eff_rows - 1;
+            int32_t row_fp = (int32_t)(col_top - sy) * src_row_step;
+            size_t pix = (size_t)col_top * rw_stride + (size_t)screen_col;
+            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                int src_row = row_fp >> 16;
+                row_fp += src_row_step;
+                if (src_row >= eff_rows) src_row = eff_rows - 1;
                     const int row_idx = down_strip_i + src_row;
                     if (row_idx <= max_row_idx) {
                         const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
                         const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                         if (texel != 0) {
+                            if (respect_scene_tags) {
+                                uint8_t dst_tag = buf[pix];
+                                if (dst_tag != 0 && dst_tag != 3) {
+                                    pix += rw_stride;
+                                    continue;
+                                }
+                            }
                             buf[pix] = 3;
                             cw[pix] = spr_cw[texel];
                         }
                     }
-                    pix += rw_stride;
-                }
+                pix += rw_stride;
             }
         }
     }
@@ -4604,7 +4679,7 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
     renderer_draw_sprite_ctx(&ctx, screen_x, screen_y, width, height, z,
                              wad, wad_size, ptr_data, ptr_size, pal, pal_size,
                              ptr_offset, down_strip, src_cols, src_rows, brightness,
-                             sprite_type, clip_top_sy, clip_bot_sy);
+                             sprite_type, clip_top_sy, clip_bot_sy, 0);
 }
 
 /* -----------------------------------------------------------------------
@@ -5359,6 +5434,85 @@ static int renderer_collect_adjacent_zone_sources(const RenderSliceContext *ctx,
     return adj_count;
 }
 
+static int renderer_resolve_sprite_zone_draw_clip(const RenderSliceContext *ctx,
+                                                  GameState *state,
+                                                  int16_t zone_id,
+                                                  int use_upper,
+                                                  int16_t *out_left,
+                                                  int16_t *out_right,
+                                                  int32_t *out_top_world,
+                                                  int32_t *out_bot_world,
+                                                  int *out_ignore_top)
+{
+    if (!ctx || !state || !out_left || !out_right || !out_top_world || !out_bot_world || !out_ignore_top)
+        return 0;
+
+    LevelState *level = &state->level;
+    int zone_slots = level_zone_slot_count(level);
+    if (!level->data || !level->zone_adds || zone_slots <= 0 || zone_id < 0 || zone_id >= zone_slots)
+        return 0;
+
+    int16_t draw_left = ctx->left_clip;
+    int16_t draw_right = ctx->right_clip;
+    {
+        int16_t zl = 0, zr = 0;
+        if (renderer_compute_zone_clip_span(state, zone_id, 0u, 0, &zl, &zr)) {
+            if (zl > draw_left) draw_left = zl;
+            if (zr < draw_right) draw_right = zr;
+        }
+    }
+    if (draw_left >= draw_right) return 0;
+
+    int32_t zone_off = rd32(level->zone_adds + (size_t)(uint16_t)zone_id * 4u);
+    if (zone_off < 0) return 0;
+    if (level->data_byte_count > 0 && (size_t)zone_off + 20u > level->data_byte_count) return 0;
+    const uint8_t *zone_data = level->data + zone_off;
+
+    int32_t zone_floor = rd32(zone_data + ZONE_OFF_FLOOR);
+    int32_t zone_roof = rd32(zone_data + ZONE_OFF_ROOF);
+    if (use_upper) {
+        int32_t upper_floor = rd32(zone_data + ZONE_OFF_UPPER_FLOOR);
+        int32_t upper_roof = rd32(zone_data + ZONE_OFF_UPPER_ROOF);
+        if (upper_floor > upper_roof) {
+            zone_floor = upper_floor;
+            zone_roof = upper_roof;
+        }
+    }
+    if (zone_roof > zone_floor) {
+        int32_t t = zone_roof;
+        zone_roof = zone_floor;
+        zone_floor = t;
+    }
+
+    *out_left = draw_left;
+    *out_right = draw_right;
+    *out_top_world = zone_roof;
+    *out_bot_world = zone_floor;
+    *out_ignore_top = (zone_roof < 0) ? 1 : 0;
+    return 1;
+}
+
+static void renderer_project_zone_world_clip_y(const RendererState *r,
+                                               int32_t zone_top_world,
+                                               int32_t zone_bot_world,
+                                               int32_t y_off,
+                                               int32_t z_fp,
+                                               int ignore_top_clip,
+                                               int32_t *out_top_y,
+                                               int32_t *out_bot_y)
+{
+    int32_t z = (z_fp > 0) ? z_fp : 1;
+    int center_y = r->height / 2;
+    if (ignore_top_clip) {
+        *out_top_y = INT32_MIN;
+    } else {
+        *out_top_y = (int)(((int64_t)((zone_top_world - y_off) >> WORLD_Y_FRAC_BITS) *
+                            (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE << ROT_Z_FRAC_BITS) / z) + center_y;
+    }
+    *out_bot_y = (int)(((int64_t)((zone_bot_world - y_off) >> WORLD_Y_FRAC_BITS) *
+                        (int64_t)r->proj_y_scale * (int64_t)RENDER_SCALE << ROT_Z_FRAC_BITS) / z) + center_y;
+}
+
 /* -----------------------------------------------------------------------
  * Draw objects in the current zone
  *
@@ -5373,6 +5527,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                   int level_filter, int allow_adjacent_spill,
                                   int ignore_sky_top_clip)
 {
+    (void)ignore_sky_top_clip;
     RendererState *r = &g_renderer;
     LevelState *level = &state->level;
     if (!level->object_data || !level->object_points) return;
@@ -5400,6 +5555,12 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         int src;
         int idx;
         int32_t z;
+        int16_t clip_left;
+        int16_t clip_right;
+        int32_t zone_top_world;
+        int32_t zone_bot_world;
+        uint8_t ignore_top_clip;
+        uint8_t respect_scene_tags;
     } ObjEntry;
     enum {
         /* Level object table is CID-terminated but physically 256 slots in level data.
@@ -5444,12 +5605,22 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             if (adj_world_y < top_of_room || adj_world_y > bot_of_room) continue;
         }
 
+        int obj_on_upper = (obj[obj_off_in_top] != 0);
         /* Multi-floor: only render objects when we are drawing their floor. Use object's in_top
          * so upper/lower is consistent with game logic (objects.c, movement). */
         if (level_filter >= 0) {
-            int obj_on_upper = (obj[obj_off_in_top] != 0);
             if ((level_filter == 1 && !obj_on_upper) || (level_filter == 0 && obj_on_upper))
                 continue;
+        }
+
+        int16_t draw_clip_left = 0, draw_clip_right = 0;
+        int32_t draw_zone_top = 0, draw_zone_bot = 0;
+        int draw_ignore_top = 0;
+        if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, obj_zone, obj_on_upper,
+                                                    &draw_clip_left, &draw_clip_right,
+                                                    &draw_zone_top, &draw_zone_bot,
+                                                    &draw_ignore_top)) {
+            continue;
         }
 
         ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
@@ -5473,7 +5644,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int scr_x_est = project_x_to_pixels(orp->x_fine, orp->z);
             int spr_l = scr_x_est - sprite_w_est / 2;
             int spr_r = spr_l + sprite_w_est;
-            if (spr_r <= (int)ctx->left_clip || spr_l >= (int)ctx->right_clip) continue;
+            if (spr_r <= (int)draw_clip_left || spr_l >= (int)draw_clip_right) continue;
 
             if (!in_this_zone) {
                 int line_start = adj_zones[adj_slot].line_start;
@@ -5507,6 +5678,12 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         objs[obj_count].z = is_poly_object
             ? poly_object_front_z_for_sort(obj, orp, state)
             : orp->z;
+        objs[obj_count].clip_left = draw_clip_left;
+        objs[obj_count].clip_right = draw_clip_right;
+        objs[obj_count].zone_top_world = draw_zone_top;
+        objs[obj_count].zone_bot_world = draw_zone_bot;
+        objs[obj_count].ignore_top_clip = (uint8_t)(draw_ignore_top ? 1 : 0);
+        objs[obj_count].respect_scene_tags = (uint8_t)(in_this_zone ? 0 : 1);
         obj_count++;
     }
 
@@ -5531,10 +5708,20 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 int32_t adj_world_y = ((int32_t)rd16(obj + 4)) << 7;
                 if (adj_world_y < top_of_room || adj_world_y > bot_of_room) continue;
             }
+            int shot_on_upper = (obj[obj_off_in_top] != 0);
             if (level_filter >= 0) {
-                int shot_on_upper = (obj[obj_off_in_top] != 0);
                 if ((level_filter == 1 && !shot_on_upper) || (level_filter == 0 && shot_on_upper))
                     continue;
+            }
+
+            int16_t draw_clip_left = 0, draw_clip_right = 0;
+            int32_t draw_zone_top = 0, draw_zone_bot = 0;
+            int draw_ignore_top = 0;
+            if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, shot_zone, shot_on_upper,
+                                                        &draw_clip_left, &draw_clip_right,
+                                                        &draw_zone_top, &draw_zone_bot,
+                                                        &draw_ignore_top)) {
+                continue;
             }
             ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
             if (orp->z <= ROT_Z_FROM_INT(SPRITE_NEAR_CLIP_Z)) continue;
@@ -5549,7 +5736,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 int scr_x_est = project_x_to_pixels(orp->x_fine, orp->z);
                 int spr_l = scr_x_est - sprite_w_est / 2;
                 int spr_r = spr_l + sprite_w_est;
-                if (spr_r <= (int)ctx->left_clip || spr_l >= (int)ctx->right_clip) continue;
+                if (spr_r <= (int)draw_clip_left || spr_l >= (int)draw_clip_right) continue;
 
                 if (!in_this_zone) {
                     int line_start = adj_zones[adj_slot].line_start;
@@ -5580,6 +5767,12 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             objs[obj_count].src = DRAW_SRC_SHOT;
             objs[obj_count].idx = slot + ((pool == 0) ? 0 : NASTY_SHOT_SLOT_COUNT);
             objs[obj_count].z = orp->z;
+            objs[obj_count].clip_left = draw_clip_left;
+            objs[obj_count].clip_right = draw_clip_right;
+            objs[obj_count].zone_top_world = draw_zone_top;
+            objs[obj_count].zone_bot_world = draw_zone_bot;
+            objs[obj_count].ignore_top_clip = (uint8_t)(draw_ignore_top ? 1 : 0);
+            objs[obj_count].respect_scene_tags = (uint8_t)(in_this_zone ? 0 : 1);
             obj_count++;
         }
     }
@@ -5604,10 +5797,20 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             }
             if (state->explosions[ei].start_delay > 0) continue;
             if ((int)state->explosions[ei].frame >= 9) continue;
+            int expl_on_upper = (state->explosions[ei].in_top != 0);
             if (level_filter >= 0) {
-                int expl_on_upper = (state->explosions[ei].in_top != 0);
                 if ((level_filter == 1 && !expl_on_upper) || (level_filter == 0 && expl_on_upper))
                     continue;
+            }
+
+            int16_t draw_clip_left = 0, draw_clip_right = 0;
+            int32_t draw_zone_top = 0, draw_zone_bot = 0;
+            int draw_ignore_top = 0;
+            if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, expl_zone, expl_on_upper,
+                                                        &draw_clip_left, &draw_clip_right,
+                                                        &draw_zone_top, &draw_zone_bot,
+                                                        &draw_ignore_top)) {
+                continue;
             }
 
             int16_t dx = (int16_t)(state->explosions[ei].x - cam_x);
@@ -5633,7 +5836,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 int scr_x_est = project_x_to_pixels(vx_fine, orp_z);
                 int spr_l = scr_x_est - sprite_w_est / 2;
                 int spr_r = spr_l + sprite_w_est;
-                if (spr_r <= (int)ctx->left_clip || spr_l >= (int)ctx->right_clip) continue;
+                if (spr_r <= (int)draw_clip_left || spr_l >= (int)draw_clip_right) continue;
 
                 if (!in_this_zone) {
                     int line_start = adj_zones[adj_slot].line_start;
@@ -5667,6 +5870,12 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             objs[obj_count].src = DRAW_SRC_EXPLOSION;
             objs[obj_count].idx = ei;
             objs[obj_count].z = orp_z;
+            objs[obj_count].clip_left = draw_clip_left;
+            objs[obj_count].clip_right = draw_clip_right;
+            objs[obj_count].zone_top_world = draw_zone_top;
+            objs[obj_count].zone_bot_world = draw_zone_bot;
+            objs[obj_count].ignore_top_clip = (uint8_t)(draw_ignore_top ? 1 : 0);
+            objs[obj_count].respect_scene_tags = (uint8_t)(in_this_zone ? 0 : 1);
             obj_count++;
         }
     }
@@ -5703,9 +5912,15 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
     const int expl_ft_count = sprite_frames_table[expl_vect].count;
     const int explosion_sprite_scale_x = renderer_sprite_scale_x_for_state(r, state);
     for (int oi = 0; oi < obj_count; oi++) {
-        int entry_src = objs[oi].src;
+        const ObjEntry *entry = &objs[oi];
+        int entry_src = entry->src;
+        int16_t draw_clip_left = entry->clip_left;
+        int16_t draw_clip_right = entry->clip_right;
+        int respect_scene_tags = (entry->respect_scene_tags != 0);
+        if (draw_clip_left >= draw_clip_right) continue;
+
         if (entry_src == DRAW_SRC_EXPLOSION) {
-            int ei = objs[oi].idx;
+            int ei = entry->idx;
             int16_t sin_v = r->sinval;
             int16_t cos_v = r->cosval;
             int16_t cam_x = r->xoff;
@@ -5762,30 +5977,44 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 down_strip = expl_ft[frame_num].down_strip;
             }
 
-            int32_t clip_top_y = ignore_sky_top_clip
-                ? INT32_MIN
-                : (int)(((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE << ROT_Z_FRAC_BITS) / orp_z) + center_y;
-            int32_t clip_bot_y = (int)(((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * r->proj_y_scale * RENDER_SCALE << ROT_Z_FRAC_BITS) / orp_z) + center_y;
+            int32_t clip_top_y = 0, clip_bot_y = 0;
+            renderer_project_zone_world_clip_y(r,
+                                               entry->zone_top_world,
+                                               entry->zone_bot_world,
+                                               y_off,
+                                               orp_z,
+                                               (int)entry->ignore_top_clip,
+                                               &clip_top_y,
+                                               &clip_bot_y);
+            if (clip_top_y >= clip_bot_y) continue;
             int bright = (ROT_Z_INT(orp_z) >> 7);
             const uint8_t *obj_pal = r->sprite_pal_data[expl_vect];
             size_t obj_pal_size = r->sprite_pal_size[expl_vect];
-            {   int32_t orp_z_i16 = ROT_Z_INT(orp_z);
+            {
+                int16_t prev_strip_left = ctx->strip_left;
+                int16_t prev_strip_right = ctx->strip_right;
+                ctx->strip_left = draw_clip_left;
+                ctx->strip_right = draw_clip_right;
+                int32_t orp_z_i16 = ROT_Z_INT(orp_z);
                 if (orp_z_i16 > 32767) orp_z_i16 = 32767;
-            renderer_draw_sprite_ctx(ctx, (int16_t)scr_x, (int16_t)scr_y,
-                                     (int16_t)sprite_w, (int16_t)sprite_h,
-                                     (int16_t)orp_z_i16,
-                                     r->sprite_wad[expl_vect], r->sprite_wad_size[expl_vect],
-                                     r->sprite_ptr[expl_vect], r->sprite_ptr_size[expl_vect],
-                                     obj_pal, obj_pal_size,
-                                     ptr_off, down_strip,
-                                     32, 32,
-                                     (int16_t)bright, expl_vect,
-                                     clip_top_y, clip_bot_y);
+                renderer_draw_sprite_ctx(ctx, (int16_t)scr_x, (int16_t)scr_y,
+                                         (int16_t)sprite_w, (int16_t)sprite_h,
+                                         (int16_t)orp_z_i16,
+                                         r->sprite_wad[expl_vect], r->sprite_wad_size[expl_vect],
+                                         r->sprite_ptr[expl_vect], r->sprite_ptr_size[expl_vect],
+                                         obj_pal, obj_pal_size,
+                                         ptr_off, down_strip,
+                                         32, 32,
+                                         (int16_t)bright, expl_vect,
+                                         clip_top_y, clip_bot_y,
+                                         respect_scene_tags);
+                ctx->strip_left = prev_strip_left;
+                ctx->strip_right = prev_strip_right;
             }
             continue;
         }
 
-        int obj_idx = objs[oi].idx;
+        int obj_idx = entry->idx;
         const uint8_t *obj = NULL;
         if (entry_src == DRAW_SRC_OBJECT) {
             obj = level->object_data + obj_idx * OBJECT_SIZE;
@@ -5804,7 +6033,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         if ((uint8_t)obj[6] == (uint8_t)OBJ_3D_SPRITE) {
             ObjRotatedPoint *orp3d = &r->obj_rotated[rd16(obj)];
             draw_3d_vector_object(obj, orp3d, state,
-                                  (int)ctx->left_clip, (int)ctx->right_clip - 1,
+                                  (int)draw_clip_left, (int)draw_clip_right - 1,
                                   (int)ctx->top_clip, (int)ctx->bot_clip);
             continue;
         }
@@ -5819,10 +6048,15 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
 
         /* Project Y boundaries from room top/bottom (same PROJ_Y_SCALE as walls).
          * orp->z is 24.8 fixed-point; shift numerator to compensate. */
-        int32_t clip_top_y = ignore_sky_top_clip
-            ? INT32_MIN
-            : (int)(((int64_t)((top_of_room - y_off) >> WORLD_Y_FRAC_BITS) * g_renderer.proj_y_scale * RENDER_SCALE << ROT_Z_FRAC_BITS) / orp->z) + (g_renderer.height / 2);
-        int32_t clip_bot_y = (int)(((int64_t)((bot_of_room - y_off) >> WORLD_Y_FRAC_BITS) * g_renderer.proj_y_scale * RENDER_SCALE << ROT_Z_FRAC_BITS) / orp->z) + (g_renderer.height / 2);
+        int32_t clip_top_y = 0, clip_bot_y = 0;
+        renderer_project_zone_world_clip_y(r,
+                                           entry->zone_top_world,
+                                           entry->zone_bot_world,
+                                           y_off,
+                                           orp->z,
+                                           (int)entry->ignore_top_clip,
+                                           &clip_top_y,
+                                           &clip_bot_y);
         if (clip_top_y >= clip_bot_y) continue;
 
         /* Project to screen X (PROJ_X_SCALE/2 = horizontal focal length). */
@@ -5982,18 +6216,26 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         const uint8_t *obj_pal = r->sprite_pal_data[vect_num];
         size_t obj_pal_size = r->sprite_pal_size[vect_num];
 
-        {   int32_t orp_z_int = ROT_Z_INT(orp->z);
+        {
+            int16_t prev_strip_left = ctx->strip_left;
+            int16_t prev_strip_right = ctx->strip_right;
+            ctx->strip_left = draw_clip_left;
+            ctx->strip_right = draw_clip_right;
+            int32_t orp_z_int = ROT_Z_INT(orp->z);
             if (orp_z_int > 32767) orp_z_int = 32767;
-        renderer_draw_sprite_ctx(ctx, (int16_t)scr_x, (int16_t)scr_y,
-                                 (int16_t)sprite_w, (int16_t)sprite_h,
-                                 (int16_t)orp_z_int,
-                                 r->sprite_wad[vect_num], r->sprite_wad_size[vect_num],
-                                 r->sprite_ptr[vect_num], r->sprite_ptr_size[vect_num],
-                                 obj_pal, obj_pal_size,
-                                 ptr_off, down_strip,
-                                 src_cols, src_rows,
-                                 (int16_t)bright, vect_num,
-                                 clip_top_y, clip_bot_y);
+            renderer_draw_sprite_ctx(ctx, (int16_t)scr_x, (int16_t)scr_y,
+                                     (int16_t)sprite_w, (int16_t)sprite_h,
+                                     (int16_t)orp_z_int,
+                                     r->sprite_wad[vect_num], r->sprite_wad_size[vect_num],
+                                     r->sprite_ptr[vect_num], r->sprite_ptr_size[vect_num],
+                                     obj_pal, obj_pal_size,
+                                     ptr_off, down_strip,
+                                     src_cols, src_rows,
+                                     (int16_t)bright, vect_num,
+                                     clip_top_y, clip_bot_y,
+                                     respect_scene_tags);
+            ctx->strip_left = prev_strip_left;
+            ctx->strip_right = prev_strip_right;
         }
     }
 }
