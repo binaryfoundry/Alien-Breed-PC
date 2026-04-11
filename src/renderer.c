@@ -5558,7 +5558,8 @@ static int renderer_collect_adjacent_zone_sources(const RenderSliceContext *ctx,
 static int renderer_resolve_sprite_zone_draw_clip(const RenderSliceContext *ctx,
                                                   GameState *state,
                                                   int16_t zone_id,
-                                                  int use_upper,
+                                                  int32_t section_top_world,
+                                                  int32_t section_bot_world,
                                                   int16_t *out_left,
                                                   int16_t *out_right,
                                                   int32_t *out_top_world,
@@ -5573,27 +5574,19 @@ static int renderer_resolve_sprite_zone_draw_clip(const RenderSliceContext *ctx,
     if (!level->data || !level->zone_adds || zone_slots <= 0 || zone_id < 0 || zone_id >= zone_slots)
         return 0;
 
-    /* Billboard override: disable horizontal zone/span clipping.
-     * Keep only the worker strip bounds for safety with threaded rendering. */
-    int16_t draw_left = ctx->strip_left;
-    int16_t draw_right = ctx->strip_right;
-    if (draw_left >= draw_right) return 0;
-
-    int32_t zone_off = rd32(level->zone_adds + (size_t)(uint16_t)zone_id * 4u);
-    if (zone_off < 0) return 0;
-    if (level->data_byte_count > 0 && (size_t)zone_off + 20u > level->data_byte_count) return 0;
-    const uint8_t *zone_data = level->data + zone_off;
-
-    int32_t zone_floor = rd32(zone_data + ZONE_OFF_FLOOR);
-    int32_t zone_roof = rd32(zone_data + ZONE_OFF_ROOF);
-    if (use_upper) {
-        int32_t upper_floor = rd32(zone_data + ZONE_OFF_UPPER_FLOOR);
-        int32_t upper_roof = rd32(zone_data + ZONE_OFF_UPPER_ROOF);
-        if (upper_floor > upper_roof) {
-            zone_floor = upper_floor;
-            zone_roof = upper_roof;
+    int16_t draw_left = ctx->left_clip;
+    int16_t draw_right = ctx->right_clip;
+    {
+        int16_t zl = 0, zr = 0;
+        if (renderer_compute_zone_clip_span(state, zone_id, 0u, 0, &zl, &zr)) {
+            if (zl > draw_left) draw_left = zl;
+            if (zr < draw_right) draw_right = zr;
         }
     }
+    if (draw_left >= draw_right) return 0;
+
+    int32_t zone_roof = section_top_world;
+    int32_t zone_floor = section_bot_world;
     if (zone_roof > zone_floor) {
         int32_t t = zone_roof;
         zone_roof = zone_floor;
@@ -5797,7 +5790,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         int16_t draw_clip_left = 0, draw_clip_right = 0;
         int32_t draw_zone_top = 0, draw_zone_bot = 0;
         int draw_ignore_top = 0;
-        if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, obj_zone, obj_on_upper,
+        if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, zone_id,
+                                                    top_of_room, bot_of_room,
                                                     &draw_clip_left, &draw_clip_right,
                                                     &draw_zone_top, &draw_zone_bot,
                                                     &draw_ignore_top)) {
@@ -5900,7 +5894,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int16_t draw_clip_left = 0, draw_clip_right = 0;
             int32_t draw_zone_top = 0, draw_zone_bot = 0;
             int draw_ignore_top = 0;
-            if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, shot_zone, shot_on_upper,
+            if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, zone_id,
+                                                        top_of_room, bot_of_room,
                                                         &draw_clip_left, &draw_clip_right,
                                                         &draw_zone_top, &draw_zone_bot,
                                                         &draw_ignore_top)) {
@@ -5993,7 +5988,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int16_t draw_clip_left = 0, draw_clip_right = 0;
             int32_t draw_zone_top = 0, draw_zone_bot = 0;
             int draw_ignore_top = 0;
-            if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, expl_zone, expl_on_upper,
+            if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, zone_id,
+                                                        top_of_room, bot_of_room,
                                                         &draw_clip_left, &draw_clip_right,
                                                         &draw_zone_top, &draw_zone_bot,
                                                         &draw_ignore_top)) {
