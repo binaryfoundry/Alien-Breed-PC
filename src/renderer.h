@@ -342,6 +342,8 @@ void renderer_step_water_anim(int steps);
 void renderer_step_water_anim_ms(uint32_t elapsed_ms);
 int renderer_toggle_floor_gouraud_debug_view(void);
 int renderer_get_floor_gouraud_debug_view(void);
+int renderer_toggle_spill_visualize_debug_view(void);
+int renderer_get_spill_visualize_debug_view(void);
 /* Automap: change world-units-per-pixel (PgUp = zoom in, PgDn = zoom out). */
 void renderer_automap_adjust_scale(int delta_steps);
 /* Stable dedupe key for one seen wall segment (stored as key+1; 0 reserved empty). */

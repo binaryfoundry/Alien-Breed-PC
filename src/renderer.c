@@ -94,6 +94,8 @@
 /* Amiga BitMapObj path uses cmp.w #50,d1 ; ble objbehind.
  * Keep this near cutoff for billboards so close sprites don't over-scale. */
 #define SPRITE_NEAR_CLIP_Z 50
+#define RENDERER_TAG_SPRITE 3u
+#define RENDERER_TAG_SPILL_VIS 13u
 
 /* -----------------------------------------------------------------------
  * Global renderer state
@@ -1544,6 +1546,8 @@ static size_t g_water_brighten_size = 0;
 static const uint16_t g_water_src_offsets[8] = { 0, 2, 256, 258, 512, 514, 768, 770 };
 /* Debug view: show floor/ceiling Gouraud term without distance attenuation. */
 static int g_debug_floor_gouraud_only = 0;
+/* Debug view: show spill-rendered billboard pixels via post tint. */
+static int g_debug_spill_visualize = 0;
 
 /* AB3DI.s DrawDisplay:
  *   watertouse = *waterpt++;
@@ -1606,6 +1610,19 @@ int renderer_toggle_floor_gouraud_debug_view(void)
 int renderer_get_floor_gouraud_debug_view(void)
 {
     return g_debug_floor_gouraud_only;
+}
+
+int renderer_toggle_spill_visualize_debug_view(void)
+{
+    g_debug_spill_visualize = g_debug_spill_visualize ? 0 : 1;
+    printf("[RENDER] Spill visualization: %s (F7)\n",
+           g_debug_spill_visualize ? "ON" : "OFF");
+    return g_debug_spill_visualize;
+}
+
+int renderer_get_spill_visualize_debug_view(void)
+{
+    return g_debug_spill_visualize;
 }
 
 void renderer_automap_adjust_scale(int delta_steps)
@@ -4500,6 +4517,8 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     const size_t rw_stride = (size_t)rw;
     const int down_strip_i = (int)down_strip;
     const int32_t z32 = (int32_t)z;
+    const uint8_t sprite_tag =
+        (respect_scene_tags && g_debug_spill_visualize) ? RENDERER_TAG_SPILL_VIS : RENDERER_TAG_SPRITE;
 
     /* Fixed-point 16.16 DDA stepping (replaces per-pixel integer division). */
     const int32_t src_col_step = (width > 1)
@@ -4620,14 +4639,14 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
-                                if (respect_scene_tags) {
-                                    uint8_t dst_tag = buf[pix];
-                                    if (dst_tag != 0 && dst_tag != 3) {
-                                        pix += rw_stride;
-                                        continue;
-                                    }
+                            if (respect_scene_tags) {
+                                uint8_t dst_tag = buf[pix];
+                                if (dst_tag != 0 && dst_tag != RENDERER_TAG_SPRITE && dst_tag != sprite_tag) {
+                                    pix += rw_stride;
+                                    continue;
                                 }
-                                buf[pix] = 3;
+                            }
+                                buf[pix] = sprite_tag;
                                 rgb[pix] = spr_rgb[texel];
                                 cw[pix] = spr_cw[texel];
                             }
@@ -4651,14 +4670,14 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
-                                if (respect_scene_tags) {
-                                    uint8_t dst_tag = buf[pix];
-                                    if (dst_tag != 0 && dst_tag != 3) {
+                            if (respect_scene_tags) {
+                                uint8_t dst_tag = buf[pix];
+                                    if (dst_tag != 0 && dst_tag != RENDERER_TAG_SPRITE && dst_tag != sprite_tag) {
                                         pix += rw_stride;
                                         continue;
                                     }
                                 }
-                                buf[pix] = 3;
+                                buf[pix] = sprite_tag;
                                 cw[pix] = spr_cw[texel];
                             }
                         }
@@ -8245,6 +8264,29 @@ static void renderer_apply_underwater_tint(int8_t fill_screen_water)
                                          g_renderer.rgb_buffer, g_renderer.cw_buffer);
 }
 
+static void renderer_apply_spill_visualize_post(void)
+{
+    if (!g_debug_spill_visualize) return;
+    if (!g_renderer.buffer || !g_renderer.cw_buffer) return;
+    {
+        const int w = g_renderer.width;
+        const int h = g_renderer.height;
+        const uint16_t spill_c12 = 0x0F0Fu;
+        const uint32_t spill_rgb = amiga12_to_argb(spill_c12);
+        if (w <= 0 || h <= 0) return;
+        for (int y = 0; y < h; y++) {
+            size_t row = (size_t)y * (size_t)w;
+            for (int x = 0; x < w; x++) {
+                size_t i = row + (size_t)x;
+                if (g_renderer.buffer[i] != RENDERER_TAG_SPILL_VIS) continue;
+                g_renderer.cw_buffer[i] = spill_c12;
+                if (g_renderer_rgb_raster_expand)
+                    g_renderer.rgb_buffer[i] = spill_rgb;
+            }
+        }
+    }
+}
+
 /* -----------------------------------------------------------------------
  * DrawDisplay - Main rendering entry point
  *
@@ -8430,6 +8472,9 @@ void renderer_draw_display(GameState *state)
         renderer_draw_gun(state);
     }
     if (prof_on) t_after_gun = SDL_GetPerformanceCounter();
+
+    /* Optional debug post-pass: recolor spill-tagged billboard pixels. */
+    renderer_apply_spill_visualize_post();
 
     /* 8. Swap buffers (the just-drawn buffer becomes the display buffer) */
     renderer_swap();

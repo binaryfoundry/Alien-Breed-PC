@@ -51,6 +51,7 @@ bool input_f5_save_requested(void);
 /* F9 load savegame.bin (same file as F5). Returns true once when F9 was pressed. */
 bool input_f9_load_requested(void);
 bool input_f6_gouraud_visualize_requested(void);
+bool input_f7_spill_visualize_requested(void);
 /* Tab: toggle automap overlay (once per key press). */
 bool input_automap_toggle_requested(void);
 /* PgUp/PgDn: automap zoom (once per key press). */

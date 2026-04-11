@@ -94,6 +94,7 @@ static bool g_quit_requested = false;
 static bool g_f5_save_requested = false;
 static bool g_f9_load_requested = false;
 static bool g_f6_gouraud_visualize_requested = false;
+static bool g_f7_spill_visualize_requested = false;
 static bool g_automap_toggle_requested = false;
 static bool g_automap_pgup_requested = false;
 static bool g_automap_pgdn_requested = false;
@@ -105,6 +106,7 @@ void input_init(void)
 {
     printf("[INPUT] SDL2 input init\n");
     g_quit_requested = false;
+    g_f7_spill_visualize_requested = false;
     /* In fullscreen, capture mouse from the start; in windowed, user double-clicks to capture. */
     if (display_is_fullscreen()) {
         SDL_SetRelativeMouseMode(SDL_TRUE);
@@ -147,6 +149,8 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
                 g_f9_load_requested = true;
             } else if (ev.key.keysym.scancode == SDL_SCANCODE_F6) {
                 g_f6_gouraud_visualize_requested = true;
+            } else if (ev.key.keysym.scancode == SDL_SCANCODE_F7) {
+                g_f7_spill_visualize_requested = true;
             } else if (ev.key.keysym.scancode == SDL_SCANCODE_TAB) {
                 g_automap_toggle_requested = true;
             } else if (ev.key.keysym.scancode == SDL_SCANCODE_PAGEUP) {
@@ -272,6 +276,13 @@ bool input_f6_gouraud_visualize_requested(void)
 {
     if (!g_f6_gouraud_visualize_requested) return false;
     g_f6_gouraud_visualize_requested = false;
+    return true;
+}
+
+bool input_f7_spill_visualize_requested(void)
+{
+    if (!g_f7_spill_visualize_requested) return false;
+    g_f7_spill_visualize_requested = false;
     return true;
 }
 

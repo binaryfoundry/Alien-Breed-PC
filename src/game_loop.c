@@ -148,6 +148,8 @@ void game_loop(GameState *state)
         }
         if (input_f6_gouraud_visualize_requested())
             renderer_toggle_floor_gouraud_debug_view();
+        if (input_f7_spill_visualize_requested())
+            renderer_toggle_spill_visualize_debug_view();
         if (input_automap_toggle_requested())
             state->automap_visible = !state->automap_visible;
         if (input_automap_pgup_requested())
