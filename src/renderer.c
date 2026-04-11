@@ -94,8 +94,6 @@
 /* Amiga BitMapObj path uses cmp.w #50,d1 ; ble objbehind.
  * Keep this near cutoff for billboards so close sprites don't over-scale. */
 #define SPRITE_NEAR_CLIP_Z 50
-#define RENDERER_TAG_SPRITE 3u
-#define RENDERER_TAG_SPILL_VIS 13u
 
 /* -----------------------------------------------------------------------
  * Global renderer state
@@ -1546,7 +1544,7 @@ static size_t g_water_brighten_size = 0;
 static const uint16_t g_water_src_offsets[8] = { 0, 2, 256, 258, 512, 514, 768, 770 };
 /* Debug view: show floor/ceiling Gouraud term without distance attenuation. */
 static int g_debug_floor_gouraud_only = 0;
-/* Debug view: show spill-rendered billboard pixels via post tint. */
+/* Debug view: tint spill-rendered billboard pixels pink during sprite draw. */
 static int g_debug_spill_visualize = 0;
 
 /* AB3DI.s DrawDisplay:
@@ -4395,6 +4393,34 @@ void renderer_draw_floor_span(int16_t y, int16_t x_left, int16_t x_right,
                                  scaleval, is_water, water_rows_left);
 }
 
+static inline int renderer_spill_pixel_occluded_by_zone_planes(int screen_row,
+                                                                int center_y,
+                                                                int32_t sprite_z,
+                                                                int32_t zone_top_rel_8,
+                                                                int32_t zone_bot_rel_8,
+                                                                int32_t proj_y_scale)
+{
+    int row_dist = screen_row - center_y;
+    if (row_dist > 0 && zone_bot_rel_8 > 0) {
+        int32_t z_floor = (int32_t)(((int64_t)zone_bot_rel_8 *
+                                     (int64_t)proj_y_scale *
+                                     (int64_t)RENDER_SCALE +
+                                     (int64_t)(row_dist / 2)) /
+                                    (int64_t)row_dist);
+        if (z_floor > 0 && sprite_z > z_floor) return 1;
+    } else if (row_dist < 0 && zone_top_rel_8 < 0) {
+        int32_t ad = -row_dist;
+        int32_t rel = -zone_top_rel_8;
+        int32_t z_roof = (int32_t)(((int64_t)rel *
+                                    (int64_t)proj_y_scale *
+                                    (int64_t)RENDER_SCALE +
+                                    (int64_t)(ad / 2)) /
+                                   (int64_t)ad);
+        if (z_roof > 0 && sprite_z > z_roof) return 1;
+    }
+    return 0;
+}
+
 /* -----------------------------------------------------------------------
  * Sprite rendering
  *
@@ -4428,15 +4454,14 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                      int src_cols, int src_rows,
                                      int16_t brightness, int sprite_type,
                                      int16_t clip_left_sx, int16_t clip_right_sx,
+                                     int32_t clip_top_world, int32_t clip_bot_world,
                                      int32_t clip_top_sy, int32_t clip_bot_sy,
-                                     int respect_scene_tags)
+                                     int is_spill)
 {
     (void)sprite_type;
-    (void)respect_scene_tags;
-    uint8_t *buf = renderer_active_buf();
     uint32_t *rgb = renderer_active_rgb();
     uint16_t *cw = renderer_active_cw();
-    if (!buf || !rgb || !cw) return;
+    if (!rgb || !cw) return;
     if (z <= SPRITE_NEAR_CLIP_Z) return;
     if (!wad || !ptr_data) return;
     const int rw = g_renderer.width, rh = g_renderer.height;
@@ -4521,8 +4546,18 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     const size_t rw_stride = (size_t)rw;
     const int down_strip_i = (int)down_strip;
     const int32_t z32 = (int32_t)z;
-    const uint8_t sprite_tag =
-        (respect_scene_tags && g_debug_spill_visualize) ? RENDERER_TAG_SPILL_VIS : RENDERER_TAG_SPRITE;
+    const int center_y = rh / 2;
+    int have_spill_plane_depth_clip = 0;
+    int32_t zone_top_rel_8 = 0;
+    int32_t zone_bot_rel_8 = 0;
+    if (is_spill) {
+        zone_top_rel_8 = (clip_top_world - g_renderer.yoff) >> WORLD_Y_FRAC_BITS;
+        zone_bot_rel_8 = (clip_bot_world - g_renderer.yoff) >> WORLD_Y_FRAC_BITS;
+        have_spill_plane_depth_clip = 1;
+    }
+    const int spill_visualize = (is_spill && g_debug_spill_visualize) ? 1 : 0;
+    const uint16_t spill_vis_cw = 0x0F0Fu;
+    const uint32_t spill_vis_rgb = amiga12_to_argb(spill_vis_cw);
 
     /* Fixed-point 16.16 DDA stepping (replaces per-pixel integer division). */
     const int32_t src_col_step = (width > 1)
@@ -4532,6 +4567,8 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     int32_t src_col_fp = (int32_t)dx_start * src_col_step;
 
     const ColumnClip *wall_clip = &g_renderer.clip;
+    /* Main billboards and spills are both geometry-clipped against wall spans
+     * of the zone currently being drawn. */
     const int have_wall_clip =
         (wall_clip->top && wall_clip->bot && wall_clip->z &&
          wall_clip->top2 && wall_clip->bot2 && wall_clip->z2);
@@ -4643,16 +4680,23 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
-                            if (respect_scene_tags) {
-                                uint8_t dst_tag = buf[pix];
-                                if (sprite_tag == RENDERER_TAG_SPILL_VIS && dst_tag == RENDERER_TAG_SPRITE) {
-                                    pix += rw_stride;
-                                    continue;
-                                }
+                            if (have_spill_plane_depth_clip &&
+                                renderer_spill_pixel_occluded_by_zone_planes(screen_row,
+                                                                              center_y,
+                                                                              z32,
+                                                                              zone_top_rel_8,
+                                                                              zone_bot_rel_8,
+                                                                              g_renderer.proj_y_scale)) {
+                                pix += rw_stride;
+                                continue;
                             }
-                                buf[pix] = sprite_tag;
-                                rgb[pix] = spr_rgb[texel];
-                                cw[pix] = spr_cw[texel];
+                                if (spill_visualize) {
+                                    rgb[pix] = spill_vis_rgb;
+                                    cw[pix] = spill_vis_cw;
+                                } else {
+                                    rgb[pix] = spr_rgb[texel];
+                                    cw[pix] = spr_cw[texel];
+                                }
                             }
                         }
                     pix += rw_stride;
@@ -4674,15 +4718,17 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
-                            if (respect_scene_tags) {
-                                uint8_t dst_tag = buf[pix];
-                                    if (sprite_tag == RENDERER_TAG_SPILL_VIS && dst_tag == RENDERER_TAG_SPRITE) {
-                                        pix += rw_stride;
-                                        continue;
-                                    }
-                                }
-                                buf[pix] = sprite_tag;
-                                cw[pix] = spr_cw[texel];
+                            if (have_spill_plane_depth_clip &&
+                                renderer_spill_pixel_occluded_by_zone_planes(screen_row,
+                                                                              center_y,
+                                                                              z32,
+                                                                              zone_top_rel_8,
+                                                                              zone_bot_rel_8,
+                                                                              g_renderer.proj_y_scale)) {
+                                    pix += rw_stride;
+                                    continue;
+                            }
+                                cw[pix] = spill_visualize ? spill_vis_cw : spr_cw[texel];
                             }
                         }
                     pix += rw_stride;
@@ -4709,6 +4755,7 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
                              wad, wad_size, ptr_data, ptr_size, pal, pal_size,
                              ptr_offset, down_strip, src_cols, src_rows, brightness,
                              sprite_type, ctx.left_clip, ctx.right_clip,
+                             INT32_MIN, INT32_MIN,
                              clip_top_sy, clip_bot_sy, 0);
 }
 
@@ -5432,7 +5479,8 @@ static int renderer_lateral_span_hits_adj_lines(const LevelState *level,
                                                 int16_t view_right_x,
                                                 int16_t view_right_z,
                                                 const int16_t *line_ids,
-                                                int line_count)
+                                                int line_count,
+                                                int allow_near_miss)
 {
     if (!level || !level->floor_lines || !line_ids || line_count <= 0) return 0;
     if (half_span_world < 1) half_span_world = 1;
@@ -5464,8 +5512,11 @@ static int renderer_lateral_span_hits_adj_lines(const LevelState *level,
         if (renderer_segments_intersect_i32(sx1, sz1, sx2, sz2, x1, z1, x2, z2)) {
             return 1;
         }
-        /* Safety net for near-miss quantization/corner cases at zone boundaries. */
-        if (renderer_point_segment_dist2_i32(px, pz, x1, z1, x2, z2) <= near2) {
+        /* Optional safety net for near-miss quantization/corner cases at
+         * zone boundaries. Strict mode disables this and requires an actual
+         * lateral segment crossing. */
+        if (allow_near_miss &&
+            renderer_point_segment_dist2_i32(px, pz, x1, z1, x2, z2) <= near2) {
             return 1;
         }
     }
@@ -5803,6 +5854,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
     if (!level->object_data || !level->object_points) return;
 
     int32_t y_off = r->yoff;
+    int cur_zone_order = renderer_zone_order_index(state, zone_id);
     const int sprite_scale_x_for_estimate = renderer_sprite_scale_x_for_state(r, state);
     const int explosion_sprite_scale_x_for_estimate = renderer_sprite_scale_x_for_state(r, state);
     const int use_billboard_enhancement = state->cfg_billboard_sprite_rendering_enhancement ? 1 : 0;
@@ -5830,7 +5882,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         int32_t zone_top_world;
         int32_t zone_bot_world;
         uint8_t ignore_top_clip;
-        uint8_t respect_scene_tags;
+        uint8_t is_spill;
     } ObjEntry;
     enum {
         /* Level object table is CID-terminated but physically 256 slots in level data.
@@ -5880,7 +5932,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         int obj_on_upper = (obj[obj_off_in_top] != 0);
         /* Multi-floor: only render objects when we are drawing their floor. Use object's in_top
          * so upper/lower is consistent with game logic (objects.c, movement). */
-        if (in_this_zone && level_filter >= 0) {
+        if (level_filter >= 0) {
             if ((level_filter == 1 && !obj_on_upper) || (level_filter == 0 && obj_on_upper))
                 continue;
         }
@@ -5921,7 +5973,12 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             if (!in_this_zone) {
                 int line_start = adj_zones[adj_slot].line_start;
                 int line_count = adj_zones[adj_slot].line_count;
+                int src_farther = 0;
                 int near_exit = 0;
+                if (cur_zone_order >= 0) {
+                    int src_order = renderer_zone_order_index(state, obj_zone);
+                    src_farther = (src_order >= 0 && src_order > cur_zone_order) ? 1 : 0;
+                }
                 if (use_billboard_enhancement) {
                     int32_t ox = rd16(level->object_points + (size_t)(uint16_t)pt_num * 8u + 0u);
                     int32_t oz = rd16(level->object_points + (size_t)(uint16_t)pt_num * 8u + 4u);
@@ -5932,15 +5989,29 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                                                      ox, oz,
                                                                      half_span,
                                                                      r->cosval, (int16_t)-r->sinval,
-                                                                     adj_lines + line_start, line_count);
+                                                                     adj_lines + line_start, line_count,
+                                                                     1);
                     if (!near_exit) continue;
+                    if (src_farther) {
+                        int strict_exit = renderer_lateral_span_hits_adj_lines(level,
+                                                                               ox, oz,
+                                                                               half_span,
+                                                                               r->cosval, (int16_t)-r->sinval,
+                                                                               adj_lines + line_start, line_count,
+                                                                               0);
+                        if (!strict_exit) continue;
+                    }
                 } else {
                     int32_t near_r = ((int32_t)world_w << 2) + 96;
                     if (near_r < 128) near_r = 128;
                     if (near_r > 1536) near_r = 1536;
                     near_exit = renderer_object_point_near_adj_lines(level, pt_num, near_r,
                                                                       adj_lines + line_start, line_count);
-                    if (!near_exit && !adj_zones[adj_slot].ambiguous) continue;
+                    if (src_farther) {
+                        if (!near_exit) continue;
+                    } else {
+                        if (!near_exit && !adj_zones[adj_slot].ambiguous) continue;
+                    }
                 }
             }
         }
@@ -5955,7 +6026,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         objs[obj_count].zone_top_world = draw_zone_top;
         objs[obj_count].zone_bot_world = draw_zone_bot;
         objs[obj_count].ignore_top_clip = (uint8_t)(draw_ignore_top ? 1 : 0);
-        objs[obj_count].respect_scene_tags = (uint8_t)(in_this_zone ? 0 : 1);
+        objs[obj_count].is_spill = (uint8_t)(in_this_zone ? 0 : 1);
         obj_count++;
     }
 
@@ -5985,7 +6056,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                     continue;
             }
             int shot_on_upper = (obj[obj_off_in_top] != 0);
-            if (in_this_zone && level_filter >= 0) {
+            if (level_filter >= 0) {
                 if ((level_filter == 1 && !shot_on_upper) || (level_filter == 0 && shot_on_upper))
                     continue;
             }
@@ -6017,7 +6088,12 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 if (!in_this_zone) {
                     int line_start = adj_zones[adj_slot].line_start;
                     int line_count = adj_zones[adj_slot].line_count;
+                    int src_farther = 0;
                     int near_exit = 0;
+                    if (cur_zone_order >= 0) {
+                        int src_order = renderer_zone_order_index(state, shot_zone);
+                        src_farther = (src_order >= 0 && src_order > cur_zone_order) ? 1 : 0;
+                    }
                     if (use_billboard_enhancement) {
                         int32_t ox = rd16(level->object_points + (size_t)(uint16_t)pt_num * 8u + 0u);
                         int32_t oz = rd16(level->object_points + (size_t)(uint16_t)pt_num * 8u + 4u);
@@ -6028,15 +6104,29 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                                                          ox, oz,
                                                                          half_span,
                                                                          r->cosval, (int16_t)-r->sinval,
-                                                                         adj_lines + line_start, line_count);
+                                                                         adj_lines + line_start, line_count,
+                                                                         1);
                         if (!near_exit) continue;
+                        if (src_farther) {
+                            int strict_exit = renderer_lateral_span_hits_adj_lines(level,
+                                                                                   ox, oz,
+                                                                                   half_span,
+                                                                                   r->cosval, (int16_t)-r->sinval,
+                                                                                   adj_lines + line_start, line_count,
+                                                                                   0);
+                            if (!strict_exit) continue;
+                        }
                     } else {
                         int32_t near_r = ((int32_t)world_w << 2) + 96;
                         if (near_r < 128) near_r = 128;
                         if (near_r > 1536) near_r = 1536;
                         near_exit = renderer_object_point_near_adj_lines(level, pt_num, near_r,
                                                                           adj_lines + line_start, line_count);
-                        if (!near_exit && !adj_zones[adj_slot].ambiguous) continue;
+                        if (src_farther) {
+                            if (!near_exit) continue;
+                        } else {
+                            if (!near_exit && !adj_zones[adj_slot].ambiguous) continue;
+                        }
                     }
                 }
             }
@@ -6048,7 +6138,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             objs[obj_count].zone_top_world = draw_zone_top;
             objs[obj_count].zone_bot_world = draw_zone_bot;
             objs[obj_count].ignore_top_clip = (uint8_t)(draw_ignore_top ? 1 : 0);
-            objs[obj_count].respect_scene_tags = (uint8_t)(in_this_zone ? 0 : 1);
+            objs[obj_count].is_spill = (uint8_t)(in_this_zone ? 0 : 1);
             obj_count++;
         }
     }
@@ -6078,7 +6168,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             if (state->explosions[ei].start_delay > 0) continue;
             if ((int)state->explosions[ei].frame >= 9) continue;
             int expl_on_upper = (state->explosions[ei].in_top != 0);
-            if (in_this_zone && level_filter >= 0) {
+            if (level_filter >= 0) {
                 if ((level_filter == 1 && !expl_on_upper) || (level_filter == 0 && expl_on_upper))
                     continue;
             }
@@ -6120,7 +6210,12 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 if (!in_this_zone) {
                     int line_start = adj_zones[adj_slot].line_start;
                     int line_count = adj_zones[adj_slot].line_count;
+                    int src_farther = 0;
                     int near_exit = 0;
+                    if (cur_zone_order >= 0) {
+                        int src_order = renderer_zone_order_index(state, expl_zone);
+                        src_farther = (src_order >= 0 && src_order > cur_zone_order) ? 1 : 0;
+                    }
                     if (use_billboard_enhancement) {
                         int32_t half_span = expl_w_est / 2;
                         if (half_span < 16) half_span = 16;
@@ -6130,8 +6225,19 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                                                          (int32_t)state->explosions[ei].z,
                                                                          half_span,
                                                                          r->cosval, (int16_t)-r->sinval,
-                                                                         adj_lines + line_start, line_count);
+                                                                         adj_lines + line_start, line_count,
+                                                                         1);
                         if (!near_exit) continue;
+                        if (src_farther) {
+                            int strict_exit = renderer_lateral_span_hits_adj_lines(level,
+                                                                                   (int32_t)state->explosions[ei].x,
+                                                                                   (int32_t)state->explosions[ei].z,
+                                                                                   half_span,
+                                                                                   r->cosval, (int16_t)-r->sinval,
+                                                                                   adj_lines + line_start, line_count,
+                                                                                   0);
+                            if (!strict_exit) continue;
+                        }
                     } else {
                         int32_t near_r = (expl_w_est << 1) + 128;
                         if (near_r < 160) near_r = 160;
@@ -6141,7 +6247,11 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                                                      (int32_t)state->explosions[ei].z,
                                                                      near_r,
                                                                      adj_lines + line_start, line_count);
-                        if (!near_exit && !adj_zones[adj_slot].ambiguous) continue;
+                        if (src_farther) {
+                            if (!near_exit) continue;
+                        } else {
+                            if (!near_exit && !adj_zones[adj_slot].ambiguous) continue;
+                        }
                     }
                 }
             }
@@ -6154,19 +6264,22 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             objs[obj_count].zone_top_world = draw_zone_top;
             objs[obj_count].zone_bot_world = draw_zone_bot;
             objs[obj_count].ignore_top_clip = (uint8_t)(draw_ignore_top ? 1 : 0);
-            objs[obj_count].respect_scene_tags = (uint8_t)(in_this_zone ? 0 : 1);
+            objs[obj_count].is_spill = (uint8_t)(in_this_zone ? 0 : 1);
             obj_count++;
         }
     }
 
     /* Insertion sort by Z descending (farthest first - painter's algorithm).
-     * Uses >= in the shift condition to match the original selection sort's
-     * tie-breaking: equal-depth items end up in reverse-input order (later
-     * entries draw first, i.e. appear earlier in the sorted array). */
+     * Tie-breaker: spill entries (adjacent-zone) are treated as farther than
+     * in-zone entries at equal depth so local-zone billboards win over spills.
+     * Within the same class, keep reverse-input tie behavior for parity. */
     for (int i = 1; i < obj_count; i++) {
         ObjEntry key = objs[i];
         int j = i - 1;
-        while (j >= 0 && objs[j].z <= key.z) {
+        while (j >= 0 &&
+                (objs[j].z < key.z ||
+                (objs[j].z == key.z &&
+                 objs[j].is_spill <= key.is_spill))) {
             objs[j + 1] = objs[j];
             j--;
         }
@@ -6195,7 +6308,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         int entry_src = entry->src;
         int16_t draw_clip_left = entry->clip_left;
         int16_t draw_clip_right = entry->clip_right;
-        int respect_scene_tags = (entry->respect_scene_tags != 0);
+        int is_spill = (entry->is_spill != 0);
         if (draw_clip_left >= draw_clip_right) continue;
 
         if (entry_src == DRAW_SRC_EXPLOSION) {
@@ -6268,8 +6381,9 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                          32, 32,
                                          (int16_t)bright, expl_vect,
                                          draw_clip_left, draw_clip_right,
+                                         entry->zone_top_world, entry->zone_bot_world,
                                          clip_top_y, clip_bot_y,
-                                         respect_scene_tags);
+                                         is_spill);
             }
             continue;
         }
@@ -6459,8 +6573,9 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                      src_cols, src_rows,
                                      (int16_t)bright, vect_num,
                                      draw_clip_left, draw_clip_right,
+                                     entry->zone_top_world, entry->zone_bot_world,
                                      clip_top_y, clip_bot_y,
-                                     respect_scene_tags);
+                                     is_spill);
         }
     }
 }
@@ -8330,29 +8445,6 @@ static void renderer_apply_underwater_tint(int8_t fill_screen_water)
                                          g_renderer.rgb_buffer, g_renderer.cw_buffer);
 }
 
-static void renderer_apply_spill_visualize_post(void)
-{
-    if (!g_debug_spill_visualize) return;
-    if (!g_renderer.buffer || !g_renderer.cw_buffer) return;
-    {
-        const int w = g_renderer.width;
-        const int h = g_renderer.height;
-        const uint16_t spill_c12 = 0x0F0Fu;
-        const uint32_t spill_rgb = amiga12_to_argb(spill_c12);
-        if (w <= 0 || h <= 0) return;
-        for (int y = 0; y < h; y++) {
-            size_t row = (size_t)y * (size_t)w;
-            for (int x = 0; x < w; x++) {
-                size_t i = row + (size_t)x;
-                if (g_renderer.buffer[i] != RENDERER_TAG_SPILL_VIS) continue;
-                g_renderer.cw_buffer[i] = spill_c12;
-                if (g_renderer_rgb_raster_expand)
-                    g_renderer.rgb_buffer[i] = spill_rgb;
-            }
-        }
-    }
-}
-
 /* -----------------------------------------------------------------------
  * DrawDisplay - Main rendering entry point
  *
@@ -8538,9 +8630,6 @@ void renderer_draw_display(GameState *state)
         renderer_draw_gun(state);
     }
     if (prof_on) t_after_gun = SDL_GetPerformanceCounter();
-
-    /* Optional debug post-pass: recolor spill-tagged billboard pixels. */
-    renderer_apply_spill_visualize_post();
 
     /* 8. Swap buffers (the just-drawn buffer becomes the display buffer) */
     renderer_swap();
