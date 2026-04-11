@@ -5521,6 +5521,46 @@ static inline int32_t renderer_billboard_half_height_world_fp(int world_h)
     return (int32_t)world_h << (WORLD_Y_FRAC_BITS - 1);
 }
 
+static void renderer_get_explosion_frame_and_world_size(const GameState *state,
+                                                        int explosion_index,
+                                                        int *out_frame_num,
+                                                        int *out_world_w,
+                                                        int *out_world_h)
+{
+    int frame_num = 0;
+    int expl_w = 100;
+    int expl_h = 100;
+    int scale = 100;
+    int ft_count = sprite_frames_table[8].count;
+    if (ft_count < 1) ft_count = 1;
+
+    if (state && explosion_index >= 0 && explosion_index < state->num_explosions) {
+        scale = (int)state->explosions[explosion_index].size_scale;
+        if (scale <= 0) scale = 100;
+
+        frame_num = (int)state->explosions[explosion_index].frame;
+        if (frame_num < 0) frame_num = 0;
+        if (frame_num >= ft_count) frame_num = ft_count - 1;
+
+        if (bullet_pop_tables[2]) {
+            const BulletAnimFrame *pf = &bullet_pop_tables[2][frame_num];
+            if (pf->width > 0 && pf->height > 0) {
+                expl_w = pf->width;
+                expl_h = pf->height;
+            }
+        }
+    }
+
+    expl_w = (expl_w * scale) / 100;
+    expl_h = (expl_h * scale) / 100;
+    if (expl_w < 1) expl_w = 1;
+    if (expl_h < 1) expl_h = 1;
+
+    if (out_frame_num) *out_frame_num = frame_num;
+    if (out_world_w) *out_world_w = expl_w;
+    if (out_world_h) *out_world_h = expl_h;
+}
+
 static void renderer_project_zone_world_clip_y(const RendererState *r,
                                                int32_t zone_top_world,
                                                int32_t zone_bot_world,
@@ -5824,8 +5864,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 adj_slot = renderer_find_adj_zone_slot(adj_zones, adj_zone_count, expl_zone);
                 if (adj_slot < 0) continue;
                 int32_t adj_world_y = state->explosions[ei].y_floor;
-                int scale = (int)state->explosions[ei].size_scale;
-                int expl_h_est = (scale > 0) ? scale : 100;
+                int expl_h_est = 100;
+                renderer_get_explosion_frame_and_world_size(state, ei, NULL, NULL, &expl_h_est);
                 int32_t half_h = renderer_billboard_half_height_world_fp(expl_h_est);
                 if (!renderer_world_span_overlaps_room(adj_world_y, half_h, top_of_room, bot_of_room))
                     continue;
@@ -5858,10 +5898,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             {
                 int z_for_size = ROT_Z_INT(orp_z);
                 if (z_for_size < 1) z_for_size = 1;
-                int scale = (int)state->explosions[ei].size_scale;
-                if (scale <= 0) scale = 100;
-                int expl_w_est = (100 * scale) / 100;
-                if (expl_w_est < 1) expl_w_est = 1;
+                int expl_w_est = 100;
+                renderer_get_explosion_frame_and_world_size(state, ei, NULL, &expl_w_est, NULL);
                 int sprite_w_est = (int)((int32_t)expl_w_est * explosion_sprite_scale_x_for_estimate / z_for_size) * SPRITE_SIZE_MULTIPLIER;
                 sprite_w_est *= EXPLOSION_SIZE_CORRECTION;
                 if (sprite_w_est < 1) sprite_w_est = 1;
@@ -5960,26 +5998,12 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int16_t cos_v = r->cosval;
             int16_t cam_x = r->xoff;
             int16_t cam_z = r->zoff;
-            int scale = (int)state->explosions[ei].size_scale;
-            if (scale <= 0) scale = 100;
-            int frame_num = state->explosions[ei].frame;
-            if (frame_num >= expl_ft_count) frame_num = expl_ft_count - 1;
-            if (frame_num < 0) continue;
-            /* Use Amiga RockPop world size progression (shot_size 2 pop frames 0-8)
-             * instead of a fixed heuristic explosion size. */
+            int frame_num = 0;
             int expl_w = 100;
             int expl_h = 100;
-            if (bullet_pop_tables[2]) {
-                const BulletAnimFrame *pf = &bullet_pop_tables[2][frame_num];
-                if (pf->width > 0 && pf->height > 0) {
-                    expl_w = pf->width;
-                    expl_h = pf->height;
-                }
-            }
-            expl_w = (expl_w * scale) / 100;
-            expl_h = (expl_h * scale) / 100;
-            if (expl_w < 1) expl_w = 1;
-            if (expl_h < 1) expl_h = 1;
+            renderer_get_explosion_frame_and_world_size(state, ei, &frame_num, &expl_w, &expl_h);
+            if (frame_num >= expl_ft_count) frame_num = expl_ft_count - 1;
+            if (frame_num < 0) continue;
 
             int16_t dx = (int16_t)(state->explosions[ei].x - cam_x);
             int16_t dz = (int16_t)(state->explosions[ei].z - cam_z);
