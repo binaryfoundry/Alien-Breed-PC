@@ -4542,10 +4542,10 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
         const int max_row_idx = (int)((wad_size - wad_off) / 2) - 1;
         if (max_row_idx < 0) continue;
 
-        /* Per-column zone clip: compute one top/bottom interval and only
-         * rasterize between those bounds. */
-        int col_top = draw_top;
-        int col_bot = draw_bot;
+        /* Per-column zone clip: subtract occluder spans so split columns can
+         * render all visible pieces (top/middle/bottom) instead of choosing
+         * only one side of an interior occluder. */
+        int seg_top[3], seg_bot[3], seg_count = 0;
         {
             int occ_top[2], occ_bot[2], occ_count = 0;
             if (have_wall_clip) {
@@ -4578,86 +4578,91 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                 }
             }
 
-            /* Clip from top/bottom by spans touching each boundary. */
+            /* Build visible segments by subtracting merged occluders from
+             * [draw_top, draw_bot]. */
+            int scan_top = draw_top;
             for (int i = 0; i < occ_count; i++) {
-                if (occ_top[i] <= col_top && occ_bot[i] >= col_top) {
-                    col_top = occ_bot[i] + 1;
+                int ot = occ_top[i];
+                int ob = occ_bot[i];
+                if (ob < scan_top) continue;
+                if (ot > draw_bot) break;
+                if (ot > scan_top && seg_count < 3) {
+                    seg_top[seg_count] = scan_top;
+                    seg_bot[seg_count] = ot - 1;
+                    seg_count++;
                 }
-                if (occ_top[i] <= col_bot && occ_bot[i] >= col_bot) {
-                    col_bot = occ_top[i] - 1;
-                }
+                if (ob >= scan_top) scan_top = ob + 1;
+                if (scan_top > draw_bot) break;
             }
-
-            /* If an interior occluder remains, choose the side that keeps the
-             * sprite anchor row (or the larger side when the anchor is inside). */
-            for (int i = 0; i < occ_count && col_top <= col_bot; i++) {
-                if (occ_top[i] <= col_bot && occ_bot[i] >= col_top) {
-                    if (screen_y < occ_top[i]) {
-                        col_bot = occ_top[i] - 1;
-                    } else if (screen_y > occ_bot[i]) {
-                        col_top = occ_bot[i] + 1;
-                    } else {
-                        int keep_top = occ_top[i] - col_top;
-                        int keep_bot = col_bot - occ_bot[i];
-                        if (keep_top >= keep_bot) col_bot = occ_top[i] - 1;
-                        else                      col_top = occ_bot[i] + 1;
-                    }
-                }
+            if (scan_top <= draw_bot && seg_count < 3) {
+                seg_top[seg_count] = scan_top;
+                seg_bot[seg_count] = draw_bot;
+                seg_count++;
             }
         }
-        if (col_top > col_bot) continue;
+        if (seg_count <= 0) continue;
 
-        /* Rasterize one visible interval for this column. */
+        /* Rasterize all visible intervals for this column. */
         if (expand) {
-            int32_t row_fp = (int32_t)(col_top - sy) * src_row_step;
-            size_t pix = (size_t)col_top * rw_stride + (size_t)screen_col;
-            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
-                int src_row = row_fp >> 16;
-                row_fp += src_row_step;
-                if (src_row >= eff_rows) src_row = eff_rows - 1;
-                    const int row_idx = down_strip_i + src_row;
-                    if (row_idx <= max_row_idx) {
-                        const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
-                        const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
-                        if (texel != 0) {
-                            if (respect_scene_tags) {
-                                uint8_t dst_tag = buf[pix];
-                                if (dst_tag != 0 && dst_tag != 3) {
-                                    pix += rw_stride;
-                                    continue;
+            for (int si = 0; si < seg_count; si++) {
+                int col_top = seg_top[si];
+                int col_bot = seg_bot[si];
+                if (col_top > col_bot) continue;
+                int32_t row_fp = (int32_t)(col_top - sy) * src_row_step;
+                size_t pix = (size_t)col_top * rw_stride + (size_t)screen_col;
+                for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                    int src_row = row_fp >> 16;
+                    row_fp += src_row_step;
+                    if (src_row >= eff_rows) src_row = eff_rows - 1;
+                        const int row_idx = down_strip_i + src_row;
+                        if (row_idx <= max_row_idx) {
+                            const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
+                            const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
+                            if (texel != 0) {
+                                if (respect_scene_tags) {
+                                    uint8_t dst_tag = buf[pix];
+                                    if (dst_tag != 0 && dst_tag != 3) {
+                                        pix += rw_stride;
+                                        continue;
+                                    }
                                 }
+                                buf[pix] = 3;
+                                rgb[pix] = spr_rgb[texel];
+                                cw[pix] = spr_cw[texel];
                             }
-                            buf[pix] = 3;
-                            rgb[pix] = spr_rgb[texel];
-                            cw[pix] = spr_cw[texel];
                         }
-                    }
-                pix += rw_stride;
+                    pix += rw_stride;
+                }
             }
         } else {
-            int32_t row_fp = (int32_t)(col_top - sy) * src_row_step;
-            size_t pix = (size_t)col_top * rw_stride + (size_t)screen_col;
-            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
-                int src_row = row_fp >> 16;
-                row_fp += src_row_step;
-                if (src_row >= eff_rows) src_row = eff_rows - 1;
-                    const int row_idx = down_strip_i + src_row;
-                    if (row_idx <= max_row_idx) {
-                        const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
-                        const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
-                        if (texel != 0) {
-                            if (respect_scene_tags) {
-                                uint8_t dst_tag = buf[pix];
-                                if (dst_tag != 0 && dst_tag != 3) {
-                                    pix += rw_stride;
-                                    continue;
+            for (int si = 0; si < seg_count; si++) {
+                int col_top = seg_top[si];
+                int col_bot = seg_bot[si];
+                if (col_top > col_bot) continue;
+                int32_t row_fp = (int32_t)(col_top - sy) * src_row_step;
+                size_t pix = (size_t)col_top * rw_stride + (size_t)screen_col;
+                for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                    int src_row = row_fp >> 16;
+                    row_fp += src_row_step;
+                    if (src_row >= eff_rows) src_row = eff_rows - 1;
+                        const int row_idx = down_strip_i + src_row;
+                        if (row_idx <= max_row_idx) {
+                            const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
+                            const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
+                            if (texel != 0) {
+                                if (respect_scene_tags) {
+                                    uint8_t dst_tag = buf[pix];
+                                    if (dst_tag != 0 && dst_tag != 3) {
+                                        pix += rw_stride;
+                                        continue;
+                                    }
                                 }
+                                buf[pix] = 3;
+                                cw[pix] = spr_cw[texel];
                             }
-                            buf[pix] = 3;
-                            cw[pix] = spr_cw[texel];
                         }
-                    }
-                pix += rw_stride;
+                    pix += rw_stride;
+                }
             }
         }
     }
