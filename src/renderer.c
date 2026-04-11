@@ -4509,8 +4509,9 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     int32_t src_col_fp = (int32_t)dx_start * src_col_step;
 
     const ColumnClip *wall_clip = &g_renderer.clip;
-    const int have_wall_clip = (wall_clip->top && wall_clip->bot && wall_clip->z &&
-                                wall_clip->top2 && wall_clip->bot2 && wall_clip->z2);
+    (void)wall_clip;
+    /* User override: disable column span-buffer occlusion checks for billboards. */
+    const int have_wall_clip = 0;
 
     /* --- Column loop --- */
     for (int dx = dx_start; dx < dx_end; dx++) {
