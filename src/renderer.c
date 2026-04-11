@@ -5554,15 +5554,10 @@ static int renderer_resolve_sprite_zone_draw_clip(const RenderSliceContext *ctx,
     if (!level->data || !level->zone_adds || zone_slots <= 0 || zone_id < 0 || zone_id >= zone_slots)
         return 0;
 
-    int16_t draw_left = ctx->left_clip;
-    int16_t draw_right = ctx->right_clip;
-    {
-        int16_t zl = 0, zr = 0;
-        if (renderer_compute_zone_clip_span(state, zone_id, 0u, 0, &zl, &zr)) {
-            if (zl > draw_left) draw_left = zl;
-            if (zr < draw_right) draw_right = zr;
-        }
-    }
+    /* Billboard override: disable horizontal zone/span clipping.
+     * Keep only the worker strip bounds for safety with threaded rendering. */
+    int16_t draw_left = ctx->strip_left;
+    int16_t draw_right = ctx->strip_right;
     if (draw_left >= draw_right) return 0;
 
     int32_t zone_off = rd32(level->zone_adds + (size_t)(uint16_t)zone_id * 4u);
@@ -6148,10 +6143,6 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             const uint8_t *obj_pal = r->sprite_pal_data[expl_vect];
             size_t obj_pal_size = r->sprite_pal_size[expl_vect];
             {
-                int16_t prev_strip_left = ctx->strip_left;
-                int16_t prev_strip_right = ctx->strip_right;
-                ctx->strip_left = draw_clip_left;
-                ctx->strip_right = draw_clip_right;
                 int32_t orp_z_i16 = ROT_Z_INT(orp_z);
                 if (orp_z_i16 > 32767) orp_z_i16 = 32767;
                 renderer_draw_sprite_ctx(ctx, (int16_t)scr_x, (int16_t)scr_y,
@@ -6165,8 +6156,6 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                          (int16_t)bright, expl_vect,
                                          clip_top_y, clip_bot_y,
                                          respect_scene_tags);
-                ctx->strip_left = prev_strip_left;
-                ctx->strip_right = prev_strip_right;
             }
             continue;
         }
@@ -6374,10 +6363,6 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         size_t obj_pal_size = r->sprite_pal_size[vect_num];
 
         {
-            int16_t prev_strip_left = ctx->strip_left;
-            int16_t prev_strip_right = ctx->strip_right;
-            ctx->strip_left = draw_clip_left;
-            ctx->strip_right = draw_clip_right;
             int32_t orp_z_int = ROT_Z_INT(orp->z);
             if (orp_z_int > 32767) orp_z_int = 32767;
             renderer_draw_sprite_ctx(ctx, (int16_t)scr_x, (int16_t)scr_y,
@@ -6391,8 +6376,6 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                      (int16_t)bright, vect_num,
                                      clip_top_y, clip_bot_y,
                                      respect_scene_tags);
-            ctx->strip_left = prev_strip_left;
-            ctx->strip_right = prev_strip_right;
         }
     }
 }
