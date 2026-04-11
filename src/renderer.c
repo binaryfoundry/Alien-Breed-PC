@@ -4427,6 +4427,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                      uint32_t ptr_offset, uint16_t down_strip,
                                      int src_cols, int src_rows,
                                      int16_t brightness, int sprite_type,
+                                     int16_t clip_left_sx, int16_t clip_right_sx,
                                      int32_t clip_top_sy, int32_t clip_bot_sy,
                                      int respect_scene_tags)
 {
@@ -4450,8 +4451,10 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     const int sy = screen_y - height / 2;
 
     /* --- Horizontal clipping (early-out before palette build) --- */
-    int clip_left = ctx->strip_left;
-    int clip_right = ctx->strip_right;
+    int clip_left = (int)clip_left_sx;
+    int clip_right = (int)clip_right_sx;
+    if (clip_left < (int)ctx->left_clip) clip_left = (int)ctx->left_clip;
+    if (clip_right > (int)ctx->right_clip) clip_right = (int)ctx->right_clip;
     if (clip_left < 0) clip_left = 0;
     if (clip_right > rw) clip_right = rw;
     int col_start = (sx > clip_left) ? sx : clip_left;
@@ -4528,9 +4531,10 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     int32_t src_col_fp = (int32_t)dx_start * src_col_step;
 
     const ColumnClip *wall_clip = &g_renderer.clip;
-    (void)wall_clip;
-    /* User override: disable column span-buffer occlusion checks for billboards. */
-    const int have_wall_clip = 0;
+    const int have_wall_clip =
+        (!respect_scene_tags &&
+         wall_clip->top && wall_clip->bot && wall_clip->z &&
+         wall_clip->top2 && wall_clip->bot2 && wall_clip->z2);
 
     /* --- Column loop --- */
     for (int dx = dx_start; dx < dx_end; dx++) {
@@ -4641,7 +4645,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             if (texel != 0) {
                             if (respect_scene_tags) {
                                 uint8_t dst_tag = buf[pix];
-                                if (dst_tag != 0 && dst_tag != RENDERER_TAG_SPRITE && dst_tag != sprite_tag) {
+                                if (sprite_tag == RENDERER_TAG_SPILL_VIS && dst_tag == RENDERER_TAG_SPRITE) {
                                     pix += rw_stride;
                                     continue;
                                 }
@@ -4672,7 +4676,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             if (texel != 0) {
                             if (respect_scene_tags) {
                                 uint8_t dst_tag = buf[pix];
-                                    if (dst_tag != 0 && dst_tag != RENDERER_TAG_SPRITE && dst_tag != sprite_tag) {
+                                    if (sprite_tag == RENDERER_TAG_SPILL_VIS && dst_tag == RENDERER_TAG_SPRITE) {
                                         pix += rw_stride;
                                         continue;
                                     }
@@ -4704,7 +4708,8 @@ void renderer_draw_sprite(int16_t screen_x, int16_t screen_y,
     renderer_draw_sprite_ctx(&ctx, screen_x, screen_y, width, height, z,
                              wad, wad_size, ptr_data, ptr_size, pal, pal_size,
                              ptr_offset, down_strip, src_cols, src_rows, brightness,
-                             sprite_type, clip_top_sy, clip_bot_sy, 0);
+                             sprite_type, ctx.left_clip, ctx.right_clip,
+                             clip_top_sy, clip_bot_sy, 0);
 }
 
 /* -----------------------------------------------------------------------
@@ -5158,6 +5163,97 @@ static int renderer_dead_object_is_runtime_corpse(const uint8_t *obj)
     if (expected_frame < 0) return 0;
 
     return rd16(obj + 8) == expected_frame;
+}
+
+static int16_t renderer_fallback_vect_for_obj_number(int8_t obj_number)
+{
+    switch ((ObjNumber)obj_number) {
+    case OBJ_NBR_ALIEN:           return 0;
+    case OBJ_NBR_MEDIKIT:         return 1;
+    case OBJ_NBR_BULLET:          return 2;
+    case OBJ_NBR_BIG_GUN:         return 9;
+    case OBJ_NBR_KEY:             return 5;
+    case OBJ_NBR_PLR1:
+    case OBJ_NBR_PLR2:
+    case OBJ_NBR_MARINE:          return 10;
+    case OBJ_NBR_ROBOT:           return 10;
+    case OBJ_NBR_BIG_NASTY:       return 11;
+    case OBJ_NBR_FLYING_NASTY:    return 4;
+    case OBJ_NBR_AMMO:            return 1;
+    case OBJ_NBR_BARREL:          return 7;
+    case OBJ_NBR_WORM:            return 13;
+    case OBJ_NBR_HUGE_RED_THING:  return 14;
+    case OBJ_NBR_SMALL_RED_THING: return 14;
+    case OBJ_NBR_TREE:            return 15;
+    case OBJ_NBR_EYEBALL:         return 0;
+    case OBJ_NBR_TOUGH_MARINE:    return 16;
+    case OBJ_NBR_FLAME_MARINE:    return 17;
+    default:                      return 0;
+    }
+}
+
+/* Keep spill sizing aligned with final billboard draw sizing so spill gating
+ * uses the true on-screen footprint (worm override, fallback vect, pop/barrel
+ * explosion billboard handling). */
+static void renderer_resolve_billboard_world_size_for_spill(const uint8_t *obj,
+                                                            int is_shot_entry,
+                                                            int *out_world_w,
+                                                            int *out_world_h)
+{
+    int world_w = 32;
+    int world_h = 32;
+    if (obj) {
+        world_w = (int)obj[6];
+        world_h = (int)obj[7];
+    }
+    if (world_w <= 0) world_w = 32;
+    if (world_h <= 0) world_h = 32;
+
+    if (obj) {
+        int8_t obj_number = (int8_t)obj[16];
+        int16_t vect_num = rd16(obj + 8);
+        if (obj_number == OBJ_NBR_DEAD && renderer_dead_object_is_runtime_corpse(obj)) {
+            int8_t original_type = (int8_t)obj[19];
+            if (original_type >= 0 && original_type <= OBJ_NBR_GAS_PIPE) {
+                obj_number = original_type;
+            }
+        }
+
+        {
+            int use_fallback = (vect_num < 0 || vect_num >= MAX_SPRITE_TYPES ||
+                                !g_renderer.sprite_wad[vect_num] || !g_renderer.sprite_ptr[vect_num]);
+            if (!use_fallback && vect_num == 0 && obj_number != OBJ_NBR_ALIEN &&
+                obj_number >= OBJ_NBR_ROBOT && obj_number <= OBJ_NBR_FLAME_MARINE) {
+                use_fallback = 1;
+            }
+            if (use_fallback) {
+                vect_num = renderer_fallback_vect_for_obj_number(obj_number);
+            }
+        }
+
+        if ((ObjNumber)obj_number == OBJ_NBR_WORM) {
+            world_w = 90;
+            world_h = 100;
+        }
+
+        if (vect_num == 8) {
+            int explosion_billboard = 0;
+            if ((ObjNumber)obj_number == OBJ_NBR_BARREL) {
+                explosion_billboard = 1;
+            } else if (is_shot_entry && (int8_t)obj[30] != 0) {
+                explosion_billboard = 1;
+            }
+            if (explosion_billboard) {
+                world_w *= EXPLOSION_SIZE_CORRECTION;
+                world_h *= EXPLOSION_SIZE_CORRECTION;
+                if (world_w < 1) world_w = 1;
+                if (world_h < 1) world_h = 1;
+            }
+        }
+    }
+
+    if (out_world_w) *out_world_w = world_w;
+    if (out_world_h) *out_world_h = world_h;
 }
 
 /* RockPop/Explosion world sizes are authored from Amiga BitMapObj tables where
@@ -5762,6 +5858,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         if (pt_num < 0) break; /* End of object list */
 
         if ((unsigned)pt_num >= (unsigned)num_pts) continue; /* invalid point number */
+        int spill_world_w = 32, spill_world_h = 32;
+        renderer_resolve_billboard_world_size_for_spill(obj, 0, &spill_world_w, &spill_world_h);
 
         /* Only draw objects that are currently in this zone (obj_zone is updated by movement). */
         int16_t obj_zone = rd16(obj + 12);
@@ -5774,7 +5872,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
              * room section instead of center-Y only, so up/down step transitions
              * can still spill when any visible part overlaps this section. */
             int32_t adj_world_y = ((int32_t)rd16(obj + 4)) << WORLD_Y_FRAC_BITS;
-            int32_t half_h = renderer_billboard_half_height_world_fp((int)obj[7]);
+            int32_t half_h = renderer_billboard_half_height_world_fp(spill_world_h);
             if (!renderer_world_span_overlaps_room(adj_world_y, half_h, top_of_room, bot_of_room))
                 continue;
         }
@@ -5810,8 +5908,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
 
         /* Skip early when this object cannot affect this column strip. */
         {
-            int world_w = (int)obj[6];
-            if (world_w <= 0) world_w = 32;
+            int world_w = spill_world_w;
             int z_for_size = ROT_Z_INT(orp->z);
             if (z_for_size < 1) z_for_size = 1;
             int sprite_w_est = (int)((int32_t)world_w * sprite_scale_x_for_estimate / z_for_size) * SPRITE_SIZE_MULTIPLIER;
@@ -5875,13 +5972,15 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             if ((int8_t)obj[16] != OBJ_NBR_BULLET) continue;
             int16_t pt_num = rd16(obj);
             if (pt_num < 0 || (unsigned)pt_num >= (unsigned)num_pts) continue;
+            int spill_world_w = 32, spill_world_h = 32;
+            renderer_resolve_billboard_world_size_for_spill(obj, 1, &spill_world_w, &spill_world_h);
             int in_this_zone = (shot_zone == (int16_t)zone_id);
             int adj_slot = -1;
             if (!in_this_zone) {
                 adj_slot = renderer_find_adj_zone_slot(adj_zones, adj_zone_count, shot_zone);
                 if (adj_slot < 0) continue;
                 int32_t adj_world_y = ((int32_t)rd16(obj + 4)) << WORLD_Y_FRAC_BITS;
-                int32_t half_h = renderer_billboard_half_height_world_fp((int)obj[7]);
+                int32_t half_h = renderer_billboard_half_height_world_fp(spill_world_h);
                 if (!renderer_world_span_overlaps_room(adj_world_y, half_h, top_of_room, bot_of_room))
                     continue;
             }
@@ -5905,8 +6004,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             if (orp->z <= ROT_Z_FROM_INT(SPRITE_NEAR_CLIP_Z)) continue;
 
             {
-                int world_w = (int)obj[6];
-                if (world_w <= 0) world_w = 32;
+                int world_w = spill_world_w;
                 int z_for_size = ROT_Z_INT(orp->z);
                 if (z_for_size < 1) z_for_size = 1;
                 int sprite_w_est = (int)((int32_t)world_w * sprite_scale_x_for_estimate / z_for_size) * SPRITE_SIZE_MULTIPLIER;
@@ -6169,6 +6267,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                          ptr_off, down_strip,
                                          32, 32,
                                          (int16_t)bright, expl_vect,
+                                         draw_clip_left, draw_clip_right,
                                          clip_top_y, clip_bot_y,
                                          respect_scene_tags);
             }
@@ -6254,46 +6353,16 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             obj_number >= OBJ_NBR_ROBOT && obj_number <= OBJ_NBR_FLAME_MARINE)
             use_fallback = 1;
         if (use_fallback) {
-            switch ((ObjNumber)obj_number) {
-                case OBJ_NBR_ALIEN:           vect_num = 0;  break;
-                case OBJ_NBR_MEDIKIT:         vect_num = 1;  break;
-                case OBJ_NBR_BULLET:          vect_num = 2;  break;
-                case OBJ_NBR_BIG_GUN:         vect_num = 9;  break;
-                case OBJ_NBR_KEY:             vect_num = 5;  break;
-                case OBJ_NBR_PLR1:
-                case OBJ_NBR_PLR2:
-                case OBJ_NBR_MARINE:          vect_num = 10; break;
-                case OBJ_NBR_ROBOT:           vect_num = 10; break;
-                case OBJ_NBR_BIG_NASTY:       vect_num = 11; break;
-                case OBJ_NBR_FLYING_NASTY:    vect_num = 4;  break;
-                case OBJ_NBR_AMMO:            vect_num = 1;  break; /* PICKUPS sprite */
-                case OBJ_NBR_BARREL:          vect_num = 7;  break;
-                case OBJ_NBR_WORM:            vect_num = 13; break;
-                case OBJ_NBR_HUGE_RED_THING:  vect_num = 14; break;
-                case OBJ_NBR_SMALL_RED_THING: vect_num = 14; break;
-                case OBJ_NBR_TREE:            vect_num = 15; break;
-                case OBJ_NBR_EYEBALL:         vect_num = 0;  break;
-                case OBJ_NBR_TOUGH_MARINE:    vect_num = 16; break;
-                case OBJ_NBR_FLAME_MARINE:    vect_num = 17; break;
-                default:                      vect_num = 0;  break;
-            }
+            vect_num = renderer_fallback_vect_for_obj_number(obj_number);
             if (!drawing_dead) frame_num = 0;
         }
         if (vect_num < 0 || vect_num >= MAX_SPRITE_TYPES) continue;
 
-        /* ObjDraw3 uses move.b for width/height, i.e. unsigned bytes. */
-        int world_w = (int)obj[6];
-        int world_h = (int)obj[7];
-        if (world_w <= 0) world_w = 32;
-        if (world_h <= 0) world_h = 32;
-
-        /* Safety net: HalfWorm uses 90x100 in the original handler each tick.
-         * Force those authored dimensions here so the first visible frame
-         * cannot render at stale/generic level-authored sizes. */
-        if ((ObjNumber)obj_number == OBJ_NBR_WORM) {
-            world_w = 90;
-            world_h = 100;
-        }
+        int world_w = 32;
+        int world_h = 32;
+        renderer_resolve_billboard_world_size_for_spill(obj,
+                                                        (entry_src == DRAW_SRC_SHOT) ? 1 : 0,
+                                                        &world_w, &world_h);
 
         /* Screen size: width from Amiga (byte*128/z)*RENDER_SCALE; height uses proj_y_scale so billboard Y matches floor projection scale. */
         int explosion_billboard = 0;
@@ -6389,6 +6458,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                      ptr_off, down_strip,
                                      src_cols, src_rows,
                                      (int16_t)bright, vect_num,
+                                     draw_clip_left, draw_clip_right,
                                      clip_top_y, clip_bot_y,
                                      respect_scene_tags);
         }
