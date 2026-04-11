@@ -3240,51 +3240,83 @@ static void draw_wall_rasterize_segment(
                 size_t pf_hot = pix_hot + (size_t)wstride * WALL_PF_DIST;
                 int32_t tex_y_hot = tex_y;
                 const int hot_count = cb - ct + 1;
+                const int do_pf_hot = (hot_count > WALL_PF_DIST);
+
+#define WALL_TEX_HOT_ROW(SHIFT_) \
+    do { \
+        int ra_ = ((int)(tex_y_hot >> 16) & valand) << 1; \
+        uint16_t w_ = ((uint16_t)tex_strip[ra_] << 8) | tex_strip[ra_ + 1]; \
+        uint8_t t_ = (uint8_t)((w_ >> (SHIFT_)) & 31u); \
+        buf[pix_hot] = 2; \
+        cw[pix_hot] = cache_cw[t_]; \
+        pix_hot += wstride; \
+        pf_hot += wstride; \
+        tex_y_hot += tex_step; \
+    } while (0)
 
                 switch (pack_mode) {
                     case 0:
-                        for (int i = 0; i < hot_count; i++) {
-                            AB3D_PREFETCH_WRITE(&buf[pf_hot]);
-                            AB3D_PREFETCH_WRITE(&cw[pf_hot]);
-                            int ra_ = ((int)(tex_y_hot >> 16) & valand) << 1;
-                            uint16_t w_ = ((uint16_t)tex_strip[ra_] << 8) | tex_strip[ra_ + 1];
-                            uint8_t t_ = (uint8_t)(w_ & 31u);
-                            buf[pix_hot] = 2;
-                            cw[pix_hot] = cache_cw[t_];
-                            pix_hot += wstride;
-                            pf_hot += wstride;
-                            tex_y_hot += tex_step;
+                        if (do_pf_hot) {
+                            int i = 0;
+                            for (; i + 3 < hot_count; i += 4) {
+                                AB3D_PREFETCH_WRITE(&buf[pf_hot]);
+                                AB3D_PREFETCH_WRITE(&cw[pf_hot]);
+                                WALL_TEX_HOT_ROW(0);
+                                WALL_TEX_HOT_ROW(0);
+                                WALL_TEX_HOT_ROW(0);
+                                WALL_TEX_HOT_ROW(0);
+                            }
+                            for (; i < hot_count; i++) {
+                                WALL_TEX_HOT_ROW(0);
+                            }
+                        } else {
+                            for (int i = 0; i < hot_count; i++) {
+                                WALL_TEX_HOT_ROW(0);
+                            }
                         }
                         break;
                     case 1:
-                        for (int i = 0; i < hot_count; i++) {
-                            AB3D_PREFETCH_WRITE(&buf[pf_hot]);
-                            AB3D_PREFETCH_WRITE(&cw[pf_hot]);
-                            int ra_ = ((int)(tex_y_hot >> 16) & valand) << 1;
-                            uint16_t w_ = ((uint16_t)tex_strip[ra_] << 8) | tex_strip[ra_ + 1];
-                            uint8_t t_ = (uint8_t)((w_ >> 5) & 31u);
-                            buf[pix_hot] = 2;
-                            cw[pix_hot] = cache_cw[t_];
-                            pix_hot += wstride;
-                            pf_hot += wstride;
-                            tex_y_hot += tex_step;
+                        if (do_pf_hot) {
+                            int i = 0;
+                            for (; i + 3 < hot_count; i += 4) {
+                                AB3D_PREFETCH_WRITE(&buf[pf_hot]);
+                                AB3D_PREFETCH_WRITE(&cw[pf_hot]);
+                                WALL_TEX_HOT_ROW(5);
+                                WALL_TEX_HOT_ROW(5);
+                                WALL_TEX_HOT_ROW(5);
+                                WALL_TEX_HOT_ROW(5);
+                            }
+                            for (; i < hot_count; i++) {
+                                WALL_TEX_HOT_ROW(5);
+                            }
+                        } else {
+                            for (int i = 0; i < hot_count; i++) {
+                                WALL_TEX_HOT_ROW(5);
+                            }
                         }
                         break;
                     default: /* pack_mode == 2 */
-                        for (int i = 0; i < hot_count; i++) {
-                            AB3D_PREFETCH_WRITE(&buf[pf_hot]);
-                            AB3D_PREFETCH_WRITE(&cw[pf_hot]);
-                            int ra_ = ((int)(tex_y_hot >> 16) & valand) << 1;
-                            uint16_t w_ = ((uint16_t)tex_strip[ra_] << 8) | tex_strip[ra_ + 1];
-                            uint8_t t_ = (uint8_t)((w_ >> 10) & 31u);
-                            buf[pix_hot] = 2;
-                            cw[pix_hot] = cache_cw[t_];
-                            pix_hot += wstride;
-                            pf_hot += wstride;
-                            tex_y_hot += tex_step;
+                        if (do_pf_hot) {
+                            int i = 0;
+                            for (; i + 3 < hot_count; i += 4) {
+                                AB3D_PREFETCH_WRITE(&buf[pf_hot]);
+                                AB3D_PREFETCH_WRITE(&cw[pf_hot]);
+                                WALL_TEX_HOT_ROW(10);
+                                WALL_TEX_HOT_ROW(10);
+                                WALL_TEX_HOT_ROW(10);
+                                WALL_TEX_HOT_ROW(10);
+                            }
+                            for (; i < hot_count; i++) {
+                                WALL_TEX_HOT_ROW(10);
+                            }
+                        } else {
+                            for (int i = 0; i < hot_count; i++) {
+                                WALL_TEX_HOT_ROW(10);
+                            }
                         }
                         break;
                 }
+#undef WALL_TEX_HOT_ROW
 
                 pix = pix_hot;
                 tex_y = tex_y_hot;
