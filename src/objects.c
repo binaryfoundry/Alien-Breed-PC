@@ -1019,10 +1019,10 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
             move_object(&ctx, &state->level);
     }
 
-    /* Robot.s does not clamp MoveObject displacement here; clamping the robot
-     * can cause false stalls in tight passages due to conservative wall-slide
-     * corrections in the port geometry path. */
-    if (obj->obj.number != OBJ_NBR_ROBOT) {
+    /* Robot.s does not clamp MoveObject displacement here; clamping can also
+     * freeze flyers against corners when MoveObject returns a legal wall-contact
+     * correction larger than their nominal per-tick speed. */
+    if (obj->obj.number != OBJ_NBR_ROBOT && !flying_hover) {
         if (!enemy_step_within_limit(&ctx, (int32_t)speed * (int32_t)state->temp_frames)) {
             ctx.newx = ctx.oldx;
             ctx.newz = ctx.oldz;
@@ -1031,7 +1031,7 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
 
     /* Robot.s does not run the extra anti-overlap guard; keeping it disabled
      * here avoids mech stalls at close range in parity-critical battles. */
-    if (obj->obj.number != OBJ_NBR_ROBOT) {
+    if (obj->obj.number != OBJ_NBR_ROBOT && !flying_hover) {
         int16_t contact_x = (int16_t)ctx.newx;
         int16_t contact_z = (int16_t)ctx.newz;
         enemy_prevent_deeper_player_overlap(obj, state, (int16_t)ctx.oldx, (int16_t)ctx.oldz,
@@ -2317,6 +2317,8 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
                                             bool apply_translation, int16_t turn_speed)
 {
     PlayerState *plr = (player_num == 1) ? &state->plr1 : &state->plr2;
+    bool flying_hover = (obj->obj.number == OBJ_NBR_FLYING_NASTY ||
+                         obj->obj.number == OBJ_NBR_EYEBALL);
 
     int16_t obj_x = 0, obj_z = 0;
     get_object_pos(&state->level, (int)OBJ_CID(obj), &obj_x, &obj_z);
@@ -2426,15 +2428,16 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
         ctx.newz = ctx.oldz;
     }
 
-    /* Safety: never let contact resolution produce a huge enemy jump. */
-    if (!enemy_step_within_limit(&ctx, (int32_t)speed * (int32_t)state->temp_frames)) {
+    /* Keep the anti-jump clamp for ground chasers only. */
+    if (!flying_hover &&
+        !enemy_step_within_limit(&ctx, (int32_t)speed * (int32_t)state->temp_frames)) {
         ctx.newx = ctx.oldx;
         ctx.newz = ctx.oldz;
     }
 
     /* Robot.s does not run the extra anti-overlap guard; keeping it disabled
      * here avoids mech stalls at close range in parity-critical battles. */
-    if (obj->obj.number != OBJ_NBR_ROBOT) {
+    if (obj->obj.number != OBJ_NBR_ROBOT && !flying_hover) {
         int16_t contact_x = (int16_t)ctx.newx;
         int16_t contact_z = (int16_t)ctx.newz;
         enemy_prevent_deeper_player_overlap(obj, state, (int16_t)ctx.oldx, (int16_t)ctx.oldz,
