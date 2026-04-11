@@ -1057,7 +1057,11 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
     }
 
     if (ctx.hitwall) {
-        NASTY_SET_TIMER(*obj, -1);
+        /* FlyingScalyBall.s / EyeBall.s keep ObjTimer unchanged on wall hit
+         * (the move.w #-1,ObjTimer(a0) line is commented out there). */
+        if (!flying_hover) {
+            NASTY_SET_TIMER(*obj, -1);
+        }
     }
 }
 

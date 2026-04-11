@@ -138,11 +138,6 @@ static bool move_debug_is_enemy_type(int obj_type)
     }
 }
 
-static bool move_is_flying_enemy_type(int obj_type)
-{
-    return (obj_type == OBJ_NBR_FLYING_NASTY || obj_type == OBJ_NBR_EYEBALL);
-}
-
 static bool move_ctx_is_enemy(const MoveContext *ctx, const LevelState *level, int *out_obj_type)
 {
     if (out_obj_type) *out_obj_type = -1;
@@ -152,19 +147,6 @@ static bool move_ctx_is_enemy(const MoveContext *ctx, const LevelState *level, i
         if (out_obj_type) *out_obj_type = obj_type;
         return move_debug_is_enemy_type(obj_type);
     }
-}
-
-static bool move_ctx_uses_flying_exit_rules(const MoveContext *ctx, const LevelState *level)
-{
-    if (!ctx) return false;
-
-    /* Fast path: this authored step profile is unique to flying enemies. */
-    if (ctx->step_up_val == 0 && ctx->step_down_val >= 0x1000000) {
-        return true;
-    }
-
-    if (!level) return false;
-    return move_is_flying_enemy_type(move_debug_obj_type_by_cid(level, ctx->coll_id));
 }
 
 static bool move_debug_should_log(const MoveContext *ctx, const LevelState *level, int *out_obj_type)
@@ -203,23 +185,12 @@ static bool transition_height_ok_single(const MoveContext *ctx, int32_t mover_y,
     {
         int64_t d1 = (int64_t)mover_y + (int64_t)ctx->thing_height - (int64_t)target_floor;
         if (d1 > 0) {
-            if (d1 > (int64_t)ctx->step_up_val) return false;
+            if (d1 >= (int64_t)ctx->step_up_val) return false;
         } else {
-            if ((-d1) > (int64_t)ctx->step_down_val) return false;
+            if ((-d1) >= (int64_t)ctx->step_down_val) return false;
         }
     }
 
-    if ((int64_t)mover_y - (int64_t)target_roof < 0) return false;
-    return true;
-}
-
-/* Flying enemies are authored with step_up=0 and huge step_down. They should
- * cross exits based on roof clearance, not stair stepping limits. */
-static bool transition_height_ok_single_flying(const MoveContext *ctx, int32_t mover_y,
-    int32_t target_floor, int32_t target_roof)
-{
-    int64_t clearance = (int64_t)target_floor - (int64_t)target_roof;
-    if (clearance <= (int64_t)ctx->thing_height) return false;
     if ((int64_t)mover_y - (int64_t)target_roof < 0) return false;
     return true;
 }
@@ -251,38 +222,9 @@ static bool transition_height_ok_zone(const MoveContext *ctx, int32_t mover_y,
     return false;
 }
 
-static bool transition_height_ok_zone_flying(const MoveContext *ctx, int32_t mover_y,
+static bool transition_height_ok_zone_for_mover(const MoveContext *ctx, int32_t mover_y,
     const uint8_t *target_zone, int8_t *out_in_top)
 {
-    if (!ctx || !target_zone) return false;
-
-    {
-        int32_t floor_h = read_be32(target_zone + ZONE_FLOOR_HEIGHT);
-        int32_t roof_h = read_be32(target_zone + ZONE_ROOF_HEIGHT);
-        if (transition_height_ok_single_flying(ctx, mover_y, floor_h, roof_h)) {
-            if (out_in_top) *out_in_top = 0;
-            return true;
-        }
-    }
-
-    {
-        int32_t floor_h = read_be32(target_zone + ZONE_UPPER_FLOOR);
-        int32_t roof_h = read_be32(target_zone + ZONE_UPPER_ROOF);
-        if (transition_height_ok_single_flying(ctx, mover_y, floor_h, roof_h)) {
-            if (out_in_top) *out_in_top = 1;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool transition_height_ok_zone_for_mover(const MoveContext *ctx, int32_t mover_y,
-    const uint8_t *target_zone, int8_t *out_in_top, bool flying_exit_rules)
-{
-    if (flying_exit_rules) {
-        return transition_height_ok_zone_flying(ctx, mover_y, target_zone, out_in_top);
-    }
     return transition_height_ok_zone(ctx, mover_y, target_zone, out_in_top);
 }
 
@@ -335,17 +277,16 @@ static int32_t compute_crossing_height_asm(const MoveContext *ctx,
     return (int32_t)hit_y;
 }
 
-static bool pass1_vertical_hit_asm(const MoveContext *ctx, const uint8_t *target_zone, int32_t hit_y,
-    bool flying_exit_rules)
+static bool pass1_vertical_hit_asm(const MoveContext *ctx, const uint8_t *target_zone, int32_t hit_y)
 {
     int8_t in_top = 0;
     if (!ctx || !target_zone) return true;
-    return !transition_height_ok_zone_for_mover(ctx, hit_y, target_zone, &in_top, flying_exit_rules);
+    return !transition_height_ok_zone_for_mover(ctx, hit_y, target_zone, &in_top);
 }
 
 static bool pass1_exit_is_nonblocking(const MoveContext *ctx, const uint8_t *target_zone,
     int32_t lx, int32_t lz, int16_t lxlen, int16_t lzlen, int32_t a4, int32_t a6,
-    int32_t orig_newx, int32_t orig_newz, int32_t line_len, bool flying_exit_rules)
+    int32_t orig_newx, int32_t orig_newz, int32_t line_len)
 {
     int64_t dx = (int64_t)lxlen - (int64_t)a4 - (int64_t)a6;
     int64_t dz = (int64_t)lzlen + (int64_t)a4 - (int64_t)a6;
@@ -363,7 +304,7 @@ static bool pass1_exit_is_nonblocking(const MoveContext *ctx, const uint8_t *tar
 
     {
         int32_t hit_y = compute_crossing_height_asm(ctx, cross_new, cross_old, line_len + ctx->extlen);
-        return !pass1_vertical_hit_asm(ctx, target_zone, hit_y, flying_exit_rules);
+        return !pass1_vertical_hit_asm(ctx, target_zone, hit_y);
     }
 }
 
@@ -485,7 +426,7 @@ static int firstpass_othercheck_hit(int16_t hit_x, int16_t hit_z,
 static int check_wall_line_walls_asm(MoveContext *ctx, const uint8_t *fline,
     int32_t lx, int32_t lz, int16_t lxlen, int16_t lzlen, int32_t line_len,
     int32_t a4, int32_t a6, const uint8_t *target_zone,
-    int32_t *xdiff, int32_t *zdiff, bool flying_exit_rules)
+    int32_t *xdiff, int32_t *zdiff)
 {
     int16_t sx = (int16_t)ctx->newx;
     int16_t sz = (int16_t)ctx->newz;
@@ -515,7 +456,7 @@ static int check_wall_line_walls_asm(MoveContext *ctx, const uint8_t *fline,
         int32_t cross_old = (int32_t)d5 * (int32_t)rel_ox - (int32_t)d2 * (int32_t)rel_oz;
         int32_t hit_y = compute_crossing_height_asm(ctx, cross_new, cross_old, den);
 
-        if (target_zone && !pass1_vertical_hit_asm(ctx, target_zone, hit_y, flying_exit_rules)) {
+        if (target_zone && !pass1_vertical_hit_asm(ctx, target_zone, hit_y)) {
             return 0;
         }
 
@@ -987,7 +928,6 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
     const uint8_t *target_zone = NULL;
     uint8_t *target_room = NULL;
     int has_target_zone = 0;
-    bool flying_exit_rules = move_ctx_uses_flying_exit_rules(ctx, level);
 
     get_floorline_shift_offsets(ctx, fline, &a4, &a6);
 
@@ -1005,7 +945,7 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
 
         if (pass_is_other) {
             int8_t target_in_top = 0;
-            if (transition_height_ok_zone_for_mover(ctx, ctx->newy, target_zone, &target_in_top, flying_exit_rules)) {
+            if (transition_height_ok_zone_for_mover(ctx, ctx->newy, target_zone, &target_in_top)) {
                 if (!(ctx->no_transition_back && target_room == ctx->no_transition_back)) {
                     /* checkotherwalls: passable exit -> skip wall collision. */
                     return 0;
@@ -1057,7 +997,7 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
     /* Amiga checkwalls uses integer wall math for all movers, including extlen==0 bullets. */
     if (pass_is_walls) {
         return check_wall_line_walls_asm(ctx, fline, lx, lz, lxlen, lzlen, line_len,
-            a4, a6, has_target_zone ? target_zone : NULL, xdiff, zdiff, flying_exit_rules);
+            a4, a6, has_target_zone ? target_zone : NULL, xdiff, zdiff);
     }
 
     /* ---- Wall collision with extents ----
@@ -1105,7 +1045,7 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
             ctx->hitwall = 1;
             if (pass_is_walls && has_target_zone &&
                 pass1_exit_is_nonblocking(ctx, target_zone, lx, lz, lxlen, lzlen, a4, a6,
-                    orig_newx, orig_newz, line_len, flying_exit_rules)) {
+                    orig_newx, orig_newz, line_len)) {
                 ctx->newx = orig_newx;
                 ctx->newz = orig_newz;
                 ctx->hitwall = 0;
@@ -1152,7 +1092,7 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
                 ctx->wall_hit_y = ctx->newy;
                 if (pass_is_walls && has_target_zone &&
                     pass1_exit_is_nonblocking(ctx, target_zone, lx, lz, lxlen, lzlen, a4, a6,
-                        orig_newx, orig_newz, line_len, flying_exit_rules)) {
+                        orig_newx, orig_newz, line_len)) {
                     ctx->newx = orig_newx;
                     ctx->newz = orig_newz;
                     ctx->hitwall = 0;
@@ -1178,7 +1118,7 @@ static int check_wall_line(MoveContext* ctx, LevelState* level,
             ctx->wall_hit_y = ctx->newy;
             if (pass_is_walls && has_target_zone &&
                 pass1_exit_is_nonblocking(ctx, target_zone, lx, lz, lxlen, lzlen, a4, a6,
-                    orig_newx, orig_newz, line_len, flying_exit_rules)) {
+                    orig_newx, orig_newz, line_len)) {
                 ctx->newx = orig_newx;
                 ctx->newz = orig_newz;
                 ctx->hitwall = 0;
@@ -1197,7 +1137,6 @@ static void find_room(MoveContext* ctx, LevelState* level,
     const uint8_t** zone_data_ptr)
 {
     const uint8_t* zone_data = *zone_data_ptr;
-    bool flying_exit_rules = move_ctx_uses_flying_exit_rules(ctx, level);
     if (!zone_data || !level->zone_adds) return;
     int zone_slots = level_zone_slot_count(level);
     if (zone_slots <= 0) return;
@@ -1247,8 +1186,11 @@ static void find_room(MoveContext* ctx, LevelState* level,
                             target_in_top = (cross_y < target_roof) ? 1 : 0;
                         }
 
-                        if (!transition_height_ok_zone_for_mover(ctx, cross_y, target_zone, &target_in_top, flying_exit_rules)) {
-                            continue;
+                        {
+                            int8_t pass_in_top = target_in_top;
+                            if (!transition_height_ok_zone_for_mover(ctx, cross_y, target_zone, &pass_in_top)) {
+                                continue;
+                            }
                         }
                     }
 
