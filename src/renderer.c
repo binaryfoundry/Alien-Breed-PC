@@ -1032,42 +1032,14 @@ int renderer_automap_collect_line_segments(GameState *state,
     if (map_scale < 1) map_scale = 1;
 
     int n = 0;
-
-    /* Player arrow */
-    {
-        uint16_t cw = 0x0FFFu;
-        int ang = (int)(plr->angpos & 0x1FFF);
-        int32_t fx = (int32_t)sin_lookup(ang);
-        int32_t fz = (int32_t)cos_lookup(ang);
-        int32_t len = 40;
-        int tipx = cx + (int)((fx * len) / 32768);
-        int tipy = cy + (int)((fz * len) / 32768);
-        int aL = (ang + (ANGLE_FULL * 3) / 8) & ANGLE_MASK;
-        int aR = (ang + (ANGLE_FULL * 5) / 8) & ANGLE_MASK;
-        int32_t lx = (int32_t)sin_lookup(aL);
-        int32_t lz = (int32_t)cos_lookup(aL);
-        int32_t rx = (int32_t)sin_lookup(aR);
-        int32_t rz = (int32_t)cos_lookup(aR);
-        int wing = 20;
-        int lox = tipx + (int)((lx * wing) / 32768);
-        int loy = tipy + (int)((lz * wing) / 32768);
-        int rox = tipx + (int)((rx * wing) / 32768);
-        int roy = tipy + (int)((rz * wing) / 32768);
-
-        if (n < max_lines) { x0[n] = mx - cx; y0[n] = cy; x1[n] = mx - tipx; y1[n] = tipy; c12[n] = cw; n++; }
-        if (n < max_lines) { x0[n] = mx - tipx; y0[n] = tipy; x1[n] = mx - lox; y1[n] = loy; c12[n] = cw; n++; }
-        if (n < max_lines) { x0[n] = mx - tipx; y0[n] = tipy; x1[n] = mx - rox; y1[n] = roy; c12[n] = cw; n++; }
-    }
+    /* Reserve last 3 slots for the player arrow so overlay draws walls first, player on top. */
+    int wall_cap = (max_lines >= 3) ? (max_lines - 3) : max_lines;
 
     automap_lock();
-    if (!level->automap_seen_walls || level->automap_seen_count == 0) {
-        automap_unlock();
-        return n;
-    }
+    if (level->automap_seen_walls && level->automap_seen_count != 0) {
+        automap_refresh_key_bit_colors(level);
 
-    automap_refresh_key_bit_colors(level);
-
-    for (uint32_t i = 0; i < level->automap_seen_count && n < max_lines; i++) {
+        for (uint32_t i = 0; i < level->automap_seen_count && n < wall_cap; i++) {
         AutomapSeenWall *sw = &level->automap_seen_walls[i];
         uint8_t is_door = sw->is_door;
         uint8_t key_id = sw->door_key_id;
@@ -1109,8 +1081,35 @@ int renderer_automap_collect_line_segments(GameState *state,
                 c12[n] = (uint16_t)(c12[n] | RENDERER_AUTOMAP_SEGFLAG_INTERNAL);
         }
         n++;
+        }
     }
     automap_unlock();
+
+    /* Player arrow (after walls so the SDL/GL overlay draws it last). */
+    if (max_lines >= 3 && n + 3 <= max_lines) {
+        uint16_t cw = (uint16_t)(0x0FFFu | RENDERER_AUTOMAP_SEGFLAG_PLAYER);
+        int ang = (int)(plr->angpos & 0x1FFF);
+        int32_t fx = (int32_t)sin_lookup(ang);
+        int32_t fz = (int32_t)cos_lookup(ang);
+        int32_t len = 40;
+        int tipx = cx + (int)((fx * len) / 32768);
+        int tipy = cy + (int)((fz * len) / 32768);
+        int aL = (ang + (ANGLE_FULL * 3) / 8) & ANGLE_MASK;
+        int aR = (ang + (ANGLE_FULL * 5) / 8) & ANGLE_MASK;
+        int32_t lx = (int32_t)sin_lookup(aL);
+        int32_t lz = (int32_t)cos_lookup(aL);
+        int32_t rx = (int32_t)sin_lookup(aR);
+        int32_t rz = (int32_t)cos_lookup(aR);
+        int wing = 20;
+        int lox = tipx + (int)((lx * wing) / 32768);
+        int loy = tipy + (int)((lz * wing) / 32768);
+        int rox = tipx + (int)((rx * wing) / 32768);
+        int roy = tipy + (int)((rz * wing) / 32768);
+
+        x0[n] = mx - cx; y0[n] = cy; x1[n] = mx - tipx; y1[n] = tipy; c12[n] = cw; n++;
+        x0[n] = mx - tipx; y0[n] = tipy; x1[n] = mx - lox; y1[n] = loy; c12[n] = cw; n++;
+        x0[n] = mx - tipx; y0[n] = tipy; x1[n] = mx - rox; y1[n] = roy; c12[n] = cw; n++;
+    }
     return n;
 }
 

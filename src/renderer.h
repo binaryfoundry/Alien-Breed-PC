@@ -360,6 +360,7 @@ void renderer_automap_unlock(void);
 /* Collect line segments in internal render pixel coords (for SDL overlay in display.c). */
 /* c12 uses low 12 bits for Amiga color and optional segment flags in high bits. */
 #define RENDERER_AUTOMAP_SEGFLAG_INTERNAL 0x8000u
+#define RENDERER_AUTOMAP_SEGFLAG_PLAYER   0x4000u
 int renderer_automap_collect_line_segments(GameState *state,
                                            int *x0, int *y0, int *x1, int *y1,
                                            uint16_t *c12, int max_lines);

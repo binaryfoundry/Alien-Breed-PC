@@ -860,6 +860,30 @@ static void display_gl_line(int x0, int y0, int x1, int y1, Uint8 r, Uint8 g, Ui
     g_gl_draw_arrays(GL_LINES, 0, 2);
 }
 
+/* Window-pixel triangles (solid HUD shader). nverts: 3 or 6 (one or two triangles). */
+static void display_gl_solid_triangles_xy(const float *xy, int nverts, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
+{
+    if (!g_gl_hud_ok || g_gl_overlay_win_w < 1 || !xy || nverts < 3 || nverts > 6 || (nverts % 3) != 0) return;
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    SDL_RenderFlush(g_sdl_ren);
+#endif
+    int wx = g_gl_overlay_win_w, wy = g_gl_overlay_win_h;
+    float buf[12];
+    for (int i = 0; i < nverts; i++) {
+        float nx, ny;
+        display_gl_wnd_ndc(xy[i * 2], xy[i * 2 + 1], wx, wy, &nx, &ny);
+        buf[i * 2] = nx;
+        buf[i * 2 + 1] = ny;
+    }
+    float fr = r / 255.0f, fg = g / 255.0f, fb = b / 255.0f, fa = a / 255.0f;
+    g_gl_use_program(g_gl_prog_hud_solid);
+    if (g_gl_hud_loc_color_solid >= 0) g_gl_uniform4f(g_gl_hud_loc_color_solid, fr, fg, fb, fa);
+    g_gl_bind_vertex_array(g_gl_hud_vao_solid);
+    g_gl_bind_buffer(0x8892, g_gl_hud_vbo);
+    g_gl_buffer_data(0x8892, (ptrdiff_t)(nverts * 2 * sizeof(float)), buf, GL_STREAM_DRAW);
+    g_gl_draw_arrays(GL_TRIANGLES, 0, nverts);
+}
+
 static void display_overlay_copy(SDL_Texture *tex, const SDL_Rect *src_opt, const SDL_Rect *dst)
 {
     if (!g_sdl_ren || !tex || !dst) return;
@@ -881,8 +905,9 @@ static void display_overlay_fill_rect_abs(const SDL_Rect *rect, Uint8 r, Uint8 g
     }
 }
 
-static void display_automap_line_outlined_gl(int ax0, int ay0, int ax1, int ay1,
-                                             Uint8 fr, Uint8 fg, Uint8 fb, Uint8 alpha)
+static void display_automap_line_stroked_gl(int ax0, int ay0, int ax1, int ay1,
+                                            Uint8 fr, Uint8 fg, Uint8 fb, Uint8 alpha,
+                                            int black_k_max, int fg_k_max)
 {
     int dx = ax1 - ax0;
     int dy = ay1 - ay0;
@@ -893,13 +918,20 @@ static void display_automap_line_outlined_gl(int ax0, int ay0, int ax1, int ay1,
 #if SDL_VERSION_ATLEAST(2, 0, 14)
     SDL_RenderFlush(g_sdl_ren);
 #endif
-    for (int k = -1; k <= 1; k++) {
+    if (black_k_max < 0) black_k_max = 0;
+    if (fg_k_max < 0) fg_k_max = 0;
+    for (int k = -black_k_max; k <= black_k_max; k++) {
         double oxk = k * px, oyk = k * py;
         int ox = (int)(oxk + (oxk >= 0.0 ? 0.5 : -0.5));
         int oy = (int)(oyk + (oyk >= 0.0 ? 0.5 : -0.5));
         display_gl_line(ax0 + ox, ay0 + oy, ax1 + ox, ay1 + oy, 0, 0, 0, alpha);
     }
-    display_gl_line(ax0, ay0, ax1, ay1, fr, fg, fb, alpha);
+    for (int k = -fg_k_max; k <= fg_k_max; k++) {
+        double oxk = k * px, oyk = k * py;
+        int ox = (int)(oxk + (oxk >= 0.0 ? 0.5 : -0.5));
+        int oy = (int)(oyk + (oyk >= 0.0 ? 0.5 : -0.5));
+        display_gl_line(ax0 + ox, ay0 + oy, ax1 + ox, ay1 + oy, fr, fg, fb, alpha);
+    }
 }
 
 static void display_gl_shutdown_unpack(void)
@@ -1544,32 +1576,80 @@ static void display_automap_map_pt(int x, int y, int iw, int ih, int *ox, int *o
     *oy = g_present_dst_rect.y + (y * g_present_dst_rect.h) / ih;
 }
 
-/* ~3px black outline (3 parallel SDL lines), then foreground color on top. */
-static void display_automap_draw_line_outlined(SDL_Renderer *ren,
-                                               int ax0, int ay0, int ax1, int ay1,
-                                               Uint8 fr, Uint8 fg, Uint8 fb, Uint8 alpha)
+static void display_automap_line_stroked_sdl(SDL_Renderer *ren,
+                                             int ax0, int ay0, int ax1, int ay1,
+                                             Uint8 fr, Uint8 fg, Uint8 fb, Uint8 alpha,
+                                             int black_k_max, int fg_k_max)
 {
-    if (g_gl_unpack_ok && g_gl_hud_ok) {
-        display_automap_line_outlined_gl(ax0, ay0, ax1, ay1, fr, fg, fb, alpha);
-        (void)ren;
-        return;
-    }
     int dx = ax1 - ax0;
     int dy = ay1 - ay0;
     double len = hypot((double)dx, (double)dy);
     if (len < 1e-6) return;
     double px = -dy / len;
     double py = dx / len;
+    if (black_k_max < 0) black_k_max = 0;
+    if (fg_k_max < 0) fg_k_max = 0;
     SDL_SetRenderDrawBlendMode(ren, (alpha < 255u) ? SDL_BLENDMODE_BLEND : SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, alpha);
-    for (int k = -1; k <= 1; k++) {
+    for (int k = -black_k_max; k <= black_k_max; k++) {
         double oxk = k * px, oyk = k * py;
         int ox = (int)(oxk + (oxk >= 0.0 ? 0.5 : -0.5));
         int oy = (int)(oyk + (oyk >= 0.0 ? 0.5 : -0.5));
         SDL_RenderDrawLine(ren, ax0 + ox, ay0 + oy, ax1 + ox, ay1 + oy);
     }
     SDL_SetRenderDrawColor(ren, fr, fg, fb, alpha);
-    SDL_RenderDrawLine(ren, ax0, ay0, ax1, ay1);
+    for (int k = -fg_k_max; k <= fg_k_max; k++) {
+        double oxk = k * px, oyk = k * py;
+        int ox = (int)(oxk + (oxk >= 0.0 ? 0.5 : -0.5));
+        int oy = (int)(oyk + (oyk >= 0.0 ? 0.5 : -0.5));
+        SDL_RenderDrawLine(ren, ax0 + ox, ay0 + oy, ax1 + ox, ay1 + oy);
+    }
+}
+
+/* Parallel-offset stroke: black_k_max / fg_k_max are inclusive half-widths in pixels. */
+static void display_automap_draw_line_outlined(SDL_Renderer *ren,
+                                               int ax0, int ay0, int ax1, int ay1,
+                                               Uint8 fr, Uint8 fg, Uint8 fb, Uint8 alpha,
+                                               int black_k_max, int fg_k_max)
+{
+    if (g_gl_unpack_ok && g_gl_hud_ok) {
+        display_automap_line_stroked_gl(ax0, ay0, ax1, ay1, fr, fg, fb, alpha,
+                                        black_k_max, fg_k_max);
+        (void)ren;
+        return;
+    }
+    display_automap_line_stroked_sdl(ren, ax0, ay0, ax1, ay1, fr, fg, fb, alpha,
+                                     black_k_max, fg_k_max);
+}
+
+/* Filled quadrilateral (base, left wing, tip, right wing) under player arrow outline. */
+static void display_automap_player_arrow_fill(int axb, int ayb, int axl, int ayl, int axt, int ayt,
+                                              int axr, int ayr)
+{
+    float xy[12] = {
+        (float)axb, (float)ayb, (float)axl, (float)ayl, (float)axt, (float)ayt,
+        (float)axb, (float)ayb, (float)axt, (float)ayt, (float)axr, (float)ayr,
+    };
+    if (g_gl_unpack_ok && g_gl_hud_ok) {
+        display_gl_solid_triangles_xy(xy, 6, 32, 110, 150, 140);
+        return;
+    }
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    if (!g_sdl_ren) return;
+    SDL_SetRenderDrawBlendMode(g_sdl_ren, SDL_BLENDMODE_BLEND);
+    {
+        SDL_Vertex v[6];
+        SDL_Color c = { 32, 110, 150, 140 };
+        int k = 0;
+        v[k].position.x = (float)axb; v[k].position.y = (float)ayb; v[k].color = c; v[k].tex_coord.x = 0; v[k].tex_coord.y = 0; k++;
+        v[k].position.x = (float)axl; v[k].position.y = (float)ayl; v[k].color = c; v[k].tex_coord.x = 0; v[k].tex_coord.y = 0; k++;
+        v[k].position.x = (float)axt; v[k].position.y = (float)ayt; v[k].color = c; v[k].tex_coord.x = 0; v[k].tex_coord.y = 0; k++;
+        v[k].position.x = (float)axb; v[k].position.y = (float)ayb; v[k].color = c; v[k].tex_coord.x = 0; v[k].tex_coord.y = 0; k++;
+        v[k].position.x = (float)axt; v[k].position.y = (float)ayt; v[k].color = c; v[k].tex_coord.x = 0; v[k].tex_coord.y = 0; k++;
+        v[k].position.x = (float)axr; v[k].position.y = (float)ayr; v[k].color = c; v[k].tex_coord.x = 0; v[k].tex_coord.y = 0; k++;
+        SDL_RenderGeometry(g_sdl_ren, NULL, v, 6, NULL, 0);
+    }
+#endif
 }
 
 /* Map internal render pixel rect to SDL output coordinates (letterboxed). */
@@ -2078,7 +2158,11 @@ static void display_automap_sdl_overlay(GameState *state)
     int iw = renderer_get_width();
     int ih = renderer_get_height();
 
-    for (int i = 0; i < n; i++) {
+    int wall_end = n;
+    if (n >= 3 && (c12[n - 3] & RENDERER_AUTOMAP_SEGFLAG_PLAYER))
+        wall_end = n - 3;
+
+    for (int i = 0; i < wall_end; i++) {
         int ax0, ay0, ax1, ay1;
         display_automap_map_pt(ix0[i], iy0[i], iw, ih, &ax0, &ay0);
         display_automap_map_pt(ix1[i], iy1[i], iw, ih, &ax1, &ay1);
@@ -2086,7 +2170,24 @@ static void display_automap_sdl_overlay(GameState *state)
         Uint8 alpha = (seg & RENDERER_AUTOMAP_SEGFLAG_INTERNAL) ? (Uint8)128 : (Uint8)255;
         Uint8 fr, fg, fb;
         display_automap_amiga12_to_rgb(seg, &fr, &fg, &fb);
-        display_automap_draw_line_outlined(g_sdl_ren, ax0, ay0, ax1, ay1, fr, fg, fb, alpha);
+        display_automap_draw_line_outlined(g_sdl_ren, ax0, ay0, ax1, ay1, fr, fg, fb, alpha, 3, 1);
+    }
+
+    if (wall_end < n) {
+        int axb, ayb, axt, ayt, axl, ayl, axr, ayr;
+        display_automap_map_pt(ix0[n - 3], iy0[n - 3], iw, ih, &axb, &ayb);
+        display_automap_map_pt(ix1[n - 3], iy1[n - 3], iw, ih, &axt, &ayt);
+        display_automap_map_pt(ix1[n - 2], iy1[n - 2], iw, ih, &axl, &ayl);
+        display_automap_map_pt(ix1[n - 1], iy1[n - 1], iw, ih, &axr, &ayr);
+        display_automap_player_arrow_fill(axb, ayb, axl, ayl, axt, ayt, axr, ayr);
+
+        for (int i = wall_end; i < n; i++) {
+            int ax0, ay0, ax1, ay1;
+            display_automap_map_pt(ix0[i], iy0[i], iw, ih, &ax0, &ay0);
+            display_automap_map_pt(ix1[i], iy1[i], iw, ih, &ax1, &ay1);
+            Uint8 fr = 255, fg = 252, fb = 235;
+            display_automap_draw_line_outlined(g_sdl_ren, ax0, ay0, ax1, ay1, fr, fg, fb, 255, 4, 2);
+        }
     }
 }
 
