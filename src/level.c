@@ -1398,10 +1398,22 @@ static int level_edge_match(int16_t a1, int16_t a2, int16_t b1, int16_t b2)
 static int level_l4_adjacent_door_wall_match(int16_t p1, int16_t p2, int16_t tex_id)
 {
     /* Level 4 door seam: same physical doorway appears in adjacent zone streams. */
+    if (tex_id == 1 || tex_id == 6 || tex_id == 8) {
+        int16_t d = (int16_t)(p1 - p2);
+        if (d < 0) d = (int16_t)(-d);
+        if (p1 >= 266 && p1 <= 269 &&
+            p2 >= 266 && p2 <= 269 &&
+            (d == 1 || d == 3)) {
+            return 1;
+        }
+    }
+
     if (tex_id == 1) {
         if (level_edge_match(p1, p2, 25, 23)) return 1;
         if (level_edge_match(p1, p2, 24, 26)) return 1;
         if (level_edge_match(p1, p2, 33, 32)) return 1;
+        if (level_edge_match(p1, p2, 269, 268)) return 1; /* zone 124 doorway */
+        if (level_edge_match(p1, p2, 267, 266)) return 1; /* zone 124 doorway */
     }
     if (tex_id == 6) {
         if (level_edge_match(p1, p2, 23, 21)) return 1;
