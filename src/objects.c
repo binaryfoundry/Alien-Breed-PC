@@ -4728,6 +4728,12 @@ static void spawn_blast_particles(GameState *state, int32_t x, int32_t z, int32_
                 uint8_t *pt = state->level.object_points + (uint32_t)saved_cid * 8u;
                 obj_sl(pt,     (int32_t)ctx.newx << 16);
                 obj_sl(pt + 4, (int32_t)ctx.newz << 16);
+
+                if (state->level.prev_object_points) {
+                    uint8_t *prev_pt = state->level.prev_object_points + (uint32_t)saved_cid * 8u;
+                    obj_sl(prev_pt,     (int32_t)ctx.newx << 16);
+                    obj_sl(prev_pt + 4, (int32_t)ctx.newz << 16);
+                }
             }
         }
     }

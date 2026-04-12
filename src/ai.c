@@ -173,7 +173,9 @@ void explode_into_bits(GameObject *obj, GameState *state, bool explosion_kill, i
         /* Y velocity: upward, Amiga range -(256 + rand & 1023) = -256 to -1279 */
         SHOT_SET_YVEL(*bit, (int16_t)(-(256 + (rand() & 1023))));
 
-        /* Copy XZ position from source object */
+        /* Copy XZ position from source object.
+         * Keep prev snapshot aligned so recycled gib slots do not streak on
+         * their first interpolated render frame. */
         if (state->level.object_points) {
             int src_idx = (int)OBJ_CID(obj);
             int dst_idx = (int)OBJ_CID(bit);
@@ -182,6 +184,11 @@ void explode_into_bits(GameObject *obj, GameState *state, bool explosion_kill, i
                 uint8_t *sp = state->level.object_points + src_idx * 8;
                 uint8_t *dp = state->level.object_points + dst_idx * 8;
                 memcpy(dp, sp, 8);
+
+                if (state->level.prev_object_points) {
+                    uint8_t *prev_dp = state->level.prev_object_points + dst_idx * 8;
+                    memcpy(prev_dp, sp, 8);
+                }
             }
         }
 
