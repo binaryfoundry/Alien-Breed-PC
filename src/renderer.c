@@ -115,6 +115,8 @@ static int g_pick_capture_active = 0;
 static int g_pick_last_frame_valid = 0;
 static int g_renderfix_l6_zone120_seen = 0;
 static int g_renderfix_l6_zone123_seen = 0;
+/* Set per-frame in renderer_draw_display; hot paths read it via RenderSliceContext. */
+static int g_renderer_profile_collect_stats = 0;
 
 void renderer_set_weapon_post_gl_active(int active) { s_weapon_post_gl_active = active; }
 int8_t renderer_get_last_fill_screen_water(void) { return g_renderer.last_fill_screen_water; }
@@ -198,11 +200,34 @@ typedef struct {
     uint8_t valid[RENDERER_MAX_ZONE_ORDER];
 } RendererWorldZonePrepass;
 
+typedef struct {
+    uint64_t wall_segments;
+    uint64_t wall_columns;
+    uint64_t wall_pixels_core;
+    uint64_t wall_pixels_side_ext;
+    uint64_t wall_pixels_cap_ext;
+    uint64_t floor_spans;
+    uint64_t floor_pixels;
+    uint64_t water_pixels;
+    uint64_t sprite_calls;
+    uint64_t sprite_columns;
+    uint64_t sprite_pixels_visible;
+    uint64_t sprite_pixels_wall_occluded;
+    uint64_t sprite_pixels_spill_occluded;
+    uint64_t sprite_pixels_tested;
+    uint64_t sprite_pixels_drawn;
+} RendererWorkloadStats;
+
+static void renderer_workload_stats_reset(RendererWorkloadStats *stats);
+static void renderer_workload_stats_add(RendererWorkloadStats *dst, const RendererWorkloadStats *src);
+static uint64_t renderer_workload_estimated_writes(const RendererWorkloadStats *stats);
+
 static void renderer_draw_world_slice(GameState *state,
                                       const RendererWorldZonePrepass *zone_prepass,
                                       int16_t col_start, int16_t col_end,
                                       uint32_t frame_idx, int trace_clip,
-                                      int8_t *out_fill_screen_water);
+                                      int8_t *out_fill_screen_water,
+                                      RendererWorkloadStats *out_workload_stats);
 static void renderer_draw_gun_columns(GameState *state, int col_start, int col_end);
 static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
                                            uint32_t frame_idx, int trace_clip,
@@ -262,6 +287,7 @@ typedef struct {
     SDL_sem *done_sem;
     SDL_sem *worker_sems[RENDERER_MAX_THREADS];
     RendererThreadWorker workers[RENDERER_MAX_THREADS];
+    RendererWorkloadStats worker_world_stats[RENDERER_MAX_THREADS];
     int last_logged_strip_width;
     int last_logged_workers;
 } RendererThreadPool;
@@ -1153,6 +1179,9 @@ typedef AB3D_CACHELINE_ALIGN struct {
     uint8_t pick_player_id;
     int8_t  fill_screen_water;
     int8_t  update_column_clip;
+    uint8_t profile_collect_stats;
+    uint8_t _profile_pad[3];
+    RendererWorkloadStats workload_stats;
 
     /* ---- Cold: floor palette span cache (lazily populated) ---- */
     const uint8_t *floor_pal_cache_src;
@@ -1194,6 +1223,8 @@ static void render_slice_context_init(RenderSliceContext *ctx,
     memset(ctx->wall_cache_rgb, 0, sizeof(ctx->wall_cache_rgb));
     ctx->wall_cache_pal = NULL;
     ctx->wall_cache_valid = 0;
+    renderer_workload_stats_reset(&ctx->workload_stats);
+    ctx->profile_collect_stats = g_renderer_profile_collect_stats ? 1u : 0u;
     ctx->floor_pal_cache_src = NULL;
     memset(ctx->floor_pal_cache_valid, 0, sizeof(ctx->floor_pal_cache_valid));
     ctx->strip_left = left;
@@ -1371,11 +1402,14 @@ static int renderer_thread_worker_main(void *userdata)
         uint16_t *post_dst_cw = pool->post_dst_cw;
 
         int8_t fill_screen_water = 0;
+        RendererWorkloadStats world_stats;
+        renderer_workload_stats_reset(&world_stats);
         if (active && col_start < col_end) {
             if (job_type == RENDERER_THREAD_JOB_WORLD && state) {
                 renderer_draw_world_slice(state, world_zone_prepass,
                                           col_start, col_end,
-                                          frame_idx, trace_clip, &fill_screen_water);
+                                          frame_idx, trace_clip,
+                                          &fill_screen_water, &world_stats);
                 if (state->cfg_weapon_draw)
                     renderer_draw_gun_columns(state, col_start, col_end);
             } else if (job_type == RENDERER_THREAD_JOB_WATER_TINT) {
@@ -1388,6 +1422,9 @@ static int renderer_thread_worker_main(void *userdata)
         }
 
         worker->fill_screen_water = fill_screen_water;
+        if (worker->index >= 0 && worker->index < RENDERER_MAX_THREADS) {
+            pool->worker_world_stats[worker->index] = world_stats;
+        }
         if (active) {
             /* SDL_AtomicAdd returns the value before the add; last worker sees previous==1. */
             int prev = SDL_AtomicAdd(&pool->pending_workers, -1);
@@ -1477,6 +1514,7 @@ static void renderer_threads_init(void)
         pool->workers[i].col_start = 0;
         pool->workers[i].col_end = 0;
         pool->workers[i].fill_screen_water = 0;
+        renderer_workload_stats_reset(&pool->worker_world_stats[i]);
         pool->workers[i].thread = SDL_CreateThread(renderer_thread_worker_main,
                                                    "ab3d_render_worker",
                                                    &pool->workers[i]);
@@ -1521,11 +1559,13 @@ static int renderer_prepare_worker_columns(RendererThreadPool *pool, int width,
         pool->workers[i].col_start = (int16_t)bounds[i];
         pool->workers[i].col_end = (int16_t)bounds[i + 1];
         pool->workers[i].fill_screen_water = 0;
+        renderer_workload_stats_reset(&pool->worker_world_stats[i]);
     }
     for (int i = active_workers; i < pool->worker_count; i++) {
         pool->workers[i].col_start = 0;
         pool->workers[i].col_end = 0;
         pool->workers[i].fill_screen_water = 0;
+        renderer_workload_stats_reset(&pool->worker_world_stats[i]);
     }
 
     if (log_columns && (pool->last_logged_strip_width != width || pool->last_logged_workers != active_workers)) {
@@ -1545,10 +1585,12 @@ static int renderer_prepare_worker_columns(RendererThreadPool *pool, int width,
 static int renderer_dispatch_threaded_world(GameState *state,
                                             const RendererWorldZonePrepass *zone_prepass,
                                             uint32_t frame_idx,
-                                            int trace_clip, int8_t *out_fill_screen_water)
+                                            int trace_clip, int8_t *out_fill_screen_water,
+                                            RendererWorkloadStats *out_workload_stats)
 {
     RendererThreadPool *pool = &g_renderer_thread_pool;
     g_prof_last_world_workers = 0;
+    if (out_workload_stats) renderer_workload_stats_reset(out_workload_stats);
     if (!pool->initialized || pool->worker_count <= 0 || pool->cpu_count <= 1) return 0;
     if (!state) return 0;
     if (!zone_prepass) return 0;
@@ -1582,12 +1624,16 @@ static int renderer_dispatch_threaded_world(GameState *state,
     SDL_SemWait(pool->done_sem);
 
     int8_t fill_screen_water = 0;
+    RendererWorkloadStats merged_stats;
+    renderer_workload_stats_reset(&merged_stats);
     for (int i = 0; i < active_workers; i++) {
         fill_screen_water = merge_fill_screen_water(fill_screen_water, pool->workers[i].fill_screen_water);
+        renderer_workload_stats_add(&merged_stats, &pool->worker_world_stats[i]);
     }
     g_prof_last_world_workers = active_workers;
 
     if (out_fill_screen_water) *out_fill_screen_water = fill_screen_water;
+    if (out_workload_stats) *out_workload_stats = merged_stats;
     return 1;
 }
 
@@ -1640,13 +1686,15 @@ static void renderer_threads_init(void) { }
 static int renderer_dispatch_threaded_world(GameState *state,
                                             const RendererWorldZonePrepass *zone_prepass,
                                             uint32_t frame_idx,
-                                            int trace_clip, int8_t *out_fill_screen_water)
+                                            int trace_clip, int8_t *out_fill_screen_water,
+                                            RendererWorkloadStats *out_workload_stats)
 {
     (void)state;
     (void)zone_prepass;
     (void)frame_idx;
     (void)trace_clip;
     if (out_fill_screen_water) *out_fill_screen_water = 0;
+    if (out_workload_stats) renderer_workload_stats_reset(out_workload_stats);
     return 0;
 }
 static int renderer_dispatch_threaded_underwater_tint(int8_t fill_screen_water)
@@ -1778,6 +1826,42 @@ static int argb24_to_amiga12_lut_ready = 0;
 static uint16_t div255_lut[DIV255_LUT_MAX + 1u];
 static uint32_t g_render_frame_counter = 0;
 
+static void renderer_workload_stats_reset(RendererWorkloadStats *stats)
+{
+    if (!stats) return;
+    memset(stats, 0, sizeof(*stats));
+}
+
+static void renderer_workload_stats_add(RendererWorkloadStats *dst, const RendererWorkloadStats *src)
+{
+    if (!dst || !src) return;
+    dst->wall_segments += src->wall_segments;
+    dst->wall_columns += src->wall_columns;
+    dst->wall_pixels_core += src->wall_pixels_core;
+    dst->wall_pixels_side_ext += src->wall_pixels_side_ext;
+    dst->wall_pixels_cap_ext += src->wall_pixels_cap_ext;
+    dst->floor_spans += src->floor_spans;
+    dst->floor_pixels += src->floor_pixels;
+    dst->water_pixels += src->water_pixels;
+    dst->sprite_calls += src->sprite_calls;
+    dst->sprite_columns += src->sprite_columns;
+    dst->sprite_pixels_visible += src->sprite_pixels_visible;
+    dst->sprite_pixels_wall_occluded += src->sprite_pixels_wall_occluded;
+    dst->sprite_pixels_spill_occluded += src->sprite_pixels_spill_occluded;
+    dst->sprite_pixels_tested += src->sprite_pixels_tested;
+    dst->sprite_pixels_drawn += src->sprite_pixels_drawn;
+}
+
+static uint64_t renderer_workload_estimated_writes(const RendererWorkloadStats *stats)
+{
+    if (!stats) return 0;
+    return stats->wall_pixels_core +
+           stats->wall_pixels_side_ext +
+           stats->wall_pixels_cap_ext +
+           stats->floor_pixels +
+           stats->sprite_pixels_drawn;
+}
+
 typedef struct {
     int initialized;
     int enabled;
@@ -1798,6 +1882,30 @@ typedef struct {
     uint64_t ticks_tint;
     uint64_t ticks_gun;
     uint64_t ticks_swap;
+    uint64_t screen_pixels_total;
+    uint64_t prepass_zone_total;
+    uint64_t prepass_zone_valid_total;
+    uint64_t prepass_clip_pixels_total;
+    uint64_t fill_water_strong_frames;
+    uint64_t fill_water_weak_frames;
+    uint64_t slow_frames;
+    double slow_threshold_ms;
+    RendererWorkloadStats workload_totals;
+    uint64_t worst_frame_idx;
+    double worst_total_ms;
+    double worst_setup_ms;
+    double worst_world_ms;
+    double worst_tint_ms;
+    double worst_gun_ms;
+    double worst_swap_ms;
+    int worst_prepass_total;
+    int worst_prepass_valid;
+    int worst_prepass_clip_pixels;
+    int worst_world_workers;
+    int worst_tint_workers;
+    int8_t worst_fill_screen_water;
+    uint64_t worst_screen_pixels;
+    RendererWorkloadStats worst_workload;
 } RendererProfileState;
 
 static RendererProfileState g_renderer_profile;
@@ -1831,11 +1939,22 @@ static int renderer_profile_enabled(void)
             g_renderer_profile.report_interval_ticks = (uint64_t)(((double)freq * (double)report_ms) / 1000.0);
             if (g_renderer_profile.report_interval_ticks == 0) g_renderer_profile.report_interval_ticks = 1;
         }
+        {
+            double slow_ms = 12.5;
+            const char *env = SDL_getenv("AB3D_PROFILE_RENDER_SLOW_MS");
+            if (env && *env) {
+                double v = atof(env);
+                if (v >= 1.0 && v <= 1000.0) slow_ms = v;
+                else if (v <= 0.0) slow_ms = 0.0;
+            }
+            g_renderer_profile.slow_threshold_ms = slow_ms;
+        }
         g_renderer_profile.next_report_at = now + g_renderer_profile.report_interval_ticks;
 
         if (g_renderer_profile.enabled) {
-            printf("[RPROF] enabled (set AB3D_PROFILE_RENDER=0 to disable, interval=%llu ms)\n",
-                   (unsigned long long)((g_renderer_profile.report_interval_ticks * 1000ULL) / g_renderer_profile.perf_freq));
+            printf("[RPROF] enabled (set AB3D_PROFILE_RENDER=0 to disable, interval=%llu ms, slow>=%.2f ms)\n",
+                   (unsigned long long)((g_renderer_profile.report_interval_ticks * 1000ULL) / g_renderer_profile.perf_freq),
+                   g_renderer_profile.slow_threshold_ms);
         }
     }
     return g_renderer_profile.enabled;
@@ -1870,6 +1989,27 @@ static void renderer_profile_maybe_report(uint64_t now)
         double avg_tint_workers = (g_renderer_profile.tint_workers_samples > 0)
             ? ((double)g_renderer_profile.tint_workers_total / (double)g_renderer_profile.tint_workers_samples)
             : 0.0;
+        double avg_prepass_total = (double)g_renderer_profile.prepass_zone_total / frames;
+        double avg_prepass_valid = (double)g_renderer_profile.prepass_zone_valid_total / frames;
+        double avg_prepass_clip_px = (double)g_renderer_profile.prepass_clip_pixels_total / frames;
+        uint64_t writes_total = renderer_workload_estimated_writes(&g_renderer_profile.workload_totals);
+        uint64_t sprite_alpha_reject = 0;
+        if (g_renderer_profile.workload_totals.sprite_pixels_tested >
+            g_renderer_profile.workload_totals.sprite_pixels_drawn) {
+            sprite_alpha_reject = g_renderer_profile.workload_totals.sprite_pixels_tested -
+                                  g_renderer_profile.workload_totals.sprite_pixels_drawn;
+        }
+        double avg_writes = (double)writes_total / frames;
+        double avg_overdraw = (g_renderer_profile.screen_pixels_total > 0)
+            ? ((double)writes_total / (double)g_renderer_profile.screen_pixels_total)
+            : 0.0;
+        uint64_t worst_writes = renderer_workload_estimated_writes(&g_renderer_profile.worst_workload);
+        double worst_overdraw = (g_renderer_profile.worst_screen_pixels > 0)
+            ? ((double)worst_writes / (double)g_renderer_profile.worst_screen_pixels)
+            : 0.0;
+        const char *worst_water = "none";
+        if (g_renderer_profile.worst_fill_screen_water > 0) worst_water = "strong";
+        else if (g_renderer_profile.worst_fill_screen_water < 0) worst_water = "weak";
 
         printf("[RPROF] frames=%llu fps=%.1f ms(avg): total=%.3f setup=%.3f world=%.3f tint=%.3f gun=%.3f swap=%.3f threaded: world=%.0f%% tint=%.0f%% workers(avg): world=%.1f tint=%.1f\n",
                (unsigned long long)g_renderer_profile.frames,
@@ -1877,6 +2017,50 @@ static void renderer_profile_maybe_report(uint64_t now)
                avg_total, avg_setup, avg_world, avg_tint, avg_gun, avg_swap,
                threaded_world_pct, threaded_tint_pct,
                avg_world_workers, avg_tint_workers);
+        printf("[RPROF] workload(avg/frame): prepass=%.1f/%.1f clip_px=%.0f writes=%.0f overdraw=%.2fx wall_px=%.0f floor_px=%.0f water_px=%.0f sprite_draw=%.0f sprite_test=%.0f sprite_wall_occ=%.0f sprite_spill_occ=%.0f sprite_alpha_drop=%.0f water_frames: strong=%llu weak=%llu slow>=%.2fms=%llu\n",
+               avg_prepass_valid, avg_prepass_total, avg_prepass_clip_px,
+               avg_writes, avg_overdraw,
+               (double)(g_renderer_profile.workload_totals.wall_pixels_core +
+                        g_renderer_profile.workload_totals.wall_pixels_side_ext +
+                        g_renderer_profile.workload_totals.wall_pixels_cap_ext) / frames,
+               (double)g_renderer_profile.workload_totals.floor_pixels / frames,
+               (double)g_renderer_profile.workload_totals.water_pixels / frames,
+               (double)g_renderer_profile.workload_totals.sprite_pixels_drawn / frames,
+               (double)g_renderer_profile.workload_totals.sprite_pixels_tested / frames,
+               (double)g_renderer_profile.workload_totals.sprite_pixels_wall_occluded / frames,
+               (double)g_renderer_profile.workload_totals.sprite_pixels_spill_occluded / frames,
+               (double)sprite_alpha_reject / frames,
+               (unsigned long long)g_renderer_profile.fill_water_strong_frames,
+               (unsigned long long)g_renderer_profile.fill_water_weak_frames,
+               g_renderer_profile.slow_threshold_ms,
+               (unsigned long long)g_renderer_profile.slow_frames);
+        if (g_renderer_profile.worst_total_ms > 0.0) {
+            printf("[RPROF] worst frame=%llu total=%.3fms setup=%.3f world=%.3f tint=%.3f gun=%.3f swap=%.3f prepass=%d/%d clip_px=%d workers(world/tint)=%d/%d writes=%llu overdraw=%.2fx wall_px=%llu floor_px=%llu water_px=%llu sprite_draw=%llu sprite_test=%llu sprite_wall_occ=%llu sprite_spill_occ=%llu water=%s\n",
+                   (unsigned long long)g_renderer_profile.worst_frame_idx,
+                   g_renderer_profile.worst_total_ms,
+                   g_renderer_profile.worst_setup_ms,
+                   g_renderer_profile.worst_world_ms,
+                   g_renderer_profile.worst_tint_ms,
+                   g_renderer_profile.worst_gun_ms,
+                   g_renderer_profile.worst_swap_ms,
+                   g_renderer_profile.worst_prepass_valid,
+                   g_renderer_profile.worst_prepass_total,
+                   g_renderer_profile.worst_prepass_clip_pixels,
+                   g_renderer_profile.worst_world_workers,
+                   g_renderer_profile.worst_tint_workers,
+                   (unsigned long long)worst_writes,
+                   worst_overdraw,
+                   (unsigned long long)(g_renderer_profile.worst_workload.wall_pixels_core +
+                                        g_renderer_profile.worst_workload.wall_pixels_side_ext +
+                                        g_renderer_profile.worst_workload.wall_pixels_cap_ext),
+                   (unsigned long long)g_renderer_profile.worst_workload.floor_pixels,
+                   (unsigned long long)g_renderer_profile.worst_workload.water_pixels,
+                   (unsigned long long)g_renderer_profile.worst_workload.sprite_pixels_drawn,
+                   (unsigned long long)g_renderer_profile.worst_workload.sprite_pixels_tested,
+                   (unsigned long long)g_renderer_profile.worst_workload.sprite_pixels_wall_occluded,
+                   (unsigned long long)g_renderer_profile.worst_workload.sprite_pixels_spill_occluded,
+                   worst_water);
+        }
     }
 
     g_renderer_profile.report_window_start = now;
@@ -1894,6 +2078,29 @@ static void renderer_profile_maybe_report(uint64_t now)
     g_renderer_profile.ticks_tint = 0;
     g_renderer_profile.ticks_gun = 0;
     g_renderer_profile.ticks_swap = 0;
+    g_renderer_profile.screen_pixels_total = 0;
+    g_renderer_profile.prepass_zone_total = 0;
+    g_renderer_profile.prepass_zone_valid_total = 0;
+    g_renderer_profile.prepass_clip_pixels_total = 0;
+    g_renderer_profile.fill_water_strong_frames = 0;
+    g_renderer_profile.fill_water_weak_frames = 0;
+    g_renderer_profile.slow_frames = 0;
+    renderer_workload_stats_reset(&g_renderer_profile.workload_totals);
+    g_renderer_profile.worst_frame_idx = 0;
+    g_renderer_profile.worst_total_ms = 0.0;
+    g_renderer_profile.worst_setup_ms = 0.0;
+    g_renderer_profile.worst_world_ms = 0.0;
+    g_renderer_profile.worst_tint_ms = 0.0;
+    g_renderer_profile.worst_gun_ms = 0.0;
+    g_renderer_profile.worst_swap_ms = 0.0;
+    g_renderer_profile.worst_prepass_total = 0;
+    g_renderer_profile.worst_prepass_valid = 0;
+    g_renderer_profile.worst_prepass_clip_pixels = 0;
+    g_renderer_profile.worst_world_workers = 0;
+    g_renderer_profile.worst_tint_workers = 0;
+    g_renderer_profile.worst_fill_screen_water = 0;
+    g_renderer_profile.worst_screen_pixels = 0;
+    renderer_workload_stats_reset(&g_renderer_profile.worst_workload);
 }
 
 /* Debug helper:
@@ -3256,6 +3463,7 @@ static void draw_wall_rasterize_segment(
     int16_t d6_max)
 {
     const int64_t INVZ_ONE = (1LL << 24);
+    const int profile_collect_stats = (ctx && ctx->profile_collect_stats);
 
     uint8_t * AB3D_RESTRICT buf = renderer_active_buf();
     uint32_t * AB3D_RESTRICT rgb = renderer_active_rgb();
@@ -3404,6 +3612,16 @@ static void draw_wall_rasterize_segment(
          * pixel — pure redundant overdraw (~67% of wall pixel writes). */
         const int do_ext_l = (screen_x == draw_start) && (x > ctx->slice_left);
         const int do_ext_r = (screen_x == draw_end) && (x + 1 < ctx->slice_right);
+
+        if (profile_collect_stats) {
+            uint64_t run = (uint64_t)(cb - ct + 1);
+            ctx->workload_stats.wall_columns++;
+            ctx->workload_stats.wall_pixels_core += run;
+            if (do_ext_l) ctx->workload_stats.wall_pixels_side_ext += run;
+            if (do_ext_r) ctx->workload_stats.wall_pixels_side_ext += run;
+            if (ct > top_clip_val) ctx->workload_stats.wall_pixels_cap_ext++;
+            if (cb + 1 <= bot_clip_val) ctx->workload_stats.wall_pixels_cap_ext++;
+        }
 
         size_t pix = (size_t)ct * wstride + (size_t)x;
 
@@ -3743,6 +3961,10 @@ static void renderer_draw_wall_ctx(RenderSliceContext *ctx,
     int64_t inv_z_delta_fp = inv_z2_fp - inv_z1_fp;
     int64_t tex_over_z_delta_fp = tex_over_z2_fp - tex_over_z1_fp;
     int32_t bright_delta = (int32_t)right_brightness - (int32_t)left_brightness;
+
+    if (ctx && ctx->profile_collect_stats) {
+        ctx->workload_stats.wall_segments++;
+    }
 
     draw_wall_rasterize_segment(ctx,
                                 draw_start, draw_end, scr_x1, span,
@@ -4170,6 +4392,13 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
     }
 
     const int span_len = xr - xl + 1;
+    if (ctx && ctx->profile_collect_stats) {
+        ctx->workload_stats.floor_spans++;
+        ctx->workload_stats.floor_pixels += (uint64_t)span_len;
+        if (is_water) {
+            ctx->workload_stats.water_pixels += (uint64_t)span_len;
+        }
+    }
     uint8_t *row8 = buf + (size_t)y * w + (size_t)xl;
     uint32_t *row32 = rgb + (size_t)y * w + (size_t)xl;
     uint16_t *row16 = cwbuf + (size_t)y * w + (size_t)xl;
@@ -4781,6 +5010,15 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
         if (draw_bot > (int)clip_bot_sy) draw_bot = (int)clip_bot_sy;
     }
     if (draw_top > draw_bot) return;
+    const int profile_collect_stats = (ctx && ctx->profile_collect_stats);
+    uint64_t sprite_visible_rows_total = 0;
+    uint64_t sprite_wall_occluded_rows_total = 0;
+    uint64_t sprite_spill_occluded_rows_total = 0;
+    uint64_t sprite_opaque_writes_total = 0;
+    if (profile_collect_stats) {
+        ctx->workload_stats.sprite_calls++;
+        ctx->workload_stats.sprite_columns += (uint64_t)(dx_end - dx_start);
+    }
 
     /* --- Pre-build 32-entry palette LUT for this brightness level ---
      * Replaces per-pixel palette byte reads, c12 construction, and
@@ -4939,6 +5177,19 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                 seg_count++;
             }
         }
+        if (profile_collect_stats) {
+            int total_rows = draw_bot - draw_top + 1;
+            int visible_rows = 0;
+            if (total_rows < 0) total_rows = 0;
+            for (int si = 0; si < seg_count; si++) {
+                int run = seg_bot[si] - seg_top[si] + 1;
+                if (run > 0) visible_rows += run;
+            }
+            if (visible_rows < 0) visible_rows = 0;
+            if (visible_rows > total_rows) visible_rows = total_rows;
+            sprite_visible_rows_total += (uint64_t)visible_rows;
+            sprite_wall_occluded_rows_total += (uint64_t)(total_rows - visible_rows);
+        }
         if (seg_count <= 0) continue;
 
         /* Rasterize all visible intervals for this column. */
@@ -4960,6 +5211,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                                                       zone_top_rel_8,
                                                                       zone_bot_rel_8,
                                                                       g_renderer.proj_y_scale)) {
+                        if (profile_collect_stats) sprite_spill_occluded_rows_total++;
                         pix += rw_stride;
                         continue;
                     }
@@ -4970,6 +5222,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
+                                if (profile_collect_stats) sprite_opaque_writes_total++;
                                 if (spill_visualize) {
                                     rgb[pix] = spill_vis_rgb;
                                     cw[pix] = spill_vis_cw;
@@ -5001,6 +5254,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                                                       zone_top_rel_8,
                                                                       zone_bot_rel_8,
                                                                       g_renderer.proj_y_scale)) {
+                        if (profile_collect_stats) sprite_spill_occluded_rows_total++;
                         pix += rw_stride;
                         continue;
                     }
@@ -5011,6 +5265,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
+                                if (profile_collect_stats) sprite_opaque_writes_total++;
                                 cw[pix] = spill_visualize ? spill_vis_cw : spr_cw[texel];
                             }
                         }
@@ -5019,6 +5274,18 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                 }
             }
         }
+    }
+
+    if (profile_collect_stats) {
+        uint64_t tested_pixels = 0;
+        if (sprite_visible_rows_total > sprite_spill_occluded_rows_total) {
+            tested_pixels = sprite_visible_rows_total - sprite_spill_occluded_rows_total;
+        }
+        ctx->workload_stats.sprite_pixels_visible += sprite_visible_rows_total;
+        ctx->workload_stats.sprite_pixels_wall_occluded += sprite_wall_occluded_rows_total;
+        ctx->workload_stats.sprite_pixels_spill_occluded += sprite_spill_occluded_rows_total;
+        ctx->workload_stats.sprite_pixels_tested += tested_pixels;
+        ctx->workload_stats.sprite_pixels_drawn += sprite_opaque_writes_total;
     }
 }
 
@@ -8690,9 +8957,11 @@ static void renderer_draw_world_slice(GameState *state,
                                       const RendererWorldZonePrepass *zone_prepass,
                                       int16_t col_start, int16_t col_end,
                                       uint32_t frame_idx, int trace_clip,
-                                      int8_t *out_fill_screen_water)
+                                      int8_t *out_fill_screen_water,
+                                      RendererWorkloadStats *out_workload_stats)
 {
     RenderSliceContext frame_ctx;
+    if (out_workload_stats) renderer_workload_stats_reset(out_workload_stats);
     if (!state || !zone_prepass || col_start >= col_end) {
         if (out_fill_screen_water) *out_fill_screen_water = 0;
         return;
@@ -8786,6 +9055,7 @@ static void renderer_draw_world_slice(GameState *state,
     }
 
     if (out_fill_screen_water) *out_fill_screen_water = frame_ctx.fill_screen_water;
+    if (out_workload_stats) *out_workload_stats = frame_ctx.workload_stats;
 }
 
 static void renderer_apply_underwater_tint_slice(int8_t fill_screen_water,
@@ -8855,8 +9125,12 @@ void renderer_draw_display(GameState *state)
     int pick_this_frame = g_pick_capture_armed ? 1 : 0;
     g_pick_capture_armed = 0;
     g_pick_capture_active = pick_this_frame;
-    if (!r->buffer) return;
+    if (!r->buffer) {
+        g_renderer_profile_collect_stats = 0;
+        return;
+    }
     int prof_on = renderer_profile_enabled();
+    g_renderer_profile_collect_stats = prof_on ? 1 : 0;
     uint64_t t0 = 0;
     uint64_t t_after_setup = 0;
     uint64_t t_after_world = 0;
@@ -8865,6 +9139,11 @@ void renderer_draw_display(GameState *state)
     uint64_t t_after_swap = 0;
     int world_workers = 0;
     int tint_workers = 0;
+    int prepass_total_zones = 0;
+    int prepass_valid_zones = 0;
+    int prepass_clip_pixels = 0;
+    RendererWorkloadStats world_workload_stats;
+    renderer_workload_stats_reset(&world_workload_stats);
     if (prof_on) t0 = SDL_GetPerformanceCounter();
     uint32_t frame_idx = g_render_frame_counter++;
     int trace_clip = renderer_take_clip_trace_slot();
@@ -8968,6 +9247,19 @@ void renderer_draw_display(GameState *state)
     renderer_rotate_object_pts(state);
     RendererWorldZonePrepass world_zone_prepass;
     renderer_build_world_zone_prepass(state, frame_idx, trace_clip, &world_zone_prepass);
+    if (prof_on) {
+        prepass_total_zones = world_zone_prepass.count;
+        if (prepass_total_zones < 0) prepass_total_zones = 0;
+        if (prepass_total_zones > RENDERER_MAX_ZONE_ORDER) prepass_total_zones = RENDERER_MAX_ZONE_ORDER;
+        for (int i = 0; i < prepass_total_zones; i++) {
+            if (!world_zone_prepass.valid[i]) continue;
+            prepass_valid_zones++;
+            {
+                int wclip = (int)world_zone_prepass.right_px[i] - (int)world_zone_prepass.left_px[i];
+                if (wclip > 0) prepass_clip_pixels += wclip;
+            }
+        }
+    }
     if (prof_on) t_after_setup = SDL_GetPerformanceCounter();
 
     int8_t fill_screen_water = 0;
@@ -8976,7 +9268,8 @@ void renderer_draw_display(GameState *state)
     if (state->cfg_render_threads) {
         used_threaded_world = renderer_dispatch_threaded_world(state, &world_zone_prepass,
                                                                frame_idx, trace_clip,
-                                                               &fill_screen_water);
+                                                               &fill_screen_water,
+                                                               &world_workload_stats);
         if (!used_threaded_world) {
             static int s_thread_unavailable_logged = 0;
             if (!s_thread_unavailable_logged) {
@@ -8996,7 +9289,8 @@ void renderer_draw_display(GameState *state)
         renderer_clear(0);
         renderer_draw_world_slice(state, &world_zone_prepass,
                                   0, (int16_t)g_renderer.width,
-                                  frame_idx, trace_clip, &fill_screen_water);
+                                  frame_idx, trace_clip,
+                                  &fill_screen_water, &world_workload_stats);
         world_workers = 1;
     }
     if (prof_on) t_after_world = SDL_GetPerformanceCounter();
@@ -9060,6 +9354,38 @@ void renderer_draw_display(GameState *state)
         ps->ticks_tint += (t_after_tint - t_after_world);
         ps->ticks_gun += (t_after_gun - t_after_tint);
         ps->ticks_swap += (t_after_swap - t_after_gun);
+        ps->prepass_zone_total += (uint64_t)prepass_total_zones;
+        ps->prepass_zone_valid_total += (uint64_t)prepass_valid_zones;
+        ps->prepass_clip_pixels_total += (uint64_t)prepass_clip_pixels;
+        if (fill_screen_water > 0) ps->fill_water_strong_frames++;
+        else if (fill_screen_water < 0) ps->fill_water_weak_frames++;
+        ps->screen_pixels_total += (uint64_t)w * (uint64_t)h;
+        renderer_workload_stats_add(&ps->workload_totals, &world_workload_stats);
+
+        {
+            double frame_ms = ((double)(t_after_swap - t0) * 1000.0) / (double)ps->perf_freq;
+            if (ps->slow_threshold_ms > 0.0 && frame_ms >= ps->slow_threshold_ms) {
+                ps->slow_frames++;
+            }
+            if (frame_ms > ps->worst_total_ms) {
+                ps->worst_total_ms = frame_ms;
+                ps->worst_frame_idx = frame_idx;
+                ps->worst_setup_ms = ((double)(t_after_setup - t0) * 1000.0) / (double)ps->perf_freq;
+                ps->worst_world_ms = ((double)(t_after_world - t_after_setup) * 1000.0) / (double)ps->perf_freq;
+                ps->worst_tint_ms = ((double)(t_after_tint - t_after_world) * 1000.0) / (double)ps->perf_freq;
+                ps->worst_gun_ms = ((double)(t_after_gun - t_after_tint) * 1000.0) / (double)ps->perf_freq;
+                ps->worst_swap_ms = ((double)(t_after_swap - t_after_gun) * 1000.0) / (double)ps->perf_freq;
+                ps->worst_prepass_total = prepass_total_zones;
+                ps->worst_prepass_valid = prepass_valid_zones;
+                ps->worst_prepass_clip_pixels = prepass_clip_pixels;
+                ps->worst_world_workers = world_workers;
+                ps->worst_tint_workers = tint_workers;
+                ps->worst_fill_screen_water = fill_screen_water;
+                ps->worst_screen_pixels = (uint64_t)w * (uint64_t)h;
+                ps->worst_workload = world_workload_stats;
+            }
+        }
         renderer_profile_maybe_report(t_after_swap);
     }
+    g_renderer_profile_collect_stats = 0;
 }
