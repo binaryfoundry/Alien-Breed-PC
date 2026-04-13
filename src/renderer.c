@@ -1938,10 +1938,11 @@ static int renderer_profile_enabled(void)
 
         {
             const char *env = SDL_getenv("AB3D_PROFILE_RENDER");
-            if (env && *env && atoi(env) > 0) {
+            /* Default on for active profiling sessions; allow explicit opt-out with 0. */
+            if (!env || !*env) {
                 g_renderer_profile.enabled = 1;
             } else {
-                g_renderer_profile.enabled = 0;
+                g_renderer_profile.enabled = (atoi(env) > 0) ? 1 : 0;
             }
         }
 
@@ -1971,6 +1972,7 @@ static int renderer_profile_enabled(void)
             printf("[RPROF] enabled (set AB3D_PROFILE_RENDER=0 to disable, interval=%llu ms, slow>=%.2f ms)\n",
                    (unsigned long long)((g_renderer_profile.report_interval_ticks * 1000ULL) / g_renderer_profile.perf_freq),
                    g_renderer_profile.slow_threshold_ms);
+            fflush(stdout);
         }
     }
     return g_renderer_profile.enabled;
@@ -2077,6 +2079,7 @@ static void renderer_profile_maybe_report(uint64_t now)
                    (unsigned long long)g_renderer_profile.worst_workload.sprite_pixels_spill_occluded,
                    worst_water);
         }
+        fflush(stdout);
     }
 
     g_renderer_profile.report_window_start = now;
