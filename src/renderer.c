@@ -5895,6 +5895,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                                                       g_renderer.proj_y_scale)) {
                         if (profile_collect_stats) sprite_spill_occluded_rows_total++;
                         pix += rw_stride;
+                        pix_cw += cw_step_y;
                         continue;
                     }
                     if (pick_player && pick_player_id) pick_player[pix] = pick_player_id;
@@ -5940,6 +5941,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                                                       g_renderer.proj_y_scale)) {
                         if (profile_collect_stats) sprite_spill_occluded_rows_total++;
                         pix += rw_stride;
+                        pix_cw += cw_step_y;
                         continue;
                     }
                     if (pick_player && pick_player_id) pick_player[pix] = pick_player_id;
