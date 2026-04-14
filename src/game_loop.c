@@ -186,7 +186,7 @@ void game_loop_ctx_init(GameLoopCtx *ctx, GameState *state)
 {
     memset(ctx, 0, sizeof(*ctx));
     ctx->last_ticks = SDL_GetTicks();
-    ctx->fps_log_start_ms = ctx->last_ticks;
+    ctx->fps_sample_start_counter = SDL_GetPerformanceCounter();
     g_zone_log_initialized = 0;
     g_zone_log_last_level = -1;
     g_zone_log_last_zone[0] = (int16_t)-32768;
@@ -549,19 +549,22 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
             level_log_zone_full(&state->level, looking_zone, "looking");
         }
 
-        ctx->fps_frames_in_period++;
+        ctx->fps_frames_in_sample++;
         {
-            Uint32 fps_now = SDL_GetTicks();
-            Uint32 fps_dt = fps_now - ctx->fps_log_start_ms;
-            if (fps_dt >= 1000u) {
-                double sec = fps_dt / 1000.0;
-                double fps = (double)ctx->fps_frames_in_period / sec;
+            Uint64 fps_now = SDL_GetPerformanceCounter();
+            Uint64 fps_freq = SDL_GetPerformanceFrequency();
+            Uint64 fps_dt = fps_now - ctx->fps_sample_start_counter;
+            Uint64 fps_update_dt = fps_freq / 4u; /* 250ms updates with high-res timing. */
+            if (fps_update_dt == 0) fps_update_dt = 1;
+            if (fps_freq > 0 && fps_dt >= fps_update_dt) {
+                double sec = (double)fps_dt / (double)fps_freq;
+                double fps = (double)ctx->fps_frames_in_sample / sec;
                 int rounded = (int)(fps + 0.5);
                 if (rounded < 0) rounded = 0;
                 if (rounded > 9999) rounded = 9999;
                 state->fps_display = (uint16_t)rounded;
-                ctx->fps_log_start_ms = fps_now;
-                ctx->fps_frames_in_period = 0;
+                ctx->fps_sample_start_counter = fps_now;
+                ctx->fps_frames_in_sample = 0;
             }
         }
 

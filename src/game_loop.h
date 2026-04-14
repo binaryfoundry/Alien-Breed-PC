@@ -38,8 +38,8 @@ typedef struct GameLoopCtx {
     Uint32 last_ticks;
     int pending_vblanks;
     Uint32 vblank_remainder_ms;
-    Uint32 fps_log_start_ms;
-    int fps_frames_in_period;
+    Uint64 fps_sample_start_counter;
+    int fps_frames_in_sample;
 } GameLoopCtx;
 
 void game_loop_ctx_init(GameLoopCtx *ctx, GameState *state);
