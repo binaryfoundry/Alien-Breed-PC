@@ -149,6 +149,9 @@ static inline void renderer_cw_store_xy(uint16_t *cw, int x, int y, int width, i
 /* Camera UV scale in fixed-point, matching Amiga sxoff/szoff setup in pastsides:
  * xoff/zoff words are promoted to 16.16 before entering pastfloorbright. */
 #define FLOOR_CAM_UV_SCALE  65536  /* 1<<16 */
+/* Floor distance uses one reciprocal lookup per screen-row distance instead of
+ * redoing the same divide in every floor span setup. */
+#define FLOOR_ROW_RECIP_SHIFT 24
 /* Strict Amiga parity: no extra edge expansion beyond geometry rasterization. */
 #define FLOOR_EDGE_EXTRA  0
 #define CEILING_EDGE_EXTRA 0
@@ -201,6 +204,8 @@ int8_t renderer_get_last_fill_screen_water(void) { return g_renderer.last_fill_s
 
 /* Horizontal projection reference width (effective logical width used for X projection). */
 static int g_proj_base_width = RENDER_DEFAULT_WIDTH;
+static uint32_t g_floor_row_abs_recip_fp[RENDER_INTERNAL_MAX_DIM + 1];
+static int g_floor_row_abs_recip_limit = 0;
 
 static inline int renderer_clamp_base_width(int w)
 {
@@ -2737,6 +2742,179 @@ static inline int project_y_to_pixels_round(int32_t vy, int32_t vz, int32_t proj
     return (int)q + center_y;
 }
 
+typedef struct {
+    int width;
+    int base_w;
+    int center_x;
+    int16_t scaleval;
+    int32_t cam_scale;
+    int32_t cos_v;
+    int32_t sin_v;
+    uint64_t dist_num_abs;
+} FloorDrawCommon;
+
+typedef struct {
+    int32_t dist;
+    int32_t u_step;
+    int32_t v_step;
+    uint32_t u_base;
+    uint32_t v_base;
+    int16_t bright_term;
+} FloorRowMath;
+
+static void renderer_floor_prepare_row_recip_table(int height)
+{
+    int max_dist = height;
+    if (max_dist < 1) max_dist = 1;
+    if (max_dist > RENDER_INTERNAL_MAX_DIM) max_dist = RENDER_INTERNAL_MAX_DIM;
+    if (g_floor_row_abs_recip_limit >= max_dist) return;
+
+    for (int dist = g_floor_row_abs_recip_limit + 1; dist <= max_dist; dist++) {
+        g_floor_row_abs_recip_fp[dist] = (uint32_t)((((uint64_t)1u << FLOOR_ROW_RECIP_SHIFT) + (uint64_t)dist / 2u) / (uint64_t)dist);
+    }
+    g_floor_row_abs_recip_limit = max_dist;
+}
+
+static inline int renderer_floor_row_dist_from_screen_y(int y, int center_y)
+{
+    int row_dist = y - center_y;
+    if (row_dist == 0) row_dist = (y < center_y) ? -1 : 1;
+    return row_dist;
+}
+
+static inline void renderer_floor_apply_scale_pair(int32_t *d1, int32_t *d2, int16_t scaleval)
+{
+    if (scaleval == 0) return;
+
+    int s = (int)scaleval;
+    if (s > 0) {
+        if (s > 15) s = 15;
+        {
+            int64_t t1 = (int64_t)(*d1) << s;
+            int64_t t2 = (int64_t)(*d2) << s;
+            if (t1 > INT32_MAX) t1 = INT32_MAX;
+            if (t1 < INT32_MIN) t1 = INT32_MIN;
+            if (t2 > INT32_MAX) t2 = INT32_MAX;
+            if (t2 < INT32_MIN) t2 = INT32_MIN;
+            *d1 = (int32_t)t1;
+            *d2 = (int32_t)t2;
+        }
+    } else {
+        s = -s;
+        if (s > 15) s = 15;
+        *d1 >>= s;
+        *d2 >>= s;
+    }
+}
+
+static inline int32_t renderer_floor_compute_cam_scale(int16_t scaleval)
+{
+    int32_t cam_scale = FLOOR_CAM_UV_SCALE;
+    if (scaleval != 0) {
+        int s = (int)scaleval;
+        if (s > 0) {
+            if (s > 15) s = 15;
+            {
+                int64_t t = (int64_t)cam_scale << s;
+                if (t > INT32_MAX) t = INT32_MAX;
+                cam_scale = (int32_t)t;
+            }
+        } else {
+            s = -s;
+            if (s > 15) s = 15;
+            cam_scale >>= s;
+            if (cam_scale < 1) cam_scale = 1;
+        }
+    }
+    return cam_scale;
+}
+
+static inline void renderer_floor_prepare_common(FloorDrawCommon *common,
+                                                 const RendererState *rs,
+                                                 int32_t floor_height,
+                                                 int16_t scaleval)
+{
+    int32_t fh_8 = floor_height >> (WORLD_Y_FRAC_BITS - 1);
+    uint64_t dist_num_abs;
+    int64_t dist_num = (int64_t)fh_8 * (int64_t)rs->proj_y_scale * (int64_t)RENDER_SCALE;
+
+    if (dist_num < 0) dist_num_abs = (uint64_t)(-dist_num);
+    else dist_num_abs = (uint64_t)dist_num;
+
+    common->width = (rs->width > 0) ? rs->width : 1;
+    common->base_w = renderer_clamp_base_width(g_proj_base_width);
+    common->center_x = (common->width * 47) / 96;
+    common->scaleval = scaleval;
+    common->cam_scale = renderer_floor_compute_cam_scale(scaleval);
+    common->cos_v = ((int32_t)rs->cosval) << 1;
+    common->sin_v = ((int32_t)rs->sinval) << 1;
+    common->dist_num_abs = dist_num_abs;
+}
+
+static inline int32_t renderer_floor_compute_dist(const RendererState *rs,
+                                                  const FloorDrawCommon *common,
+                                                  int row_dist)
+{
+    int abs_row_dist = (row_dist < 0) ? -row_dist : row_dist;
+    uint64_t dist_u64;
+
+    if (abs_row_dist <= 3) {
+        return rs->floor_uv_dist_near;
+    }
+
+    if (abs_row_dist <= g_floor_row_abs_recip_limit && g_floor_row_abs_recip_fp[abs_row_dist] != 0u) {
+        uint64_t scaled = common->dist_num_abs * (uint64_t)g_floor_row_abs_recip_fp[abs_row_dist];
+        dist_u64 = (scaled + ((uint64_t)1u << (FLOOR_ROW_RECIP_SHIFT - 1))) >> FLOOR_ROW_RECIP_SHIFT;
+    } else {
+        dist_u64 = (common->dist_num_abs + (uint64_t)abs_row_dist / 2u) / (uint64_t)abs_row_dist;
+    }
+
+    if (dist_u64 < 16u) dist_u64 = 16u;
+    if (dist_u64 > (uint64_t)rs->floor_uv_dist_max) dist_u64 = (uint64_t)rs->floor_uv_dist_max;
+    return (int32_t)dist_u64;
+}
+
+static inline void renderer_floor_prepare_row_math(FloorRowMath *row_math,
+                                                   const RendererState *rs,
+                                                   const FloorDrawCommon *common,
+                                                   int row_dist)
+{
+    int32_t dist = renderer_floor_compute_dist(rs, common, row_dist);
+    int32_t d1 = (int32_t)((int64_t)dist * (int64_t)common->cos_v);
+    int32_t d2 = (int32_t)(-((int64_t)dist * (int64_t)common->sin_v));
+    int32_t u_step;
+    int32_t v_step;
+
+    renderer_floor_apply_scale_pair(&d1, &d2, common->scaleval);
+
+    if (common->width == common->base_w) {
+        u_step = (int32_t)(d1 >> FLOOR_STEP_SHIFT);
+        v_step = (int32_t)(d2 >> FLOOR_STEP_SHIFT);
+    } else {
+        int64_t den = ((int64_t)common->width << FLOOR_STEP_SHIFT);
+        int64_t num_u = (int64_t)d1 * (int64_t)common->base_w;
+        int64_t num_v = (int64_t)d2 * (int64_t)common->base_w;
+        if (num_u >= 0) u_step = (int32_t)((num_u + den / 2) / den);
+        else            u_step = (int32_t)((num_u - den / 2) / den);
+        if (num_v >= 0) v_step = (int32_t)((num_v + den / 2) / den);
+        else            v_step = (int32_t)((num_v - den / 2) / den);
+    }
+
+    {
+        int64_t start_u64 = -(int64_t)d2 - (int64_t)common->center_x * (int64_t)u_step;
+        int64_t start_v64 = (int64_t)d1 - (int64_t)common->center_x * (int64_t)v_step;
+        start_u64 += (int64_t)rs->xoff * (int64_t)common->cam_scale;
+        start_v64 += (int64_t)rs->zoff * (int64_t)common->cam_scale;
+
+        row_math->dist = dist;
+        row_math->u_step = u_step;
+        row_math->v_step = v_step;
+        row_math->u_base = (uint32_t)(int32_t)start_u64;
+        row_math->v_base = (uint32_t)(int32_t)start_v64;
+        row_math->bright_term = (int16_t)(5 + (dist >> 8));
+    }
+}
+
 static RendererZoneSectionClip renderer_make_zone_section_clip_invalid(void)
 {
     RendererZoneSectionClip clip;
@@ -2874,6 +3052,18 @@ static inline int renderer_fp16_x_ceil_px(int64_t x_fp)
     return (int)((x_fp + 65535LL) >> 16);
 }
 
+static inline int renderer_fp16_y_floor_px(int64_t y_fp)
+{
+    return (int)(y_fp >> 16);
+}
+
+static inline int renderer_fp16_y_ceil_px(int64_t y_fp)
+{
+    if (y_fp <= 0)
+        return (int)(y_fp >> 16);
+    return (int)((y_fp + 65535LL) >> 16);
+}
+
 /* Floor/ceiling edge tables are int16_t; clamp projected X before storing so
  * near-plane projection spikes cannot wrap and corrupt span bounds. */
 static inline int16_t renderer_clamp_edge_x_i16(int x)
@@ -2881,6 +3071,96 @@ static inline int16_t renderer_clamp_edge_x_i16(int x)
     if (x < INT16_MIN) return INT16_MIN;
     if (x > INT16_MAX) return INT16_MAX;
     return (int16_t)x;
+}
+
+static inline int16_t renderer_clamp_edge_y_i16(int y)
+{
+    if (y < INT16_MIN) return INT16_MIN;
+    if (y > INT16_MAX) return INT16_MAX;
+    return (int16_t)y;
+}
+
+static inline void renderer_floor_column_bounds_add_run(int16_t *col_top_tab,
+                                                        int16_t *col_bot_tab,
+                                                        int x,
+                                                        int top_y,
+                                                        int bot_y,
+                                                        int *x_min_io,
+                                                        int *x_max_io)
+{
+    if (!col_top_tab || !col_bot_tab || x < 0) return;
+    if (top_y > bot_y) return;
+
+    if (top_y < col_top_tab[x]) col_top_tab[x] = renderer_clamp_edge_y_i16(top_y);
+    if (bot_y > col_bot_tab[x]) col_bot_tab[x] = renderer_clamp_edge_y_i16(bot_y);
+    if (x_min_io && x < *x_min_io) *x_min_io = x;
+    if (x_max_io && x > *x_max_io) *x_max_io = x;
+}
+
+static void renderer_floor_column_bounds_add_edge(int16_t *col_top_tab,
+                                                  int16_t *col_bot_tab,
+                                                  int x_min_clamp,
+                                                  int x_max_clamp,
+                                                  int y_min_clamp,
+                                                  int y_max_clamp,
+                                                  int sx1,
+                                                  int sy1_raw,
+                                                  int sx2,
+                                                  int sy2_raw,
+                                                  int *x_min_io,
+                                                  int *x_max_io)
+{
+    if (!col_top_tab || !col_bot_tab) return;
+
+    if (sx1 == sx2) {
+        int x = sx1;
+        int top_y = sy1_raw;
+        int bot_y = sy2_raw;
+        if (x < x_min_clamp || x > x_max_clamp) return;
+        if (top_y > bot_y) {
+            int t = top_y;
+            top_y = bot_y;
+            bot_y = t;
+        }
+        if (top_y < y_min_clamp) top_y = y_min_clamp;
+        if (bot_y > y_max_clamp) bot_y = y_max_clamp;
+        renderer_floor_column_bounds_add_run(col_top_tab, col_bot_tab, x,
+                                             top_y, bot_y,
+                                             x_min_io, x_max_io);
+        return;
+    }
+
+    {
+        int col_start = (sx1 < sx2) ? sx1 : sx2;
+        int col_end = (sx1 > sx2) ? sx1 : sx2;
+        int64_t y_fp;
+        int64_t dy_fp;
+
+        if (col_start < x_min_clamp) col_start = x_min_clamp;
+        if (col_end > x_max_clamp) col_end = x_max_clamp;
+        if (col_start > col_end) return;
+
+        if (sx1 < sx2) {
+            y_fp = (int64_t)sy1_raw << 16;
+            dy_fp = ((int64_t)(sy2_raw - sy1_raw) << 16) / (int64_t)(sx2 - sx1);
+            y_fp += dy_fp * (int64_t)(col_start - sx1);
+        } else {
+            y_fp = (int64_t)sy2_raw << 16;
+            dy_fp = ((int64_t)(sy1_raw - sy2_raw) << 16) / (int64_t)(sx1 - sx2);
+            y_fp += dy_fp * (int64_t)(col_start - sx2);
+        }
+
+        for (int x = col_start; x <= col_end; x++) {
+            int top_y = renderer_fp16_y_floor_px(y_fp);
+            int bot_y = renderer_fp16_y_ceil_px(y_fp);
+            if (top_y < y_min_clamp) top_y = y_min_clamp;
+            if (bot_y > y_max_clamp) bot_y = y_max_clamp;
+            renderer_floor_column_bounds_add_run(col_top_tab, col_bot_tab, x,
+                                                 top_y, bot_y,
+                                                 x_min_io, x_max_io);
+            y_fp += dy_fp;
+        }
+    }
 }
 
 static void build_argb24_to_amiga12_lut(void)
@@ -5305,6 +5585,8 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
      * Starting position involves centering with 3/4 factors plus camera pos.
      */
     RendererState *rs = &g_renderer;
+    FloorDrawCommon floor_common;
+    FloorRowMath row_math;
     uint8_t *buf = renderer_active_buf();
     uint32_t *rgb = renderer_active_rgb();
     uint16_t *cwbuf = renderer_active_cw();
@@ -5349,9 +5631,10 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
 
     const int expand = g_renderer_rgb_raster_expand;
 
+    renderer_floor_prepare_common(&floor_common, rs, floor_height, scaleval);
+
     int center = rs->height / 2;  /* Match wall/floor projection center */
-    int row_dist = y - center;
-    if (row_dist == 0) row_dist = (y < center) ? -1 : 1;
+    int row_dist = renderer_floor_row_dist_from_screen_y(y, center);
     int abs_row_dist = (row_dist < 0) ? -row_dist : row_dist;
     const int use_gour = (use_gouraud != 0 && !is_water);
     /* Amiga floor distance attenuation uses 80-line screen-space row offsets (d0 around center=40). */
@@ -5365,16 +5648,7 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
     /* UV distance path (kept separate from brightness falloff):
      * Use a half-step conversion on the world-space height so floor/ceiling texel
      * size lands between the old over-zoomed and the recent under-zoomed result. */
-    int32_t fh_8 = floor_height >> (WORLD_Y_FRAC_BITS - 1);
-    int32_t dist;
-    if (abs_row_dist <= 3) {
-        dist = rs->floor_uv_dist_near;
-    } else {
-        dist = (int32_t)((int64_t)fh_8 * g_renderer.proj_y_scale * RENDER_SCALE / row_dist);
-        if (dist < 0) dist = -dist;
-        if (dist < 16) dist = 16;
-        if (dist > rs->floor_uv_dist_max) dist = rs->floor_uv_dist_max;
-    }
+    int32_t dist = renderer_floor_compute_dist(rs, &floor_common, row_dist);
 
     /* Amiga formula: d6 = (dist >> 7) + zone_bright. Higher d6 = darker. */
     int amiga_d6 = (dist >> 7) + zone_d6;
@@ -5382,97 +5656,14 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
     if (amiga_d6 > 64) amiga_d6 = 64;
     int gray = (64 - amiga_d6) * 255 / 64;
 
-    /* ---- ASM pastfloorbright (line 6660) ----
-     * d1 = d0 * cosval (change in U across whole width)
-     * d2 = -(d0 * sinval) (change in V across whole width) */
-    /* AB3DI pastfloorbright uses SineTable/bigsine values (~32767 magnitude).
-     * Runtime sin/cos lookup is half-scale (~16384), so promote here for all
-     * floor/ceiling/water span UV stepping. */
-    int32_t cos_v = ((int32_t)rs->cosval) << 1;
-    int32_t sin_v = ((int32_t)rs->sinval) << 1;
-    int32_t d1 = (int32_t)(((int64_t)dist * cos_v));
-    int32_t d2 = (int32_t)(-((int64_t)dist * sin_v));
-    if (scaleval != 0) {
-        /* Amiga AB3DI.s scaleprog (around line 6667), used for floor/roof/water:
-         *   scaleval > 0 => asl.l d1/d2 (larger texels)
-         *   scaleval < 0 => asr.l d1/d2 (smaller texels) */
-        int s = (int)scaleval;
-        if (s > 0) {
-            if (s > 15) s = 15;
-            {
-                int64_t t1 = (int64_t)d1 << s;
-                int64_t t2 = (int64_t)d2 << s;
-                if (t1 > INT32_MAX) t1 = INT32_MAX;
-                if (t1 < INT32_MIN) t1 = INT32_MIN;
-                if (t2 > INT32_MAX) t2 = INT32_MAX;
-                if (t2 < INT32_MIN) t2 = INT32_MIN;
-                d1 = (int32_t)t1;
-                d2 = (int32_t)t2;
-            }
-        } else {
-            s = -s;
-            if (s > 15) s = 15;
-            d1 >>= s;
-            d2 >>= s;
-        }
-    }
+    renderer_floor_prepare_row_math(&row_math, rs, &floor_common, row_dist);
 
     /* Step per pixel:
      * - At base render width, keep the original mapping.
      * - When supersampling increases internal width, scale step down so output FOV stays unchanged. */
-    int w = rs->width;
-    if (w < 1) w = 1;
-    int base_w = renderer_clamp_base_width(g_proj_base_width);
-    int32_t u_step;
-    int32_t v_step;
-    if (w == base_w) {
-        u_step = (int32_t)(d1 >> FLOOR_STEP_SHIFT);
-        v_step = (int32_t)(d2 >> FLOOR_STEP_SHIFT);
-    } else {
-        int64_t den = ((int64_t)w << FLOOR_STEP_SHIFT);
-        int64_t num_u = (int64_t)d1 * (int64_t)base_w;
-        int64_t num_v = (int64_t)d2 * (int64_t)base_w;
-        if (num_u >= 0) u_step = (int32_t)((num_u + den / 2) / den);
-        else            u_step = (int32_t)((num_u - den / 2) / den);
-        if (num_v >= 0) v_step = (int32_t)((num_v + den / 2) / den);
-        else            v_step = (int32_t)((num_v - den / 2) / den);
-    }
-
-    /* Center UV at the same optical center used by wall/object projection (47/96 of width):
-     * U_center = -d2, V_center = d1.
-     * So at pixel 0: start_u = -d2 - center_x*u_step, start_v = d1 - center_x*v_step.
-     * Compute in 64-bit to avoid overflow, then take low 32 bits (UV wraps for tiling). */
-    int center_x = (rs->width * 47) / 96;
-    int64_t start_u64 = -(int64_t)d2 - (int64_t)center_x * u_step;
-    int64_t start_v64 = (int64_t)d1 - (int64_t)center_x * v_step;
-
-    /* Camera position offset: UV per world unit = FLOOR_CAM_UV_SCALE (matches fixed u_step). */
-    int32_t cam_scale = FLOOR_CAM_UV_SCALE;
-    if (scaleval != 0) {
-        /* Match Amiga sxoff/szoff scaling done in pastsides before pastfloorbright. */
-        int s = (int)scaleval;
-        if (s > 0) {
-            if (s > 15) s = 15;
-            {
-                int64_t t = (int64_t)cam_scale << s;
-                if (t > INT32_MAX) t = INT32_MAX;
-                cam_scale = (int32_t)t;
-            }
-        } else {
-            s = -s;
-            if (s > 15) s = 15;
-            cam_scale >>= s;
-            if (cam_scale < 1) cam_scale = 1;
-        }
-    }
-    start_u64 += (int64_t)rs->xoff * cam_scale;
-    start_v64 += (int64_t)rs->zoff * cam_scale;
-
-    /* Offset to left edge of span (xl pixels from left of screen). */
-    if (xl > 0) {
-        start_u64 += (int64_t)xl * u_step;
-        start_v64 += (int64_t)xl * v_step;
-    }
+    int w = floor_common.width;
+    int32_t u_step = row_math.u_step;
+    int32_t v_step = row_math.v_step;
 
     const uint8_t *pal_lut_src = floor_pal ? floor_pal : rs->floor_pal;
     int floor_pal_level = 0;
@@ -5492,8 +5683,12 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
     /* UV accumulators: 32-bit wrapping is sufficient - we only need (fp>>16)&63 for tile coords.
      * The 64-bit start computation above already handles the large intermediate values;
      * truncating to 32 bits here halves the per-pixel addition cost. */
-    uint32_t u_fp = (uint32_t)(int32_t)start_u64;
-    uint32_t v_fp = (uint32_t)(int32_t)start_v64;
+    uint32_t u_fp = row_math.u_base;
+    uint32_t v_fp = row_math.v_base;
+    if (xl > 0) {
+        u_fp += (uint32_t)((int64_t)xl * (int64_t)u_step);
+        v_fp += (uint32_t)((int64_t)xl * (int64_t)v_step);
+    }
 
     int32_t water_refr_y_off_fp = 0;
     if (is_water) {
@@ -6497,15 +6692,280 @@ typedef struct {
     uint32_t v_base;
     int32_t bright_base_fp;
     int32_t bright_step_fp;
+    int32_t bright_col_fp;
     int16_t bright_term;
     const uint16_t *span_cw;
-    uint8_t use_gour;
-    uint8_t valid;
+    const uint32_t *span_rgb;
+    uint32_t u_col;
+    uint32_t v_col;
+    int16_t next_x;
 } FloorRowFast;
+
+static void renderer_floor_fast_seed_rows(FloorRowFast *rows,
+                                          int row_count,
+                                          int use_gour_floor)
+{
+    if (!rows || row_count <= 0) return;
+
+    for (int row_idx = 0; row_idx < row_count; row_idx++) {
+        FloorRowFast *row = &rows[row_idx];
+        int x_seed;
+        uint32_t x_u32;
+        if (row->le > row->re) continue;
+        x_seed = (int)row->le;
+        x_u32 = (uint32_t)x_seed;
+        row->u_col = row->u_base + x_u32 * (uint32_t)row->u_step;
+        row->v_col = row->v_base + x_u32 * (uint32_t)row->v_step;
+        if (use_gour_floor) {
+            row->bright_col_fp = row->bright_base_fp;
+        } else {
+            row->bright_col_fp = 0;
+        }
+        row->next_x = (int16_t)x_seed;
+    }
+}
+
+static uint64_t renderer_draw_floor_fast_column(const RenderSliceContext *ctx,
+                                                FloorRowFast *rows,
+                                                const uint16_t *const *gour_cw_levels,
+                                                const uint32_t *const *gour_rgb_levels,
+                                                const uint8_t *texture,
+                                                uint8_t *buf,
+                                                uint32_t *rgb,
+                                                uint16_t *cwbuf,
+                                                int w,
+                                                int h,
+                                                int y_base,
+                                                int pick_capture_active,
+                                                int use_gour_floor,
+                                                int expand,
+                                                int x,
+                                                int top,
+                                                int bot)
+{
+    const int16_t *foreground_floor_occlude_top = ctx ? ctx->foreground_floor_occlude_top : NULL;
+    uint64_t drawn_pixels = 0;
+    int run_start = pick_capture_active ? -1 : INT_MIN;
+    const int x_next = x + 1;
+    const int floor_pf_dist = 8;
+    const size_t floor_pf_stride = (size_t)w * (size_t)floor_pf_dist;
+
+    if (!ctx || !rows || !texture || !buf || !cwbuf) return 0;
+    if (x < 0 || x >= w || top > bot) return 0;
+
+    if (foreground_floor_occlude_top) {
+        int occ_top = (int)foreground_floor_occlude_top[x];
+        if (occ_top <= bot) {
+            if (occ_top <= top) return 0;
+            bot = occ_top - 1;
+        }
+    }
+    if (top > bot) return 0;
+    if (top < y_base) top = y_base;
+    if (top > bot) return 0;
+
+    {
+        size_t cw_idx = renderer_cw_index_xy(x, top, w, h);
+        size_t pix = (size_t)top * (size_t)w + (size_t)x;
+
+        if (!use_gour_floor) {
+            if (expand) {
+                FloorRowFast *row = rows + (top - y_base);
+                for (int y = top; y <= bot; y++, row++) {
+                    int draw_here = (x >= row->le && x <= row->re);
+
+                    if (y + floor_pf_dist <= bot) {
+                        AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
+                        AB3D_PREFETCH_WRITE(&rgb[pix + floor_pf_stride]);
+                    }
+
+                    if (draw_here) {
+                        if (row->next_x != x) {
+                            int dx = x - row->next_x;
+                            row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
+                            row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
+                            row->next_x = (int16_t)x;
+                        }
+                        uint32_t u_fp = row->u_col;
+                        uint32_t v_fp = row->v_col;
+                        uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                        uint16_t out_cw = row->span_cw[texel];
+
+                        if (run_start == -1) run_start = y;
+                        buf[pix] = 1;
+                        AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                        rgb[pix] = row->span_rgb[texel];
+                        drawn_pixels++;
+                        row->u_col += (uint32_t)row->u_step;
+                        row->v_col += (uint32_t)row->v_step;
+                        row->next_x = (int16_t)x_next;
+                    } else if (run_start >= 0) {
+                        renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
+                        run_start = -1;
+                    }
+
+                    cw_idx += 1u;
+                    pix += (size_t)w;
+                }
+            } else {
+                FloorRowFast *row = rows + (top - y_base);
+                for (int y = top; y <= bot; y++, row++) {
+                    int draw_here = (x >= row->le && x <= row->re);
+
+                    if (y + floor_pf_dist <= bot) {
+                        AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
+                    }
+
+                    if (draw_here) {
+                        if (row->next_x != x) {
+                            int dx = x - row->next_x;
+                            row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
+                            row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
+                            row->next_x = (int16_t)x;
+                        }
+                        uint32_t u_fp = row->u_col;
+                        uint32_t v_fp = row->v_col;
+                        uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                        uint16_t out_cw = row->span_cw[texel];
+
+                        if (run_start == -1) run_start = y;
+                        buf[pix] = 1;
+                        AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                        drawn_pixels++;
+                        row->u_col += (uint32_t)row->u_step;
+                        row->v_col += (uint32_t)row->v_step;
+                        row->next_x = (int16_t)x_next;
+                    } else if (run_start >= 0) {
+                        renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
+                        run_start = -1;
+                    }
+
+                    cw_idx += 1u;
+                    pix += (size_t)w;
+                }
+            }
+        } else {
+            if (expand) {
+                FloorRowFast *row = rows + (top - y_base);
+                for (int y = top; y <= bot; y++, row++) {
+                    int draw_here = (x >= row->le && x <= row->re);
+
+                    if (y + floor_pf_dist <= bot) {
+                        AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
+                        AB3D_PREFETCH_WRITE(&rgb[pix + floor_pf_stride]);
+                    }
+
+                    if (draw_here) {
+                        if (row->next_x != x) {
+                            int dx = x - row->next_x;
+                            row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
+                            row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
+                            row->bright_col_fp += dx * row->bright_step_fp;
+                            row->next_x = (int16_t)x;
+                        }
+                        uint32_t u_fp = row->u_col;
+                        uint32_t v_fp = row->v_col;
+                        uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                        int32_t bfp = row->bright_col_fp;
+                        int bright_pix = (int)(bfp >> 16);
+                        int bright_idx = bright_pix + row->bright_term;
+                        uint16_t out_cw;
+                        uint32_t out_rgb;
+
+                        if (bright_idx < 0) bright_idx = 0;
+                        if (bright_idx > 28) bright_idx = 28;
+                        {
+                            int level = floor_bright_level_table[bright_idx];
+                            const uint16_t *cw_level = gour_cw_levels[level];
+                            const uint32_t *rgb_level = gour_rgb_levels[level];
+                            out_cw = cw_level ? cw_level[texel] : row->span_cw ? row->span_cw[texel] : 0;
+                            out_rgb = rgb_level ? rgb_level[texel] : row->span_rgb ? row->span_rgb[texel] : amiga12_to_argb(out_cw);
+                        }
+
+                        if (run_start == -1) run_start = y;
+                        buf[pix] = 1;
+                        AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                        rgb[pix] = out_rgb;
+                        drawn_pixels++;
+                        row->u_col += (uint32_t)row->u_step;
+                        row->v_col += (uint32_t)row->v_step;
+                        row->bright_col_fp += row->bright_step_fp;
+                        row->next_x = (int16_t)x_next;
+                    } else if (run_start >= 0) {
+                        renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
+                        run_start = -1;
+                    }
+
+                    cw_idx += 1u;
+                    pix += (size_t)w;
+                }
+            } else {
+                FloorRowFast *row = rows + (top - y_base);
+                for (int y = top; y <= bot; y++, row++) {
+                    int draw_here = (x >= row->le && x <= row->re);
+
+                    if (y + floor_pf_dist <= bot) {
+                        AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
+                    }
+
+                    if (draw_here) {
+                        if (row->next_x != x) {
+                            int dx = x - row->next_x;
+                            row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
+                            row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
+                            row->bright_col_fp += dx * row->bright_step_fp;
+                            row->next_x = (int16_t)x;
+                        }
+                        uint32_t u_fp = row->u_col;
+                        uint32_t v_fp = row->v_col;
+                        uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                        int32_t bfp = row->bright_col_fp;
+                        int bright_pix = (int)(bfp >> 16);
+                        int bright_idx = bright_pix + row->bright_term;
+                        uint16_t out_cw;
+
+                        if (bright_idx < 0) bright_idx = 0;
+                        if (bright_idx > 28) bright_idx = 28;
+                        {
+                            int level = floor_bright_level_table[bright_idx];
+                            const uint16_t *cw_level = gour_cw_levels[level];
+                            out_cw = cw_level ? cw_level[texel] : row->span_cw ? row->span_cw[texel] : 0;
+                        }
+
+                        if (run_start == -1) run_start = y;
+                        buf[pix] = 1;
+                        AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                        drawn_pixels++;
+                        row->u_col += (uint32_t)row->u_step;
+                        row->v_col += (uint32_t)row->v_step;
+                        row->bright_col_fp += row->bright_step_fp;
+                        row->next_x = (int16_t)x_next;
+                    } else if (run_start >= 0) {
+                        renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
+                        run_start = -1;
+                    }
+
+                    cw_idx += 1u;
+                    pix += (size_t)w;
+                }
+            }
+        }
+    }
+
+    if (run_start >= 0) {
+        renderer_pick_mark_wall_column(ctx, x, run_start, bot, 0, 0, 0, 0);
+    }
+
+    return drawn_pixels;
+}
 
 static int renderer_draw_floor_columns_ctx_fast(RenderSliceContext *ctx,
                                                 const int16_t *left_edge,
                                                 const int16_t *right_edge_tab,
+                                                const int16_t *col_top_tab,
+                                                const int16_t *col_bot_tab,
+                                                int col_x_min,
+                                                int col_x_max,
                                                 const int16_t *left_bright_tab,
                                                 const int16_t *right_bright_tab,
                                                 int poly_top, int poly_bot,
@@ -6517,13 +6977,15 @@ static int renderer_draw_floor_columns_ctx_fast(RenderSliceContext *ctx,
                                                 int16_t scaleval)
 {
 #if !AB3D_CW_COL_MAJOR
-    (void)ctx; (void)left_edge; (void)right_edge_tab; (void)poly_top; (void)poly_bot;
+    (void)ctx; (void)left_edge; (void)right_edge_tab; (void)col_top_tab; (void)col_bot_tab;
+    (void)col_x_min; (void)col_x_max; (void)poly_top; (void)poly_bot;
     (void)left_bright_tab; (void)right_bright_tab;
     (void)floor_height; (void)texture; (void)floor_pal; (void)brightness;
     (void)use_gour_floor; (void)scaleval;
     return 0;
 #else
     RendererState *rs = &g_renderer;
+    FloorDrawCommon floor_common;
     uint8_t *buf = renderer_active_buf();
     uint32_t *rgb = renderer_active_rgb();
     uint16_t *cwbuf = renderer_active_cw();
@@ -6541,212 +7003,178 @@ static int renderer_draw_floor_columns_ctx_fast(RenderSliceContext *ctx,
     if (y0 < 0) y0 = 0;
     if (y1 >= h) y1 = h - 1;
     if (y0 > y1) return 0;
+    {
+        const int row_count = y1 - y0 + 1;
+        FloorRowFast *rows = (FloorRowFast *)malloc((size_t)row_count * sizeof(*rows));
+        if (!rows) return 0;
+        memset(rows, 0, (size_t)row_count * sizeof(*rows));
+        for (int row_idx = 0; row_idx < row_count; row_idx++) {
+            rows[row_idx].le = 1;
+            rows[row_idx].re = 0;
+        }
 
-    FloorRowFast *rows = (FloorRowFast *)malloc((size_t)h * sizeof(FloorRowFast));
-    if (!rows) return 0;
-    for (int i = 0; i < h; i++) {
-        rows[i].valid = 0;
-        rows[i].le = 1;
-        rows[i].re = 0;
-        rows[i].span_cw = NULL;
-    }
+        const int expand = g_renderer_rgb_raster_expand;
+        const int center = h / 2;
+        const int pick_capture_active = (g_pick_capture_active != 0);
+        uint64_t drawn_px_count = 0;
+        uint64_t drawn_col_count = 0;
+        int any_gour = 0;
+        const uint16_t *gour_cw_levels[FLOOR_PAL_LEVEL_COUNT];
+        const uint32_t *gour_rgb_levels[FLOOR_PAL_LEVEL_COUNT];
 
-    const int expand = g_renderer_rgb_raster_expand;
-    const int center = h / 2;
-    const int32_t proj_y_scale = g_renderer.proj_y_scale;
-    int32_t fh_8 = floor_height >> (WORLD_Y_FRAC_BITS - 1);
-    int32_t cos_v = ((int32_t)rs->cosval) << 1;
-    int32_t sin_v = ((int32_t)rs->sinval) << 1;
-    int base_w = renderer_clamp_base_width(g_proj_base_width);
-    int center_x = (rs->width * 47) / 96;
-    int32_t cam_scale = FLOOR_CAM_UV_SCALE;
-    if (scaleval != 0) {
-        int s = (int)scaleval;
-        if (s > 0) {
-            if (s > 15) s = 15;
+        memset(gour_cw_levels, 0, sizeof(gour_cw_levels));
+        memset(gour_rgb_levels, 0, sizeof(gour_rgb_levels));
+        renderer_floor_prepare_common(&floor_common, rs, floor_height, scaleval);
+
+        for (int y = y0; y <= y1; y++) {
+            FloorRowFast *row = &rows[y - y0];
+            int16_t le = left_edge[y];
+            int16_t re = right_edge_tab[y];
+            FloorRowMath row_math;
+            if (le >= w || re < 0) continue;
+            if (le < ctx->left_clip) le = ctx->left_clip;
+            if (re >= ctx->right_clip) re = (int16_t)(ctx->right_clip - 1);
+            if (le > re) continue;
+
+            renderer_floor_prepare_row_math(&row_math,
+                                            rs,
+                                            &floor_common,
+                                            renderer_floor_row_dist_from_screen_y(y, center));
+
             {
-                int64_t t = (int64_t)cam_scale << s;
-                if (t > INT32_MAX) t = INT32_MAX;
-                cam_scale = (int32_t)t;
+                int bright_idx = brightness + row_math.bright_term;
+                int floor_pal_level;
+                if (bright_idx < 0) bright_idx = 0;
+                if (bright_idx > 28) bright_idx = 28;
+                floor_pal_level = floor_bright_level_table[bright_idx];
+
+                row->le = le;
+                row->re = re;
+                row->u_step = row_math.u_step;
+                row->v_step = row_math.v_step;
+                row->u_base = row_math.u_base;
+                row->v_base = row_math.v_base;
+                row->bright_term = row_math.bright_term;
+                row->span_cw = NULL;
+                row->span_rgb = NULL;
+
+                if (!use_gour_floor) {
+                    floor_span_prepare_pal_cache(ctx, floor_pal, floor_pal_level, &row->span_cw);
+                    row->span_rgb = ctx->floor_pal_rgb_levels[floor_pal_level];
+                }
+
+                if (use_gour_floor) {
+                    int32_t bl = left_bright_tab ? left_bright_tab[y] : brightness;
+                    int32_t br = right_bright_tab ? right_bright_tab[y] : brightness;
+                    int32_t den = (int32_t)(re - le);
+                    row->bright_base_fp = bl << 16;
+                    row->bright_step_fp = (den > 0) ? (int32_t)(((br - bl) << 16) / den) : 0;
+                    any_gour = 1;
+                } else {
+                    row->bright_base_fp = 0;
+                    row->bright_step_fp = 0;
+                }
             }
-        } else {
-            s = -s;
-            if (s > 15) s = 15;
-            cam_scale >>= s;
-            if (cam_scale < 1) cam_scale = 1;
-        }
-    }
-
-    int x_min = w;
-    int x_max = -1;
-    uint64_t span_count = 0;
-    uint64_t px_count = 0;
-    int any_gour = 0;
-    const uint16_t *gour_cw_levels[FLOOR_PAL_LEVEL_COUNT];
-    for (int i = 0; i < FLOOR_PAL_LEVEL_COUNT; i++) gour_cw_levels[i] = NULL;
-
-    for (int y = y0; y <= y1; y++) {
-        int16_t le = left_edge[y];
-        int16_t re = right_edge_tab[y];
-        if (le >= w || re < 0) continue;
-        if (le < ctx->left_clip) le = ctx->left_clip;
-        if (re >= ctx->right_clip) re = (int16_t)(ctx->right_clip - 1);
-        if (le > re) continue;
-
-        int row_dist = y - center;
-        if (row_dist == 0) row_dist = (y < center) ? -1 : 1;
-        int abs_row_dist = (row_dist < 0) ? -row_dist : row_dist;
-        int32_t dist;
-        if (abs_row_dist <= 3) {
-            dist = rs->floor_uv_dist_near;
-        } else {
-            dist = (int32_t)((int64_t)fh_8 * proj_y_scale * RENDER_SCALE / row_dist);
-            if (dist < 0) dist = -dist;
-            if (dist < 16) dist = 16;
-            if (dist > rs->floor_uv_dist_max) dist = rs->floor_uv_dist_max;
         }
 
-        int32_t d1 = (int32_t)(((int64_t)dist * cos_v));
-        int32_t d2 = (int32_t)(-((int64_t)dist * sin_v));
-        if (scaleval != 0) {
-            int s = (int)scaleval;
-            if (s > 0) {
-                if (s > 15) s = 15;
+        if (any_gour) {
+            for (int level = 0; level < FLOOR_PAL_LEVEL_COUNT; level++) {
+                floor_span_prepare_pal_cache(ctx, floor_pal, level, &gour_cw_levels[level]);
+                gour_rgb_levels[level] = ctx->floor_pal_rgb_levels[level];
+            }
+        }
+
+        if (col_top_tab && col_bot_tab && col_x_min <= col_x_max) {
+            renderer_floor_fast_seed_rows(rows, row_count, use_gour_floor);
+            for (int x = col_x_min; x <= col_x_max; x++) {
+                int top = col_top_tab[x];
+                int bot = col_bot_tab[x];
+                if (top > bot) continue;
+                if (top < y0) top = y0;
+                if (bot > y1) bot = y1;
+                if (top > bot) continue;
                 {
-                    int64_t t1 = (int64_t)d1 << s;
-                    int64_t t2 = (int64_t)d2 << s;
-                    if (t1 > INT32_MAX) t1 = INT32_MAX;
-                    if (t1 < INT32_MIN) t1 = INT32_MIN;
-                    if (t2 > INT32_MAX) t2 = INT32_MAX;
-                    if (t2 < INT32_MIN) t2 = INT32_MIN;
-                    d1 = (int32_t)t1;
-                    d2 = (int32_t)t2;
-                }
-            } else {
-                s = -s;
-                if (s > 15) s = 15;
-                d1 >>= s;
-                d2 >>= s;
-            }
-        }
-
-        int32_t u_step;
-        int32_t v_step;
-        if (w == base_w) {
-            u_step = (int32_t)(d1 >> FLOOR_STEP_SHIFT);
-            v_step = (int32_t)(d2 >> FLOOR_STEP_SHIFT);
-        } else {
-            int64_t den = ((int64_t)w << FLOOR_STEP_SHIFT);
-            int64_t num_u = (int64_t)d1 * (int64_t)base_w;
-            int64_t num_v = (int64_t)d2 * (int64_t)base_w;
-            if (num_u >= 0) u_step = (int32_t)((num_u + den / 2) / den);
-            else            u_step = (int32_t)((num_u - den / 2) / den);
-            if (num_v >= 0) v_step = (int32_t)((num_v + den / 2) / den);
-            else            v_step = (int32_t)((num_v - den / 2) / den);
-        }
-
-        int64_t start_u64 = -(int64_t)d2 - (int64_t)center_x * u_step;
-        int64_t start_v64 = (int64_t)d1 - (int64_t)center_x * v_step;
-        start_u64 += (int64_t)rs->xoff * cam_scale;
-        start_v64 += (int64_t)rs->zoff * cam_scale;
-
-        int bright_idx = brightness + 5 + (dist >> 8);
-        if (bright_idx < 0) bright_idx = 0;
-        if (bright_idx > 28) bright_idx = 28;
-        int bright_term = 5 + (dist >> 8);
-        int floor_pal_level = floor_bright_level_table[bright_idx];
-        const uint16_t *span_cw = NULL;
-
-        if (!use_gour_floor) {
-            floor_span_prepare_pal_cache(ctx, floor_pal, floor_pal_level, &span_cw);
-        }
-
-        rows[y].le = le;
-        rows[y].re = re;
-        rows[y].u_step = u_step;
-        rows[y].v_step = v_step;
-        rows[y].u_base = (uint32_t)(int32_t)start_u64;
-        rows[y].v_base = (uint32_t)(int32_t)start_v64;
-        rows[y].bright_term = (int16_t)bright_term;
-        rows[y].use_gour = (uint8_t)(use_gour_floor ? 1 : 0);
-        rows[y].span_cw = span_cw;
-
-        if (use_gour_floor) {
-            int32_t bl = left_bright_tab ? left_bright_tab[y] : brightness;
-            int32_t br = right_bright_tab ? right_bright_tab[y] : brightness;
-            int32_t den = (int32_t)(re - le);
-            rows[y].bright_base_fp = bl << 16;
-            rows[y].bright_step_fp = (den > 0) ? (int32_t)(((br - bl) << 16) / den) : 0;
-            any_gour = 1;
-        } else {
-            rows[y].bright_base_fp = 0;
-            rows[y].bright_step_fp = 0;
-        }
-        rows[y].valid = 1;
-
-        if (le < x_min) x_min = le;
-        if (re > x_max) x_max = re;
-        span_count++;
-        px_count += (uint64_t)(re - le + 1);
-    }
-
-    if (any_gour) {
-        for (int level = 0; level < FLOOR_PAL_LEVEL_COUNT; level++) {
-            floor_span_prepare_pal_cache(ctx, floor_pal, level, &gour_cw_levels[level]);
-        }
-    }
-
-    if (x_min <= x_max) {
-        const size_t cw_step_y = renderer_cw_step_y(w);
-        for (int x = x_min; x <= x_max; x++) {
-            int top = y1 + 1;
-            int bot = y0 - 1;
-            for (int y = y0; y <= y1; y++) {
-                if (!rows[y].valid) continue;
-                if (x < rows[y].le || x > rows[y].re) continue;
-                if (y < top) top = y;
-                bot = y;
-            }
-            if (top > bot) continue;
-
-            size_t cw_idx = renderer_cw_index_xy(x, top, w, h);
-            size_t pix = (size_t)top * (size_t)w + (size_t)x;
-            for (int y = top; y <= bot; y++) {
-                if (rows[y].valid && x >= rows[y].le && x <= rows[y].re) {
-                    uint32_t u_fp = rows[y].u_base + (uint32_t)((int64_t)x * (int64_t)rows[y].u_step);
-                    uint32_t v_fp = rows[y].v_base + (uint32_t)((int64_t)x * (int64_t)rows[y].v_step);
-                    uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
-                    uint16_t out_cw;
-                    if (rows[y].use_gour) {
-                        int32_t bfp = rows[y].bright_base_fp + (int32_t)((int64_t)(x - rows[y].le) * rows[y].bright_step_fp);
-                        int bright_pix = (int)(bfp >> 16);
-                        int bright_idx = bright_pix + rows[y].bright_term;
-                        if (bright_idx < 0) bright_idx = 0;
-                        if (bright_idx > 28) bright_idx = 28;
-                        int level = floor_bright_level_table[bright_idx];
-                        const uint16_t *cw_level = gour_cw_levels[level];
-                        out_cw = cw_level ? cw_level[texel] : rows[y].span_cw ? rows[y].span_cw[texel] : 0;
-                    } else {
-                        out_cw = rows[y].span_cw[texel];
+                    uint64_t col_pixels = renderer_draw_floor_fast_column(ctx,
+                                                                          rows,
+                                                                          gour_cw_levels,
+                                                                          gour_rgb_levels,
+                                                                          texture,
+                                                                          buf,
+                                                                          rgb,
+                                                                          cwbuf,
+                                                                          w,
+                                                                          h,
+                                                                          y0,
+                                                                          pick_capture_active,
+                                                                          use_gour_floor,
+                                                                          expand,
+                                                                          x,
+                                                                          top,
+                                                                          bot);
+                    if (col_pixels > 0) {
+                        drawn_px_count += col_pixels;
+                        drawn_col_count++;
                     }
-                    cwbuf[cw_idx] = out_cw;
-                    buf[pix] = 1;
-                    if (expand) rgb[pix] = amiga12_to_argb(out_cw);
                 }
-                cw_idx += cw_step_y;
-                pix += (size_t)w;
+            }
+        } else {
+            int x_min = w;
+            int x_max = -1;
+            for (int y = y0; y <= y1; y++) {
+                const FloorRowFast *row = &rows[y - y0];
+                if (row->le > row->re) continue;
+                if (row->le < x_min) x_min = row->le;
+                if (row->re > x_max) x_max = row->re;
+            }
+            if (x_min <= x_max) {
+                renderer_floor_fast_seed_rows(rows, row_count, use_gour_floor);
+                for (int x = x_min; x <= x_max; x++) {
+                    int top = y1 + 1;
+                    int bot = y0 - 1;
+                    for (int y = y0; y <= y1; y++) {
+                        const FloorRowFast *row = &rows[y - y0];
+                        if (row->le > row->re) continue;
+                        if (x < row->le || x > row->re) continue;
+                        if (y < top) top = y;
+                        bot = y;
+                    }
+                    if (top > bot) continue;
+                    {
+                        uint64_t col_pixels = renderer_draw_floor_fast_column(ctx,
+                                                                              rows,
+                                                                              gour_cw_levels,
+                                                                              gour_rgb_levels,
+                                                                              texture,
+                                                                              buf,
+                                                                              rgb,
+                                                                              cwbuf,
+                                                                              w,
+                                                                              h,
+                                                                              y0,
+                                                                              pick_capture_active,
+                                                                              use_gour_floor,
+                                                                              expand,
+                                                                              x,
+                                                                              top,
+                                                                              bot);
+                        if (col_pixels > 0) {
+                            drawn_px_count += col_pixels;
+                            drawn_col_count++;
+                        }
+                    }
+                }
             }
         }
-    }
 
-    if (ctx->profile_collect_stats) {
-        ctx->workload_stats.floor_spans += span_count;
-        ctx->workload_stats.floor_pixels += px_count;
-        ctx->workload_stats.floor_fast_spans += span_count;
-        ctx->workload_stats.floor_fast_pixels += px_count;
+        if (ctx->profile_collect_stats) {
+            ctx->workload_stats.floor_spans += drawn_col_count;
+            ctx->workload_stats.floor_pixels += drawn_px_count;
+            ctx->workload_stats.floor_fast_spans += drawn_col_count;
+            ctx->workload_stats.floor_fast_pixels += drawn_px_count;
+        }
+        free(rows);
+        return 1;
     }
-    free(rows);
-    return 1;
 #endif
 }
 
@@ -10437,16 +10865,28 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
             int center = h / 2;  /* Match wall projection center */
             int16_t *left_edge = (int16_t*)malloc((size_t)h * sizeof(int16_t));
             int16_t *right_edge_tab = (int16_t*)malloc((size_t)h * sizeof(int16_t));
+            int16_t *col_top_tab = NULL;
+            int16_t *col_bot_tab = NULL;
             int16_t *left_bright_tab = NULL;
             int16_t *right_bright_tab = NULL;
+            int col_x_min = g_renderer.width;
+            int col_x_max = -1;
+            const int build_floor_col_bounds = (AB3D_ENABLE_FLOOR_COL_FAST && AB3D_CW_COL_MAJOR && entry_type != 7);
+            if (build_floor_col_bounds) {
+                col_top_tab = (int16_t*)malloc((size_t)g_renderer.width * sizeof(int16_t));
+                col_bot_tab = (int16_t*)malloc((size_t)g_renderer.width * sizeof(int16_t));
+            }
             if (use_gour_floor) {
                 left_bright_tab = (int16_t*)malloc((size_t)h * sizeof(int16_t));
                 right_bright_tab = (int16_t*)malloc((size_t)h * sizeof(int16_t));
             }
             if (!left_edge || !right_edge_tab ||
+                (build_floor_col_bounds && (!col_top_tab || !col_bot_tab)) ||
                 (use_gour_floor && (!left_bright_tab || !right_bright_tab))) {
                 free(left_edge);
                 free(right_edge_tab);
+                free(col_top_tab);
+                free(col_bot_tab);
                 free(left_bright_tab);
                 free(right_bright_tab);
                 break;
@@ -10457,6 +10897,12 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                 if (use_gour_floor) {
                     left_bright_tab[i] = 0;
                     right_bright_tab[i] = 0;
+                }
+            }
+            if (build_floor_col_bounds) {
+                for (int i = 0; i < g_renderer.width; i++) {
+                    col_top_tab[i] = renderer_clamp_edge_y_i16(h);
+                    col_bot_tab[i] = -1;
                 }
             }
             int poly_top = h;
@@ -10547,6 +10993,21 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                 int32_t rel_h_8 = rel_h >> WORLD_Y_FRAC_BITS;
                 int sy1_raw = project_y_to_pixels_round(rel_h_8, ez1, r->proj_y_scale, center);
                 int sy2_raw = project_y_to_pixels_round(rel_h_8, ez2, r->proj_y_scale, center);
+
+                if (build_floor_col_bounds) {
+                    renderer_floor_column_bounds_add_edge(col_top_tab,
+                                                          col_bot_tab,
+                                                          ctx->left_clip,
+                                                          ctx->right_clip - 1,
+                                                          y_min_clamp,
+                                                          y_max_clamp,
+                                                          sx1,
+                                                          sy1_raw,
+                                                          sx2,
+                                                          sy2_raw,
+                                                          &col_x_min,
+                                                          &col_x_max);
+                }
 
                 /* Clamp for horizontal edge check */
                 int sy1 = sy1_raw;
@@ -10677,6 +11138,8 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                 if (ctx->profile_collect_stats) {
                     uint64_t floor_t0 = SDL_GetPerformanceCounter();
                     renderer_draw_floor_columns_ctx_fast(ctx, left_edge, right_edge_tab,
+                                                         col_top_tab, col_bot_tab,
+                                                         col_x_min, col_x_max,
                                                          left_bright_tab, right_bright_tab,
                                                          poly_top, poly_bot,
                                                          rel_h, floor_tex, floor_pal,
@@ -10688,6 +11151,8 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                     }
                 } else {
                     renderer_draw_floor_columns_ctx_fast(ctx, left_edge, right_edge_tab,
+                                                         col_top_tab, col_bot_tab,
+                                                         col_x_min, col_x_max,
                                                          left_bright_tab, right_bright_tab,
                                                          poly_top, poly_bot,
                                                          rel_h, floor_tex, floor_pal,
@@ -10704,6 +11169,8 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                 renderer_zone_trace_floor_stats_log(&floor_trace_stats);
                 free(left_edge);
                 free(right_edge_tab);
+                free(col_top_tab);
+                free(col_bot_tab);
                 free(left_bright_tab);
                 free(right_bright_tab);
                 break;
@@ -10791,6 +11258,8 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
             renderer_zone_trace_floor_stats_log(&floor_trace_stats);
             free(left_edge);
             free(right_edge_tab);
+            free(col_top_tab);
+            free(col_bot_tab);
             free(left_bright_tab);
             free(right_bright_tab);
             break;
@@ -11554,6 +12023,7 @@ void renderer_draw_display(GameState *state)
         r->floor_uv_dist_max = (int32_t)(((int64_t)30000 * (int64_t)ypct + 50) / 100);
         r->floor_uv_dist_near = (int32_t)(((int64_t)32000 * (int64_t)ypct + 50) / 100);
     }
+    renderer_floor_prepare_row_recip_table(h);
 
     /* 2. Setup view transform (from AB3DI.s DrawDisplay lines 3399-3438) */
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
