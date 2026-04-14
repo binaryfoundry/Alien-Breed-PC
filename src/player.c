@@ -62,6 +62,33 @@ static int player_weapon_slot_from_gun(int16_t gun_idx)
     return 0;
 }
 
+static int player_zone_enter_log_enabled(void)
+{
+    const char *env = getenv("AB3D_ZONE_ENTER_LOG");
+    if (!env || !*env) return 0;
+    return (atoi(env) > 0) ? 1 : 0;
+}
+
+static void player_log_zone_enter(const GameState *state,
+                                  const PlayerState *plr,
+                                  int plr_num,
+                                  int16_t from_zone,
+                                  const char *reason)
+{
+    if (!player_zone_enter_log_enabled() || !state || !plr) return;
+    printf("[ZONEENTER] plr%d level=%d from=%d to=%d top=%d pos=(%d,%d) roompt=%ld lgr=%ld reason=%s\n",
+           plr_num,
+           (int)state->current_level,
+           (int)from_zone,
+           (int)plr->zone,
+           (int)plr->stood_in_top,
+           (int)(plr->xoff >> 16),
+           (int)(plr->zoff >> 16),
+           (long)plr->roompt,
+           (long)plr->list_of_graph_rooms,
+           reason ? reason : "move");
+}
+
 static bool player_weapon_is_selectable(const PlayerState *plr, int gun_idx)
 {
     if (!plr) return false;
@@ -1256,6 +1283,10 @@ static void player_full_control(PlayerState *plr, GameState *state, int plr_num)
         /* ListOfGraphRooms = zone_data + 48 (ToListOfGraph) */
         plr->list_of_graph_rooms = zoff + 48;
     }
+
+    if (plr->zone != prev_zone) {
+        player_log_zone_enter(state, plr, plr_num, prev_zone, "move");
+    }
 }
 
 /* -----------------------------------------------------------------------
@@ -2133,6 +2164,8 @@ static void player_sync_loaded_player(GameState *state, PlayerState *plr, int pl
             plr->list_of_graph_rooms = graph_ptr;
             plr->s_list_of_graph_rooms = graph_ptr;
         }
+
+        player_log_zone_enter(state, plr, plr_num, -1, "load");
     }
 }
 

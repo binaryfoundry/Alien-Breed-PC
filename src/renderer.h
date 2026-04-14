@@ -350,6 +350,8 @@ int renderer_toggle_floor_gouraud_debug_view(void);
 int renderer_get_floor_gouraud_debug_view(void);
 int renderer_toggle_spill_visualize_debug_view(void);
 int renderer_get_spill_visualize_debug_view(void);
+/* Arm one-shot ZONEVIS logging for the next eligible renderer_draw_display call. */
+void renderer_request_zone_trace(void);
 /* Arm one-shot center-pick capture for the next renderer_draw_display call. */
 void renderer_request_center_pick_capture(void);
 /* Picking buffer query: returns center-pixel zone id and player id (0 = none). */

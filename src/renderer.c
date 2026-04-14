@@ -292,6 +292,28 @@ typedef struct {
     uint64_t ticks_sprite;
 } RendererWorkloadStats;
 
+typedef struct {
+    int active;
+    int zone_id;
+    int entry_index;
+    int entry_type;
+    int is_water;
+    int row_min;
+    int row_max;
+    int col_min;
+    int col_max;
+    uint64_t submitted_pixels;
+    uint64_t first_claim_pixels;
+    uint64_t prefilled_pixels;
+    uint64_t wall_clip_cover_pixels;
+    uint64_t same_output_pixels;
+    uint64_t changed_output_pixels;
+    uint8_t *before_tags;
+    uint16_t *before_cw;
+    size_t before_count;
+    int before_ready;
+} RendererZoneTraceFloorStats;
+
 static void renderer_workload_stats_reset(RendererWorkloadStats *stats);
 static void renderer_workload_stats_add(RendererWorkloadStats *dst, const RendererWorkloadStats *src);
 static uint64_t renderer_workload_estimated_writes(const RendererWorkloadStats *stats);
@@ -1805,6 +1827,7 @@ static uint32_t g_water_ms_remainder = 0;
 static uint32_t g_water_speed_ms_remainder = 0;
 static const uint8_t *g_water_file = NULL;
 static size_t g_water_file_size = 0;
+static uint8_t g_water_file_level_max = 0;
 static const uint8_t *g_water_brighten = NULL;
 static size_t g_water_brighten_size = 0;
 static const uint16_t g_water_src_offsets[8] = { 0, 2, 256, 258, 512, 514, 768, 770 };
@@ -1913,6 +1936,18 @@ static int argb24_to_amiga12_lut_ready = 0;
 #define DIV255_LUT_MAX 130050u
 static uint16_t div255_lut[DIV255_LUT_MAX + 1u];
 static uint32_t g_render_frame_counter = 0;
+static int g_renderer_zone_trace_active = 0;
+static uint32_t g_renderer_zone_trace_frame_idx = 0;
+static int g_renderer_zone_trace_requested = 0;
+static int g_clip_trace_initialized = 0;
+static int g_clip_trace_frames_left = 0;
+static int g_zone_trace_initialized = 0;
+static int g_zone_trace_frames_left = 0;
+static int g_trace_filter_initialized = 0;
+static int g_trace_filter_have_level = 0;
+static int g_trace_filter_level = 0;
+static int g_trace_filter_have_player_zone = 0;
+static int g_trace_filter_player_zone = 0;
 
 static void renderer_workload_stats_reset(RendererWorkloadStats *stats)
 {
@@ -1943,6 +1978,35 @@ static void renderer_workload_stats_add(RendererWorkloadStats *dst, const Render
     dst->sprite_pixels_tested += src->sprite_pixels_tested;
     dst->sprite_pixels_drawn += src->sprite_pixels_drawn;
     dst->ticks_sprite += src->ticks_sprite;
+}
+
+static void renderer_workload_stats_diff(RendererWorkloadStats *dst,
+                                         const RendererWorkloadStats *after,
+                                         const RendererWorkloadStats *before)
+{
+    if (!dst) return;
+    renderer_workload_stats_reset(dst);
+    if (!after || !before) return;
+    dst->wall_segments = after->wall_segments - before->wall_segments;
+    dst->wall_columns = after->wall_columns - before->wall_columns;
+    dst->wall_pixels_core = after->wall_pixels_core - before->wall_pixels_core;
+    dst->wall_pixels_side_ext = after->wall_pixels_side_ext - before->wall_pixels_side_ext;
+    dst->wall_pixels_cap_ext = after->wall_pixels_cap_ext - before->wall_pixels_cap_ext;
+    dst->ticks_wall = after->ticks_wall - before->ticks_wall;
+    dst->floor_spans = after->floor_spans - before->floor_spans;
+    dst->floor_pixels = after->floor_pixels - before->floor_pixels;
+    dst->floor_fast_spans = after->floor_fast_spans - before->floor_fast_spans;
+    dst->floor_fast_pixels = after->floor_fast_pixels - before->floor_fast_pixels;
+    dst->water_pixels = after->water_pixels - before->water_pixels;
+    dst->ticks_floor = after->ticks_floor - before->ticks_floor;
+    dst->sprite_calls = after->sprite_calls - before->sprite_calls;
+    dst->sprite_columns = after->sprite_columns - before->sprite_columns;
+    dst->sprite_pixels_visible = after->sprite_pixels_visible - before->sprite_pixels_visible;
+    dst->sprite_pixels_wall_occluded = after->sprite_pixels_wall_occluded - before->sprite_pixels_wall_occluded;
+    dst->sprite_pixels_spill_occluded = after->sprite_pixels_spill_occluded - before->sprite_pixels_spill_occluded;
+    dst->sprite_pixels_tested = after->sprite_pixels_tested - before->sprite_pixels_tested;
+    dst->sprite_pixels_drawn = after->sprite_pixels_drawn - before->sprite_pixels_drawn;
+    dst->ticks_sprite = after->ticks_sprite - before->ticks_sprite;
 }
 
 static uint64_t renderer_workload_estimated_writes(const RendererWorkloadStats *stats)
@@ -2015,9 +2079,9 @@ static int renderer_profile_enabled(void)
 
         {
             const char *env = SDL_getenv("AB3D_PROFILE_RENDER");
-            /* Default on for active profiling sessions; allow explicit opt-out with 0. */
+            /* Default off; profiling is opt-in with a positive env value. */
             if (!env || !*env) {
-                g_renderer_profile.enabled = 1;
+                g_renderer_profile.enabled = 0;
             } else {
                 g_renderer_profile.enabled = (atoi(env) > 0) ? 1 : 0;
             }
@@ -2046,7 +2110,7 @@ static int renderer_profile_enabled(void)
         g_renderer_profile.next_report_at = now + g_renderer_profile.report_interval_ticks;
 
         if (g_renderer_profile.enabled) {
-            printf("[RPROF] enabled (set AB3D_PROFILE_RENDER=0 to disable, interval=%llu ms, slow>=%.2f ms)\n",
+            printf("[RPROF] enabled (interval=%llu ms, slow>=%.2f ms)\n",
                    (unsigned long long)((g_renderer_profile.report_interval_ticks * 1000ULL) / g_renderer_profile.perf_freq),
                    g_renderer_profile.slow_threshold_ms);
             fflush(stdout);
@@ -2292,20 +2356,255 @@ static void renderer_profile_maybe_report(uint64_t now)
 
 /* Debug helper:
  * Set AB3D_CLIP_TRACE_FRAMES=N to print portal clip windows for first N frames. */
-static int renderer_take_clip_trace_slot(void)
+static AB3D_ATTR_UNUSED int renderer_take_clip_trace_slot(void)
 {
-    static int initialized = 0;
-    static int frames_left = 0;
-    if (!initialized) {
+    if (!g_clip_trace_initialized) {
         const char *env = getenv("AB3D_CLIP_TRACE_FRAMES");
-        if (env) frames_left = atoi(env);
-        initialized = 1;
+        if (env) g_clip_trace_frames_left = atoi(env);
+        g_clip_trace_initialized = 1;
     }
-    if (frames_left > 0) {
-        frames_left--;
+    if (g_clip_trace_frames_left > 0) {
+        g_clip_trace_frames_left--;
         return 1;
     }
     return 0;
+}
+
+static int renderer_peek_clip_trace_slot(void)
+{
+    if (!g_clip_trace_initialized) {
+        const char *env = getenv("AB3D_CLIP_TRACE_FRAMES");
+        if (env) g_clip_trace_frames_left = atoi(env);
+        g_clip_trace_initialized = 1;
+    }
+    return (g_clip_trace_frames_left > 0) ? 1 : 0;
+}
+
+static void renderer_consume_clip_trace_slot(void)
+{
+    if (!g_clip_trace_initialized) {
+        (void)renderer_peek_clip_trace_slot();
+    }
+    if (g_clip_trace_frames_left > 0) g_clip_trace_frames_left--;
+}
+
+/* Debug helper:
+ * Set AB3D_ZONE_TRACE_FRAMES=N to print prepass visibility and per-zone draw deltas
+ * for the first N frames. Intended for diagnosing unexpected zone visibility. */
+static AB3D_ATTR_UNUSED int renderer_take_zone_trace_slot(void)
+{
+    if (!g_zone_trace_initialized) {
+        const char *env = getenv("AB3D_ZONE_TRACE_FRAMES");
+        if (env) g_zone_trace_frames_left = atoi(env);
+        g_zone_trace_initialized = 1;
+    }
+    if (g_zone_trace_frames_left > 0) {
+        g_zone_trace_frames_left--;
+        return 1;
+    }
+    return 0;
+}
+
+static int renderer_peek_zone_trace_slot(void)
+{
+    if (!g_zone_trace_initialized) {
+        const char *env = getenv("AB3D_ZONE_TRACE_FRAMES");
+        if (env) g_zone_trace_frames_left = atoi(env);
+        g_zone_trace_initialized = 1;
+    }
+    return (g_zone_trace_frames_left > 0) ? 1 : 0;
+}
+
+static void renderer_consume_zone_trace_slot(void)
+{
+    if (!g_zone_trace_initialized) {
+        (void)renderer_peek_zone_trace_slot();
+    }
+    if (g_zone_trace_frames_left > 0) g_zone_trace_frames_left--;
+}
+
+static int renderer_profile_env_enabled(void)
+{
+    const char *env = SDL_getenv("AB3D_PROFILE_RENDER");
+    if (!env || !*env) return 0;
+    return (atoi(env) > 0) ? 1 : 0;
+}
+
+/* Optional trace-area filters shared by CLIP and ZONEVIS traces.
+ * If unset, traces fire on the next eligible frame.
+ * If set, traces only consume a slot when the current frame matches.
+ * Values use the engine's internal indexing (same as logs / save data). */
+static void renderer_trace_filter_init(void)
+{
+    if (!g_trace_filter_initialized) {
+        const char *env = SDL_getenv("AB3D_TRACE_LEVEL");
+        if (env && *env) {
+            g_trace_filter_have_level = 1;
+            g_trace_filter_level = atoi(env);
+        }
+        env = SDL_getenv("AB3D_TRACE_PLAYER_ZONE");
+        if (env && *env) {
+            g_trace_filter_have_player_zone = 1;
+            g_trace_filter_player_zone = atoi(env);
+        }
+        g_trace_filter_initialized = 1;
+    }
+}
+
+static int renderer_trace_filters_match(const GameState *state)
+{
+    const PlayerState *plr;
+    renderer_trace_filter_init();
+    if (!state) return 0;
+    plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
+    if (g_trace_filter_have_level && state->current_level != g_trace_filter_level) {
+        return 0;
+    }
+    if (g_trace_filter_have_player_zone && plr->zone != g_trace_filter_player_zone) {
+        return 0;
+    }
+    return 1;
+}
+
+void renderer_request_zone_trace(void)
+{
+    g_renderer_zone_trace_requested = 1;
+}
+
+static const uint8_t *renderer_find_lgr_entry_for_zone(const GameState *state,
+                                                       int16_t zone_id,
+                                                       int *out_lgr_index,
+                                                       int16_t *out_clip_off)
+{
+    const uint8_t *lgr = state ? state->view_list_of_graph_rooms : NULL;
+    int lgr_index = 0;
+
+    if (out_lgr_index) *out_lgr_index = -1;
+    if (out_clip_off) *out_clip_off = -1;
+    if (!state || !lgr || zone_id < 0) return NULL;
+
+    while (rd16(lgr) >= 0) {
+        int16_t entry_zone = -1;
+        if (renderer_resolve_lgr_entry_zone_id(&state->level, rd16(lgr), &entry_zone) &&
+            entry_zone == zone_id) {
+            if (out_lgr_index) *out_lgr_index = lgr_index;
+            if (out_clip_off) *out_clip_off = rd16(lgr + 2);
+            return lgr;
+        }
+        lgr += 8;
+        lgr_index++;
+    }
+
+    return NULL;
+}
+
+static int renderer_count_lgr_entries(const GameState *state)
+{
+    const uint8_t *lgr = state ? state->view_list_of_graph_rooms : NULL;
+    int count = 0;
+    if (!lgr) return 0;
+    while (rd16(lgr) >= 0) {
+        count++;
+        lgr += 8;
+    }
+    return count;
+}
+
+static void renderer_log_world_zone_prepass(const GameState *state,
+                                            const RendererWorldZonePrepass *prepass,
+                                            uint32_t frame_idx)
+{
+    const PlayerState *plr = state ? ((state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1) : NULL;
+    int count = 0;
+    int valid = 0;
+    int lgr_count = renderer_count_lgr_entries(state);
+
+    if (!prepass) return;
+    count = prepass->count;
+    if (count < 0) count = 0;
+    if (count > RENDERER_MAX_ZONE_ORDER) count = RENDERER_MAX_ZONE_ORDER;
+    for (int i = 0; i < count; i++) {
+        if (prepass->valid[i]) valid++;
+    }
+
+        printf("[ZONEVIS][frame %u] begin level=%d player_zone=%d zone_order=%d lgr=%d prepass_valid=%d width=%d threads=%d\n",
+            (unsigned)frame_idx,
+            state ? (int)state->current_level : -1,
+            plr ? (int)plr->zone : -1,
+            count, lgr_count, valid, g_renderer.width,
+            (state && state->cfg_render_threads && !g_renderer_zone_trace_active) ? 1 : 0);
+    for (int i = 0; i < count; i++) {
+        int16_t zone_id = prepass->zone_ids[i];
+        int lgr_index = -1;
+        int16_t clip_off = -1;
+        int dup_of = -1;
+        int clip_left = (int)prepass->left_px[i];
+        int clip_right = (int)prepass->right_px[i];
+        int clip_w = clip_right - clip_left;
+
+        (void)renderer_find_lgr_entry_for_zone(state, zone_id, &lgr_index, &clip_off);
+        for (int j = 0; j < i; j++) {
+            if (prepass->zone_ids[j] == zone_id) {
+                dup_of = j;
+                break;
+            }
+        }
+
+        if (!prepass->valid[i]) {
+            clip_left = 0;
+            clip_right = 0;
+            clip_w = 0;
+        }
+
+        printf("[ZONEVIS][frame %u] prepass[%02d] zone=%d dup_of=%d lgr_idx=%d clip_off=%d valid=%d clip=[%d,%d) w=%d\n",
+               (unsigned)frame_idx, i, (int)zone_id, dup_of, lgr_index, (int)clip_off,
+               prepass->valid[i] ? 1 : 0, clip_left, clip_right, clip_w);
+    }
+    fflush(stdout);
+}
+
+static void renderer_log_world_zone_draw(uint32_t frame_idx,
+                                         int order_idx,
+                                         int16_t zone_id,
+                                         int left_clip_px,
+                                         int right_clip_px,
+                                         int drew_upper,
+                                         int upper_first,
+                                         uint64_t zone_ticks,
+                                         const RendererWorkloadStats *delta)
+{
+    double zone_ms = 0.0;
+    double wall_ms = 0.0;
+    double floor_ms = 0.0;
+    double sprite_ms = 0.0;
+    uint64_t writes = renderer_workload_estimated_writes(delta);
+    uint64_t wall_px = 0;
+    uint64_t freq = 0;
+
+    if (!delta) return;
+    wall_px = delta->wall_pixels_core + delta->wall_pixels_side_ext + delta->wall_pixels_cap_ext;
+    freq = SDL_GetPerformanceFrequency();
+    if (freq == 0) freq = 1;
+    zone_ms = ((double)zone_ticks * 1000.0) / (double)freq;
+    wall_ms = ((double)delta->ticks_wall * 1000.0) / (double)freq;
+    floor_ms = ((double)delta->ticks_floor * 1000.0) / (double)freq;
+    sprite_ms = ((double)delta->ticks_sprite * 1000.0) / (double)freq;
+
+    printf("[ZONEVIS][frame %u] draw[%02d] zone=%d clip=[%d,%d) passes=%s order=%s ms=%.3f wall_ms=%.3f floor_ms=%.3f sprite_ms=%.3f writes=%llu wall_px=%llu floor_px=%llu water_px=%llu sprite_draw=%llu sprite_test=%llu\n",
+           (unsigned)frame_idx, order_idx, (int)zone_id,
+           left_clip_px, right_clip_px,
+           drew_upper ? "upper+lower" : "lower",
+           drew_upper ? (upper_first ? "upper-first" : "lower-first") : "lower-only",
+           zone_ms,
+           wall_ms,
+           floor_ms,
+           sprite_ms,
+           (unsigned long long)writes,
+           (unsigned long long)wall_px,
+           (unsigned long long)delta->floor_pixels,
+           (unsigned long long)delta->water_pixels,
+           (unsigned long long)delta->sprite_pixels_drawn,
+           (unsigned long long)delta->sprite_pixels_tested);
 }
 
 /* Project rotated X/Z to current render pixel-space X, matching wall path math.
@@ -2515,6 +2814,14 @@ void renderer_set_water_assets(const uint8_t *water_file, size_t water_file_size
 {
     g_water_file = water_file;
     g_water_file_size = water_file_size;
+    g_water_file_level_max = 0;
+    if (water_file && water_file_size > 0) {
+        uint8_t level_max = 0;
+        for (size_t i = 0; i < water_file_size; i++) {
+            if (water_file[i] > level_max) level_max = water_file[i];
+        }
+        g_water_file_level_max = level_max;
+    }
     g_water_brighten = water_brighten;
     g_water_brighten_size = water_brighten_size;
     g_water_anim_cursor = 0;
@@ -3638,6 +3945,221 @@ static int32_t renderer_column_clip_nearest_z_overlap(const ColumnClip *clip, in
         }
     }
     return nearest_z;
+}
+
+static void renderer_zone_trace_floor_stats_init(RendererZoneTraceFloorStats *stats,
+                                                 int active,
+                                                 int zone_id,
+                                                 int entry_index,
+                                                 int entry_type,
+                                                 int is_water)
+{
+    if (!stats) return;
+    memset(stats, 0, sizeof(*stats));
+    stats->active = active ? 1 : 0;
+    stats->zone_id = zone_id;
+    stats->entry_index = entry_index;
+    stats->entry_type = entry_type;
+    stats->is_water = is_water ? 1 : 0;
+    stats->row_min = INT_MAX;
+    stats->row_max = INT_MIN;
+    stats->col_min = INT_MAX;
+    stats->col_max = INT_MIN;
+    stats->before_tags = NULL;
+    stats->before_cw = NULL;
+}
+
+static void renderer_zone_trace_floor_stats_accumulate_edges(RendererZoneTraceFloorStats *stats,
+                                                             const RenderSliceContext *ctx,
+                                                             const int16_t *left_edge,
+                                                             const int16_t *right_edge,
+                                                             int poly_top,
+                                                             int poly_bot)
+{
+    uint8_t *buf = renderer_active_buf();
+    uint16_t *cw = renderer_active_cw();
+    int w = g_renderer.width;
+    int h = g_renderer.height;
+
+    if (!stats || !stats->active || !ctx || !left_edge || !right_edge || !buf) return;
+    if (poly_top > poly_bot) return;
+
+    for (int row = poly_top; row <= poly_bot; row++) {
+        if (row < 0 || row >= h) continue;
+        if (row < ctx->top_clip || row > ctx->bot_clip) continue;
+
+        int16_t le = left_edge[row];
+        int16_t re = right_edge[row];
+        if (le >= w || re < 0) continue;
+
+        int cle = (le < ctx->left_clip) ? ctx->left_clip : le;
+        int cre = (re >= ctx->right_clip) ? (ctx->right_clip - 1) : re;
+        if (cle > cre) continue;
+
+        stats->submitted_pixels += (uint64_t)(cre - cle + 1);
+        if (row < stats->row_min) stats->row_min = row;
+        if (row > stats->row_max) stats->row_max = row;
+        if (cle < stats->col_min) stats->col_min = cle;
+        if (cre > stats->col_max) stats->col_max = cre;
+
+        {
+            size_t row_off = (size_t)row * (size_t)w;
+            for (int x = cle; x <= cre; x++) {
+                if (buf[row_off + (size_t)x] != 0) stats->prefilled_pixels++;
+                else stats->first_claim_pixels++;
+                if (renderer_column_clip_nearest_z_at(x, row) > 0) {
+                    stats->wall_clip_cover_pixels++;
+                }
+            }
+        }
+    }
+
+    if (!cw || stats->submitted_pixels == 0) return;
+
+    stats->before_tags = (uint8_t *)malloc((size_t)stats->submitted_pixels * sizeof(*stats->before_tags));
+    stats->before_cw = (uint16_t *)malloc((size_t)stats->submitted_pixels * sizeof(*stats->before_cw));
+    if (!stats->before_tags || !stats->before_cw) {
+        free(stats->before_tags);
+        free(stats->before_cw);
+        stats->before_tags = NULL;
+        stats->before_cw = NULL;
+        return;
+    }
+
+    {
+        size_t idx = 0;
+        for (int row = poly_top; row <= poly_bot; row++) {
+            if (row < 0 || row >= h) continue;
+            if (row < ctx->top_clip || row > ctx->bot_clip) continue;
+
+            int16_t le = left_edge[row];
+            int16_t re = right_edge[row];
+            if (le >= w || re < 0) continue;
+
+            int cle = (le < ctx->left_clip) ? ctx->left_clip : le;
+            int cre = (re >= ctx->right_clip) ? (ctx->right_clip - 1) : re;
+            if (cle > cre) continue;
+
+            {
+                size_t row_off = (size_t)row * (size_t)w;
+                for (int x = cle; x <= cre; x++) {
+                    stats->before_tags[idx] = buf[row_off + (size_t)x];
+                    stats->before_cw[idx] = renderer_cw_load_xy(cw, x, row, w, h);
+                    idx++;
+                }
+            }
+        }
+        stats->before_count = idx;
+        stats->before_ready = (idx == (size_t)stats->submitted_pixels) ? 1 : 0;
+        if (!stats->before_ready) {
+            free(stats->before_tags);
+            free(stats->before_cw);
+            stats->before_tags = NULL;
+            stats->before_cw = NULL;
+            stats->before_count = 0;
+        }
+    }
+}
+
+static void renderer_zone_trace_floor_stats_finalize(RendererZoneTraceFloorStats *stats,
+                                                     const RenderSliceContext *ctx,
+                                                     const int16_t *left_edge,
+                                                     const int16_t *right_edge,
+                                                     int poly_top,
+                                                     int poly_bot)
+{
+    uint8_t *buf = renderer_active_buf();
+    uint16_t *cw = renderer_active_cw();
+    int w = g_renderer.width;
+    int h = g_renderer.height;
+
+    if (!stats || !stats->active || !stats->before_ready || !ctx || !left_edge || !right_edge || !buf || !cw) return;
+    if (poly_top > poly_bot) return;
+
+    {
+        size_t idx = 0;
+        for (int row = poly_top; row <= poly_bot; row++) {
+            if (row < 0 || row >= h) continue;
+            if (row < ctx->top_clip || row > ctx->bot_clip) continue;
+
+            int16_t le = left_edge[row];
+            int16_t re = right_edge[row];
+            if (le >= w || re < 0) continue;
+
+            int cle = (le < ctx->left_clip) ? ctx->left_clip : le;
+            int cre = (re >= ctx->right_clip) ? (ctx->right_clip - 1) : re;
+            if (cle > cre) continue;
+
+            {
+                size_t row_off = (size_t)row * (size_t)w;
+                for (int x = cle; x <= cre && idx < stats->before_count; x++) {
+                    uint8_t after_tag = buf[row_off + (size_t)x];
+                    uint16_t after_cw = renderer_cw_load_xy(cw, x, row, w, h);
+                    if (after_tag == stats->before_tags[idx] && after_cw == stats->before_cw[idx])
+                        stats->same_output_pixels++;
+                    else
+                        stats->changed_output_pixels++;
+                    idx++;
+                }
+            }
+        }
+    }
+
+    free(stats->before_tags);
+    free(stats->before_cw);
+    stats->before_tags = NULL;
+    stats->before_cw = NULL;
+    stats->before_count = 0;
+    stats->before_ready = 0;
+}
+
+static void renderer_zone_trace_floor_stats_log(const RendererZoneTraceFloorStats *stats)
+{
+    double first_claim_pct;
+    double prefilled_pct;
+    double wall_clip_pct;
+    double same_output_pct;
+    double changed_output_pct;
+
+    if (!stats || !stats->active) return;
+
+    first_claim_pct = (stats->submitted_pixels > 0)
+        ? (100.0 * (double)stats->first_claim_pixels / (double)stats->submitted_pixels)
+        : 0.0;
+    prefilled_pct = (stats->submitted_pixels > 0)
+        ? (100.0 * (double)stats->prefilled_pixels / (double)stats->submitted_pixels)
+        : 0.0;
+    wall_clip_pct = (stats->submitted_pixels > 0)
+        ? (100.0 * (double)stats->wall_clip_cover_pixels / (double)stats->submitted_pixels)
+        : 0.0;
+    same_output_pct = (stats->submitted_pixels > 0)
+        ? (100.0 * (double)stats->same_output_pixels / (double)stats->submitted_pixels)
+        : 0.0;
+    changed_output_pct = (stats->submitted_pixels > 0)
+        ? (100.0 * (double)stats->changed_output_pixels / (double)stats->submitted_pixels)
+        : 0.0;
+
+    printf("[ZONEFLOOR][frame %u] zone=%d entry[%02d] type=%d water=%d rows=[%d,%d] cols=[%d,%d] submitted=%llu first_claim=%llu(%.1f%%) prefilled=%llu(%.1f%%) same_out=%llu(%.1f%%) changed_out=%llu(%.1f%%) wall_clip_cover=%llu(%.1f%%)\n",
+           (unsigned)g_renderer_zone_trace_frame_idx,
+           stats->zone_id,
+           stats->entry_index,
+           stats->entry_type,
+           stats->is_water,
+           (stats->row_min == INT_MAX) ? -1 : stats->row_min,
+           (stats->row_max == INT_MIN) ? -1 : stats->row_max,
+           (stats->col_min == INT_MAX) ? -1 : stats->col_min,
+           (stats->col_max == INT_MIN) ? -1 : stats->col_max,
+           (unsigned long long)stats->submitted_pixels,
+           (unsigned long long)stats->first_claim_pixels,
+           first_claim_pct,
+           (unsigned long long)stats->prefilled_pixels,
+           prefilled_pct,
+           (unsigned long long)stats->same_output_pixels,
+           same_output_pct,
+           (unsigned long long)stats->changed_output_pixels,
+           changed_output_pct,
+           (unsigned long long)stats->wall_clip_cover_pixels,
+           wall_clip_pct);
 }
 
 /* Wall column loop uses inverse-Z in 8.24 (INVZ_ONE). Projecting Y as world_y*K/z with an
@@ -4869,6 +5391,53 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
         const int water_has_brighten = (g_water_brighten && g_water_brighten_size >= 512u);
         uint32_t dist_off = (((uint32_t)dist) & 0xFF00u) << 1;
         if (dist_off > (uint32_t)(12 * 512)) dist_off = (uint32_t)(12 * 512);
+
+        if (!expand && water_has_file && water_has_brighten) {
+            size_t water_file_lookup_span = (size_t)g_water_src_off + 65536u;
+            size_t water_brighten_lookup_span = (size_t)dist_off + ((size_t)g_water_file_level_max << 9) + 512u;
+            if (g_water_file_size >= water_file_lookup_span &&
+                g_water_brighten_size >= water_brighten_lookup_span) {
+                const uint8_t *water_file = g_water_file + (size_t)g_water_src_off;
+                const uint8_t *water_brighten = g_water_brighten + (size_t)dist_off;
+
+                /* Common stock-data path: every WaterFile/Brighten lookup is in-range,
+                 * so avoid the per-pixel bounds checks and RGB-side bookkeeping. */
+                for (int i = 0; i < span_len; i++, bg_i0++, bg_i1++, bg_cw_i0 += cw_step_x, bg_cw_i1 += cw_step_x) {
+                    uint8_t u8 = (uint8_t)((u_fp >> 16) & 0xFFu);
+                    uint8_t v8 = (uint8_t)((v_fp >> 16) & 0xFFu);
+                    u_fp += (uint32_t)u_step;
+                    v_fp += (uint32_t)v_step;
+
+                    uint16_t d5_word = (uint16_t)(((uint16_t)v8 << 8) | (uint16_t)u8);
+                    uint16_t water_d5 = (uint16_t)(d5_word + (uint16_t)g_water_off);
+                    water_d5 &= 0x3F3Fu;
+                    uint8_t water_level = water_file[(size_t)water_d5 << 2];
+
+                    uint16_t bg_cw0 = cwbuf[bg_cw_i0];
+                    if ((buf[bg_i0] == 0 || buf[bg_i0] == 4) && water_has_back_buffers) {
+                        bg_cw0 = rs->cw_back_buffer[bg_cw_i0];
+                    }
+                    size_t bi0 = ((size_t)water_level << 9) + (size_t)(bg_cw0 & 0xFFu) * 2u;
+                    uint16_t out_cw0 = (uint16_t)((water_brighten[bi0] << 8) | water_brighten[bi0 + 1u]);
+                    uint16_t out_cw = out_cw0;
+
+                    if (water_has_next_refr) {
+                        uint16_t bg_cw1 = cwbuf[bg_cw_i1];
+                        if ((buf[bg_i1] == 0 || buf[bg_i1] == 4) && water_has_back_buffers) {
+                            bg_cw1 = rs->cw_back_buffer[bg_cw_i1];
+                        }
+                        size_t bi1 = ((size_t)water_level << 9) + (size_t)(bg_cw1 & 0xFFu) * 2u;
+                        uint16_t out_cw1 = (uint16_t)((water_brighten[bi1] << 8) | water_brighten[bi1 + 1u]);
+                        out_cw = blend_amiga12(out_cw0, out_cw1, (uint32_t)water_refr_frac);
+                    }
+
+                    *p8++ = 4;
+                    p32++;
+                    FLOOR_CW_STORE_P16(out_cw);
+                }
+                return;
+            }
+        }
 
         for (int i = 0; i < span_len; i++, bg_i0++, bg_i1++, bg_cw_i0 += cw_step_x, bg_cw_i1 += cw_step_x) {
             uint8_t u8 = (uint8_t)((u_fp >> 16) & 0xFFu);
@@ -8620,6 +9189,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
     int32_t y_off = r->yoff;
     PlayerState *viewer = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
     int16_t viewer_zone = viewer->zone;
+    int trace_floor_zone = (g_renderer_zone_trace_active && !use_upper && zone_id == viewer_zone) ? 1 : 0;
     int half_h = g_renderer.height / 2;
 
     int has_split_water = (zone_water > zone_roof && zone_water < zone_floor);
@@ -8683,6 +9253,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
     /* Amiga: draw walls and arcs in stream order (no deferral). */
 
     int max_iter = 500; /* Safety limit */
+    int stream_entry_index = 0;
 
         while (max_iter-- > 0) {
         int16_t entry_type = rd16(ptr);
@@ -9215,6 +9786,19 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
             /* Brightness: zone_bright + floor entry's brightness offset
              * ASM: move.w (a0)+,d6 / add.w ZoneBright,d6 */
             int16_t bright = zone_bright + floor_bright_off;
+            RendererZoneTraceFloorStats floor_trace_stats;
+            renderer_zone_trace_floor_stats_init(&floor_trace_stats,
+                                                 trace_floor_zone && floor_y_dist > 0,
+                                                 zone_id,
+                                                 stream_entry_index,
+                                                 entry_type,
+                                                 (entry_type == 7) ? 1 : 0);
+            renderer_zone_trace_floor_stats_accumulate_edges(&floor_trace_stats,
+                                                             ctx,
+                                                             left_edge,
+                                                             right_edge_tab,
+                                                             poly_top,
+                                                             poly_bot);
 
             if (AB3D_ENABLE_FLOOR_COL_FAST && AB3D_CW_COL_MAJOR && entry_type != 7 && floor_tex && floor_pal) {
                 if (ctx->profile_collect_stats) {
@@ -9234,6 +9818,13 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                                                          bright, use_gour_floor,
                                                          scaleval);
                 }
+                renderer_zone_trace_floor_stats_finalize(&floor_trace_stats,
+                                                         ctx,
+                                                         left_edge,
+                                                         right_edge_tab,
+                                                         poly_top,
+                                                         poly_bot);
+                renderer_zone_trace_floor_stats_log(&floor_trace_stats);
                 free(left_edge);
                 free(right_edge_tab);
                 free(left_bright_tab);
@@ -9307,6 +9898,13 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                                                  water_rows_left);
                 }
             }
+            renderer_zone_trace_floor_stats_finalize(&floor_trace_stats,
+                                                     ctx,
+                                                     left_edge,
+                                                     right_edge_tab,
+                                                     poly_top,
+                                                     poly_bot);
+            renderer_zone_trace_floor_stats_log(&floor_trace_stats);
             free(left_edge);
             free(right_edge_tab);
             free(left_bright_tab);
@@ -9478,6 +10076,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
             /* Unknown type - skip nothing (type word already consumed) */
             break;
         }
+        stream_entry_index++;
         }
 
         if (fallback_object_pass) {
@@ -9799,6 +10398,7 @@ static void renderer_draw_world_slice(GameState *state,
     /* Column strips assign disjoint x ranges to workers; single-threaded full-width is one worker. */
     frame_ctx.update_column_clip = 1;
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
+    const int trace_zone = (g_renderer_zone_trace_active && cs == 0 && ce == w) ? 1 : 0;
 
     int zone_count = zone_prepass->count;
     if (zone_count < 0) zone_count = 0;
@@ -9834,6 +10434,16 @@ static void renderer_draw_world_slice(GameState *state,
                    (unsigned)frame_idx, (int)zone_id, left_clip_px, right_clip_px);
         }
 
+        RendererWorkloadStats zone_before_stats;
+        RendererWorkloadStats zone_delta_stats;
+        uint64_t zone_t0 = 0;
+        int zone_drew_upper = 0;
+        int zone_upper_first = 0;
+        if (trace_zone) {
+            zone_before_stats = frame_ctx.workload_stats;
+            zone_t0 = SDL_GetPerformanceCounter();
+        }
+
         if (state->level.zone_adds && state->level.zone_graph_adds) {
             int32_t zone_off = rd32(state->level.zone_adds + zone_id * 4);
             const uint8_t *zgraph = state->level.zone_graph_adds + zone_id * 8;
@@ -9849,6 +10459,8 @@ static void renderer_draw_world_slice(GameState *state,
                 const uint8_t *zd = state->level.data + zone_off;
                 int32_t split_height = rd32(zd + 6);
                 int draw_upper_first = (plr->yoff >= split_height);
+                zone_drew_upper = 1;
+                zone_upper_first = draw_upper_first;
 
                 if (draw_upper_first) {
                     renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 1);
@@ -9857,11 +10469,29 @@ static void renderer_draw_world_slice(GameState *state,
                     renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);
                     renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 1);
                 }
+                if (trace_zone) {
+                    renderer_workload_stats_diff(&zone_delta_stats, &frame_ctx.workload_stats, &zone_before_stats);
+                    renderer_log_world_zone_draw(frame_idx, i, zone_id,
+                                                 left_clip_px, right_clip_px,
+                                                 zone_drew_upper, zone_upper_first,
+                                                 SDL_GetPerformanceCounter() - zone_t0,
+                                                 &zone_delta_stats);
+                }
                 continue;
             }
         }
         renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);
+        if (trace_zone) {
+            renderer_workload_stats_diff(&zone_delta_stats, &frame_ctx.workload_stats, &zone_before_stats);
+            renderer_log_world_zone_draw(frame_idx, i, zone_id,
+                                         left_clip_px, right_clip_px,
+                                         zone_drew_upper, zone_upper_first,
+                                         SDL_GetPerformanceCounter() - zone_t0,
+                                         &zone_delta_stats);
+        }
     }
+
+    if (trace_zone) fflush(stdout);
 
     if (out_fill_screen_water) *out_fill_screen_water = frame_ctx.fill_screen_water;
     if (out_workload_stats) *out_workload_stats = frame_ctx.workload_stats;
@@ -9932,14 +10562,16 @@ void renderer_draw_display(GameState *state)
 {
     RendererState *r = &g_renderer;
     int pick_this_frame = g_pick_capture_armed ? 1 : 0;
+    int zone_trace = 0;
+    int trace_clip = 0;
     g_pick_capture_armed = 0;
     g_pick_capture_active = pick_this_frame;
     if (!r->buffer) {
+        g_renderer_zone_trace_active = 0;
         g_renderer_profile_collect_stats = 0;
         return;
     }
-    int prof_on = renderer_profile_enabled();
-    g_renderer_profile_collect_stats = prof_on ? 1 : 0;
+    int prof_on = renderer_profile_env_enabled() ? renderer_profile_enabled() : 0;
     uint64_t t0 = 0;
     uint64_t t_after_setup = 0;
     uint64_t t_after_world = 0;
@@ -9955,10 +10587,8 @@ void renderer_draw_display(GameState *state)
     renderer_workload_stats_reset(&world_workload_stats);
     if (prof_on) t0 = SDL_GetPerformanceCounter();
     uint32_t frame_idx = g_render_frame_counter++;
-    int trace_clip = renderer_take_clip_trace_slot();
-    if (trace_clip) {
-        printf("[CLIP][frame %u] begin\n", (unsigned)frame_idx);
-    }
+    g_renderer_zone_trace_active = 0;
+    g_renderer_profile_collect_stats = prof_on ? 1 : 0;
 
     /* 1. Projection setup.
      * Horizontal projection uses a normalized logical width so supersampling changes
@@ -10051,6 +10681,31 @@ void renderer_draw_display(GameState *state)
         renderer_pick_clear_active_buffers();
     }
 
+    {
+        const int have_zone_state = (state && (state->zone_order_count > 0 || state->view_list_of_graph_rooms != NULL)) ? 1 : 0;
+        const int have_zone_trace_state = (state && state->zone_order_count > 0 && state->view_list_of_graph_rooms != NULL) ? 1 : 0;
+        const int trace_filters_match = have_zone_state ? renderer_trace_filters_match(state) : 0;
+        if (have_zone_trace_state && g_renderer_zone_trace_requested) {
+            zone_trace = 1;
+            g_renderer_zone_trace_requested = 0;
+            g_renderer_zone_trace_active = 1;
+            g_renderer_zone_trace_frame_idx = frame_idx;
+        } else if (have_zone_trace_state && trace_filters_match && renderer_peek_zone_trace_slot()) {
+            zone_trace = 1;
+            renderer_consume_zone_trace_slot();
+            g_renderer_zone_trace_active = 1;
+            g_renderer_zone_trace_frame_idx = frame_idx;
+        }
+        if (have_zone_trace_state && trace_filters_match && renderer_peek_clip_trace_slot()) {
+            trace_clip = 1;
+            renderer_consume_clip_trace_slot();
+        }
+        g_renderer_profile_collect_stats = (prof_on || zone_trace) ? 1 : 0;
+        if (trace_clip) {
+            printf("[CLIP][frame %u] begin\n", (unsigned)frame_idx);
+        }
+    }
+
     /* 4. Rotate geometry */
     renderer_rotate_level_pts(state);
     renderer_rotate_object_pts(state);
@@ -10069,12 +10724,15 @@ void renderer_draw_display(GameState *state)
             }
         }
     }
+    if (zone_trace) {
+        renderer_log_world_zone_prepass(state, &world_zone_prepass, frame_idx);
+    }
     if (prof_on) t_after_setup = SDL_GetPerformanceCounter();
 
     int8_t fill_screen_water = 0;
     int used_threaded_world = 0;
 #ifndef AB3D_NO_THREADS
-    if (state->cfg_render_threads) {
+    if (state->cfg_render_threads && !zone_trace) {
         used_threaded_world = renderer_dispatch_threaded_world(state, &world_zone_prepass,
                                                                frame_idx, trace_clip,
                                                                &fill_screen_water,
@@ -10201,4 +10859,5 @@ void renderer_draw_display(GameState *state)
         renderer_profile_maybe_report(t_after_swap);
     }
     g_renderer_profile_collect_stats = 0;
+    g_renderer_zone_trace_active = 0;
 }

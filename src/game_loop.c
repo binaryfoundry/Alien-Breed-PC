@@ -51,6 +51,57 @@
 /* Max frames before auto-exit (0 = disabled, relies on ESC key) */
 #define STUB_MAX_FRAMES 0
 
+static int g_zone_log_initialized = 0;
+static int16_t g_zone_log_last_level = -1;
+static int16_t g_zone_log_last_zone[2] = { -32768, -32768 };
+static int32_t g_zone_log_last_roompt[2] = { -1, -1 };
+
+static void game_log_zone_changes(const GameState *state)
+{
+    const PlayerState *plrs[2];
+    int view_player_index = 0;
+
+    if (!state) return;
+
+    plrs[0] = &state->plr1;
+    plrs[1] = &state->plr2;
+    view_player_index = (state->mode == MODE_SLAVE) ? 1 : 0;
+
+    if (!g_zone_log_initialized || state->current_level != g_zone_log_last_level) {
+        g_zone_log_last_level = state->current_level;
+        g_zone_log_last_zone[0] = (int16_t)-32768;
+        g_zone_log_last_zone[1] = (int16_t)-32768;
+        g_zone_log_last_roompt[0] = -1;
+        g_zone_log_last_roompt[1] = -1;
+        g_zone_log_initialized = 1;
+    }
+
+    for (int i = 0; i < 2; i++) {
+        const PlayerState *plr = plrs[i];
+        if (!plr) continue;
+        if (plr->zone == g_zone_log_last_zone[i] && plr->roompt == g_zone_log_last_roompt[i]) continue;
+
+        printf("[ZONEENTER] plr%d level=%d from=%d to=%d top=%d pos=(%d,%d) roompt=%ld lgr=%ld reason=%s\n",
+               i + 1,
+               (int)state->current_level,
+               (int)g_zone_log_last_zone[i],
+               (int)plr->zone,
+               (int)plr->stood_in_top,
+               (int)(plr->xoff >> 16),
+               (int)(plr->zoff >> 16),
+               (long)plr->roompt,
+               (long)plr->list_of_graph_rooms,
+               (g_zone_log_last_zone[i] == (int16_t)-32768) ? "init" : "change");
+
+        if (i == view_player_index) {
+            renderer_request_zone_trace();
+        }
+
+        g_zone_log_last_zone[i] = plr->zone;
+        g_zone_log_last_roompt[i] = plr->roompt;
+    }
+}
+
 static bool mark_visible_zones_from_graph_list(uint8_t vis_zones[256],
                                                const LevelState *level,
                                                int32_t list_offset)
@@ -123,6 +174,12 @@ void game_loop_ctx_init(GameLoopCtx *ctx, GameState *state)
     memset(ctx, 0, sizeof(*ctx));
     ctx->last_ticks = SDL_GetTicks();
     ctx->fps_log_start_ms = ctx->last_ticks;
+    g_zone_log_initialized = 0;
+    g_zone_log_last_level = -1;
+    g_zone_log_last_zone[0] = (int16_t)-32768;
+    g_zone_log_last_zone[1] = (int16_t)-32768;
+    g_zone_log_last_roompt[0] = -1;
+    g_zone_log_last_roompt[1] = -1;
 
     /* Allocate the previous-tick snapshot buffer used for render interpolation.
      * Initialise it to the current positions so the first frame blends cleanly. */
@@ -145,6 +202,8 @@ void game_loop_ctx_init(GameLoopCtx *ctx, GameState *state)
 void game_loop_tick(GameState *state, GameLoopCtx *ctx)
 {
     if (!state->running) return;
+
+    game_log_zone_changes(state);
 
     /* ================================================================
      * Always: Poll input every display frame for responsiveness
@@ -378,6 +437,8 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
                 apply_zone_order_workaround_level8_zone49(state, view_plr);
                 state->view_list_of_graph_rooms = lgr_ptr;
             }
+
+            game_log_zone_changes(state);
 
             /* Snapshot object positions before they are mutated by objects_update.
              * The renderer uses prev_object_points + obj_interp_alpha to draw smooth
