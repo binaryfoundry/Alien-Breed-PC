@@ -161,6 +161,8 @@ static inline void renderer_cw_store_xy(uint16_t *cw, int x, int y, int width, i
 /* Amiga BitMapObj path uses cmp.w #50,d1 ; ble objbehind.
  * Keep this near cutoff for billboards so close sprites don't over-scale. */
 #define SPRITE_NEAR_CLIP_Z 50
+/* Reference Z used to project two-level zone split height to screen Y. */
+#define TWO_LEVEL_SPLIT_REF_Z 400
 
 /* -----------------------------------------------------------------------
  * Global renderer state
@@ -262,11 +264,22 @@ static inline int renderer_sprite_scale_x(void)
 #define RENDERER_MAX_ZONE_ORDER 256
 
 typedef struct {
+    int16_t top_clip;
+    int16_t bot_clip;
+    int16_t wall_top_clip;
+    int16_t wall_bot_clip;
+    uint8_t valid;
+} RendererZoneSectionClip;
+
+typedef struct {
     int count;
     int16_t zone_ids[RENDERER_MAX_ZONE_ORDER];
     int16_t left_px[RENDERER_MAX_ZONE_ORDER];
     int16_t right_px[RENDERER_MAX_ZONE_ORDER];
     uint8_t valid[RENDERER_MAX_ZONE_ORDER];
+    uint8_t draw_upper_first[RENDERER_MAX_ZONE_ORDER];
+    RendererZoneSectionClip lower_clip[RENDERER_MAX_ZONE_ORDER];
+    RendererZoneSectionClip upper_clip[RENDERER_MAX_ZONE_ORDER];
 } RendererWorldZonePrepass;
 
 typedef struct {
@@ -331,6 +344,10 @@ static void renderer_draw_world_slice(GameState *state,
                                       uint32_t frame_idx, int trace_clip,
                                       int8_t *out_fill_screen_water,
                                       RendererWorkloadStats *out_workload_stats);
+static void renderer_build_zone_section_clips(GameState *state, int16_t zone_id,
+                                              RendererZoneSectionClip *out_lower,
+                                              RendererZoneSectionClip *out_upper,
+                                              uint8_t *out_draw_upper_first);
 static void renderer_draw_gun_columns(GameState *state, int col_start, int col_end);
 static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
                                            uint32_t frame_idx, int trace_clip,
@@ -2615,9 +2632,16 @@ static void renderer_log_world_zone_prepass(const GameState *state,
             clip_w = 0;
         }
 
-        printf("[ZONEVIS][frame %u] prepass[%02d] zone=%d dup_of=%d lgr_idx=%d clip_off=%d valid=%d clip=[%d,%d) w=%d\n",
+         printf("[ZONEVIS][frame %u] prepass[%02d] zone=%d dup_of=%d lgr_idx=%d clip_off=%d valid=%d clip=[%d,%d) w=%d lower=%d[%d,%d] upper=%d[%d,%d] order=%s\n",
                (unsigned)frame_idx, i, (int)zone_id, dup_of, lgr_index, (int)clip_off,
-               prepass->valid[i] ? 1 : 0, clip_left, clip_right, clip_w);
+             prepass->valid[i] ? 1 : 0, clip_left, clip_right, clip_w,
+             prepass->lower_clip[i].valid ? 1 : 0,
+             (int)prepass->lower_clip[i].top_clip,
+             (int)prepass->lower_clip[i].bot_clip,
+             prepass->upper_clip[i].valid ? 1 : 0,
+             (int)prepass->upper_clip[i].top_clip,
+             (int)prepass->upper_clip[i].bot_clip,
+             prepass->draw_upper_first[i] ? "upper-first" : "lower-first");
     }
     fflush(stdout);
 }
@@ -2627,6 +2651,7 @@ static void renderer_log_world_zone_draw(uint32_t frame_idx,
                                          int16_t zone_id,
                                          int left_clip_px,
                                          int right_clip_px,
+                                         int drew_lower,
                                          int drew_upper,
                                          int upper_first,
                                          uint64_t zone_ticks,
@@ -2658,11 +2683,24 @@ static void renderer_log_world_zone_draw(uint32_t frame_idx,
         ? (delta->floor_pixels - delta->water_pixels)
         : 0;
 
+    const char *passes = "none";
+    const char *order = "none";
+    if (drew_lower && drew_upper) {
+        passes = "upper+lower";
+        order = upper_first ? "upper-first" : "lower-first";
+    } else if (drew_upper) {
+        passes = "upper";
+        order = "upper-only";
+    } else if (drew_lower) {
+        passes = "lower";
+        order = "lower-only";
+    }
+
     printf("[ZONEVIS][frame %u] draw[%02d] zone=%d clip=[%d,%d) passes=%s order=%s ms=%.3f wall_ms=%.3f floor_ms=%.3f dry_floor_ms=%.3f water_ms=%.3f sprite_ms=%.3f writes=%llu wall_px=%llu floor_px=%llu dry_floor_px=%llu water_px=%llu sprite_draw=%llu sprite_test=%llu\n",
            (unsigned)frame_idx, order_idx, (int)zone_id,
            left_clip_px, right_clip_px,
-           drew_upper ? "upper+lower" : "lower",
-           drew_upper ? (upper_first ? "upper-first" : "lower-first") : "lower-only",
+           passes,
+           order,
            zone_ms,
            wall_ms,
            floor_ms,
@@ -2697,6 +2735,129 @@ static inline int project_y_to_pixels_round(int32_t vy, int32_t vz, int32_t proj
     int64_t num = ((int64_t)vy * (int64_t)proj_y_scale * (int64_t)RENDER_SCALE) << ROT_Z_FRAC_BITS;
     int64_t q = (num >= 0) ? ((num + den / 2) / den) : ((num - den / 2) / den);
     return (int)q + center_y;
+}
+
+static RendererZoneSectionClip renderer_make_zone_section_clip_invalid(void)
+{
+    RendererZoneSectionClip clip;
+    clip.top_clip = 0;
+    clip.bot_clip = -1;
+    clip.wall_top_clip = -1;
+    clip.wall_bot_clip = -1;
+    clip.valid = 0;
+    return clip;
+}
+
+static RendererZoneSectionClip renderer_make_zone_section_clip_full(int height)
+{
+    RendererZoneSectionClip clip = renderer_make_zone_section_clip_invalid();
+    if (height <= 0) return clip;
+    clip.bot_clip = (int16_t)(height - 1);
+    clip.valid = 1;
+    return clip;
+}
+
+static void renderer_apply_zone_section_clip(RenderSliceContext *ctx,
+                                             const RendererZoneSectionClip *clip)
+{
+    if (!ctx || !clip) return;
+    ctx->top_clip = clip->top_clip;
+    ctx->bot_clip = clip->bot_clip;
+    ctx->wall_top_clip = clip->wall_top_clip;
+    ctx->wall_bot_clip = clip->wall_bot_clip;
+}
+
+static int renderer_project_zone_split_y(int32_t split_height_world)
+{
+    int center_y = g_renderer.height / 2;
+    int32_t rel_h_8 = (split_height_world - g_renderer.yoff) >> WORLD_Y_FRAC_BITS;
+    return project_y_to_pixels_round(rel_h_8,
+                                     ROT_Z_FROM_INT(TWO_LEVEL_SPLIT_REF_Z),
+                                     g_renderer.proj_y_scale,
+                                     center_y);
+}
+
+static void renderer_build_zone_section_clips(GameState *state, int16_t zone_id,
+                                              RendererZoneSectionClip *out_lower,
+                                              RendererZoneSectionClip *out_upper,
+                                              uint8_t *out_draw_upper_first)
+{
+    RendererZoneSectionClip invalid = renderer_make_zone_section_clip_invalid();
+    RendererZoneSectionClip full = renderer_make_zone_section_clip_full(g_renderer.height);
+    int h = g_renderer.height;
+
+    if (out_lower) *out_lower = invalid;
+    if (out_upper) *out_upper = invalid;
+    if (out_draw_upper_first) *out_draw_upper_first = 0;
+
+    if (!out_lower || !out_upper || h <= 0) return;
+    if (!state || !level_zone_has_upper_layer(&state->level, zone_id)) {
+        *out_lower = full;
+        return;
+    }
+
+    if (!state->level.zone_adds || !state->level.data) {
+        *out_lower = full;
+        return;
+    }
+
+    {
+        int zone_slots = level_zone_slot_count(&state->level);
+        if (zone_id < 0 || zone_id >= zone_slots) {
+            *out_lower = full;
+            return;
+        }
+        if (state->level.num_zone_graph_entries > 0 && zone_id >= state->level.num_zone_graph_entries) {
+            *out_lower = full;
+            return;
+        }
+    }
+
+    {
+        PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
+        int32_t zone_off = rd32(state->level.zone_adds + zone_id * 4);
+        const uint8_t *zd;
+        int32_t split_height;
+        int split_y;
+        int upper_top = 0;
+        int upper_bot;
+        int lower_top;
+
+        if (zone_off < 0) {
+            *out_lower = full;
+            return;
+        }
+        if (state->level.data_byte_count > 0 && ((size_t)zone_off + 10u > state->level.data_byte_count)) {
+            *out_lower = full;
+            return;
+        }
+
+        zd = state->level.data + zone_off;
+        split_height = rd32(zd + ZONE_OFF_ROOF);
+        if (out_draw_upper_first) *out_draw_upper_first = (plr->yoff >= split_height) ? 1u : 0u;
+
+        split_y = renderer_project_zone_split_y(split_height);
+
+        upper_bot = split_y - 1;
+        if (upper_bot >= 0) {
+            if (upper_bot >= h) upper_bot = h - 1;
+            out_upper->top_clip = (int16_t)upper_top;
+            out_upper->bot_clip = (int16_t)upper_bot;
+            out_upper->wall_top_clip = -1;
+            out_upper->wall_bot_clip = (split_y >= 0 && split_y < h) ? (int16_t)split_y : -1;
+            out_upper->valid = 1;
+        }
+
+        lower_top = split_y;
+        if (lower_top < 0) lower_top = 0;
+        if (lower_top < h) {
+            out_lower->top_clip = (int16_t)lower_top;
+            out_lower->bot_clip = (int16_t)(h - 1);
+            out_lower->wall_top_clip = 0;
+            out_lower->wall_bot_clip = -1;
+            out_lower->valid = 1;
+        }
+    }
 }
 
 /* 16.16 fixed-point screen X to pixel column: floor for left span bound, ceil for right.
@@ -4814,9 +4975,6 @@ static void draw_wall_rasterize_segment(
         }
     }
 }
-
-/* Reference Z used to project two-level zone split height to screen Y (same scale as orp->z). */
-#define TWO_LEVEL_SPLIT_REF_Z 400
 
 /* -----------------------------------------------------------------------
  * Draw a wall segment between two rotated endpoints
@@ -11036,6 +11194,8 @@ static void renderer_build_world_zone_prepass(GameState *state, uint32_t frame_i
     memset(out, 0, sizeof(*out));
     if (!state) return;
 
+    PlayerState *view_plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
+
     int count = state->zone_order_count;
     if (count < 0) count = 0;
     if (count > RENDERER_MAX_ZONE_ORDER) count = RENDERER_MAX_ZONE_ORDER;
@@ -11050,9 +11210,36 @@ static void renderer_build_world_zone_prepass(GameState *state, uint32_t frame_i
         int16_t right_px = (int16_t)g_renderer.width;
         if (renderer_compute_zone_clip_span(state, zone_id, frame_idx, trace_clip,
                                             &left_px, &right_px)) {
-            out->valid[i] = 1;
-            out->left_px[i] = left_px;
-            out->right_px[i] = right_px;
+            RendererZoneSectionClip lower_clip;
+            RendererZoneSectionClip upper_clip;
+            RendererZoneSectionClip full_clip = renderer_make_zone_section_clip_full(g_renderer.height);
+            uint8_t draw_upper_first = 0;
+            renderer_build_zone_section_clips(state, zone_id,
+                                              &lower_clip, &upper_clip,
+                                              &draw_upper_first);
+
+            {
+                int clip_width = (int)right_px - (int)left_px;
+                int disable_flat_section_clip = 0;
+                if (zone_id == view_plr->zone) {
+                    disable_flat_section_clip = 1;
+                } else if (clip_width > ((g_renderer.width * 3) / 4)) {
+                    disable_flat_section_clip = 1;
+                }
+                if (disable_flat_section_clip) {
+                    if (lower_clip.valid) lower_clip = full_clip;
+                    if (upper_clip.valid) upper_clip = full_clip;
+                }
+            }
+
+            out->lower_clip[i] = lower_clip;
+            out->upper_clip[i] = upper_clip;
+            out->draw_upper_first[i] = draw_upper_first;
+            if (lower_clip.valid || upper_clip.valid) {
+                out->valid[i] = 1;
+                out->left_px[i] = left_px;
+                out->right_px[i] = right_px;
+            }
         }
     }
 }
@@ -11145,54 +11332,50 @@ static void renderer_draw_world_slice(GameState *state,
         RendererWorkloadStats zone_delta_stats;
         uint64_t zone_t0 = 0;
         int zone_drew_upper = 0;
+        int zone_drew_lower = 0;
         int zone_upper_first = 0;
         if (trace_zone) {
             zone_before_stats = frame_ctx.workload_stats;
             zone_t0 = SDL_GetPerformanceCounter();
         }
 
-        if (state->level.zone_adds && state->level.zone_graph_adds) {
-            int32_t zone_off = rd32(state->level.zone_adds + zone_id * 4);
-            const uint8_t *zgraph = state->level.zone_graph_adds + zone_id * 8;
-            int32_t upper_gfx = rd32(zgraph + 4);
-            int upper_gfx_valid = (upper_gfx > 0) &&
-                                  (state->level.graphics_byte_count == 0 ||
-                                   ((size_t)upper_gfx + 2u <= state->level.graphics_byte_count));
-            if (upper_gfx_valid &&
-                zone_off >= 0 &&
-                state->level.data &&
-                (state->level.data_byte_count == 0 ||
-                 ((size_t)zone_off + 48u <= state->level.data_byte_count))) {
-                const uint8_t *zd = state->level.data + zone_off;
-                int32_t split_height = rd32(zd + 6);
-                int draw_upper_first = (plr->yoff >= split_height);
-                zone_drew_upper = 1;
-                zone_upper_first = draw_upper_first;
+        {
+            const RendererZoneSectionClip *lower_clip = &zone_prepass->lower_clip[i];
+            const RendererZoneSectionClip *upper_clip = &zone_prepass->upper_clip[i];
+            zone_upper_first = zone_prepass->draw_upper_first[i] ? 1 : 0;
 
-                if (draw_upper_first) {
+            if (zone_upper_first) {
+                if (upper_clip->valid) {
+                    renderer_apply_zone_section_clip(&frame_ctx, upper_clip);
                     renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 1);
+                    zone_drew_upper = 1;
+                }
+                if (lower_clip->valid) {
+                    renderer_apply_zone_section_clip(&frame_ctx, lower_clip);
                     renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);
-                } else {
+                    zone_drew_lower = 1;
+                }
+            } else {
+                if (lower_clip->valid) {
+                    renderer_apply_zone_section_clip(&frame_ctx, lower_clip);
                     renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);
+                    zone_drew_lower = 1;
+                }
+                if (upper_clip->valid) {
+                    renderer_apply_zone_section_clip(&frame_ctx, upper_clip);
                     renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 1);
+                    zone_drew_upper = 1;
                 }
-                if (trace_zone) {
-                    renderer_workload_stats_diff(&zone_delta_stats, &frame_ctx.workload_stats, &zone_before_stats);
-                    renderer_log_world_zone_draw(frame_idx, i, zone_id,
-                                                 left_clip_px, right_clip_px,
-                                                 zone_drew_upper, zone_upper_first,
-                                                 SDL_GetPerformanceCounter() - zone_t0,
-                                                 &zone_delta_stats);
-                }
-                continue;
             }
         }
-        renderer_draw_zone_ctx(&frame_ctx, state, zone_id, 0);
+        if (!zone_drew_lower && !zone_drew_upper) {
+            continue;
+        }
         if (trace_zone) {
             renderer_workload_stats_diff(&zone_delta_stats, &frame_ctx.workload_stats, &zone_before_stats);
             renderer_log_world_zone_draw(frame_idx, i, zone_id,
                                          left_clip_px, right_clip_px,
-                                         zone_drew_upper, zone_upper_first,
+                                         zone_drew_lower, zone_drew_upper, zone_upper_first,
                                          SDL_GetPerformanceCounter() - zone_t0,
                                          &zone_delta_stats);
         }
