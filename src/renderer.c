@@ -17,7 +17,7 @@
  *   4. RotateLevelPts: transform level vertices to view space
  *   5. RotateObjectPts: transform object positions to view space
  *   6. For each zone (back-to-front from OrderZones):
- *      a. Set left/right clip from LEVELCLIPS
+ *      a. Set left/right clip from LEVELCLIPSZ
  *      b. Determine split (upper/lower room)
  *      c. DoThisRoom: iterate zone graph data, dispatch:
  *         - Walls  -> column-by-column textured drawing
@@ -75,6 +75,12 @@
 #define AB3D_NT_STORE_U16(ptr, val) (*(ptr) = (uint16_t)(val))
 #endif
 
+#if AB3D_HAVE_SSE2
+#define AB3D_NT_STORE_FENCE() _mm_sfence()
+#else
+#define AB3D_NT_STORE_FENCE() ((void)0)
+#endif
+
 #if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)
 #define AB3D_RESTRICT __restrict
 #else
@@ -87,6 +93,18 @@
 
 #ifndef AB3D_ENABLE_FLOOR_COL_FAST
 #define AB3D_ENABLE_FLOOR_COL_FAST 0
+#endif
+
+/* Experimental edge-derived column bounds can under-cover some floor polys.
+ * Keep this off by default until bounds generation is fully robust. */
+#ifndef AB3D_FLOOR_FAST_USE_EDGE_BOUNDS
+#define AB3D_FLOOR_FAST_USE_EDGE_BOUNDS 0
+#endif
+
+/* Ceiling in floor-column fast path is currently experimental; keep disabled by
+ * default because broad scenes regress despite higher fast coverage. */
+#ifndef AB3D_FLOOR_COL_FAST_INCLUDE_CEILING
+#define AB3D_FLOOR_COL_FAST_INCLUDE_CEILING 0
 #endif
 
 static inline size_t renderer_cw_index_xy(int x, int y, int width, int height)
@@ -142,6 +160,16 @@ static inline void renderer_cw_store_xy(uint16_t *cw, int x, int y, int width, i
 #define AB3D_CACHELINE_ALIGN __attribute__((aligned(64)))
 #else
 #define AB3D_CACHELINE_ALIGN
+#endif
+
+#if defined(_MSC_VER)
+#define AB3D_THREAD_LOCAL __declspec(thread)
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+#define AB3D_THREAD_LOCAL _Thread_local
+#elif defined(__GNUC__) || defined(__clang__)
+#define AB3D_THREAD_LOCAL __thread
+#else
+#define AB3D_THREAD_LOCAL
 #endif
 
 /* Floor/ceiling UV step per pixel: d1>>FLOOR_STEP_SHIFT (same at any width so texture scale is correct). */
@@ -522,6 +550,7 @@ static RendererSkyCacheBucket *g_level_sky_cache_buckets;
 static int g_level_sky_cache_zone_slots;
 
 static void renderer_reset_level_sky_cache_internal(void);
+static void renderer_floor_fast_release_scratch(void);
 
 static void automap_lock(void)
 {
@@ -1526,6 +1555,7 @@ static int renderer_thread_worker_main(void *userdata)
 {
     RendererThreadWorker *worker = (RendererThreadWorker*)userdata;
     RendererThreadPool *pool = &g_renderer_thread_pool;
+    if (!worker) return 0;
 
     if (worker->index < 0 || worker->index >= pool->worker_count ||
         !pool->worker_sems[worker->index] || !pool->done_sem) {
@@ -1536,6 +1566,7 @@ static int renderer_thread_worker_main(void *userdata)
         SDL_SemWait(pool->worker_sems[worker->index]);
 
         if (SDL_AtomicGet(&pool->stop)) {
+            renderer_floor_fast_release_scratch();
             return 0;
         }
 
@@ -1571,6 +1602,7 @@ static int renderer_thread_worker_main(void *userdata)
                                                      post_src_rgb, post_src_cw,
                                                      post_dst_rgb, post_dst_cw);
             }
+            AB3D_NT_STORE_FENCE();
         }
 
         worker->fill_screen_water = fill_screen_water;
@@ -3097,6 +3129,15 @@ static inline void renderer_floor_column_bounds_add_run(int16_t *col_top_tab,
     if (x_max_io && x > *x_max_io) *x_max_io = x;
 }
 
+static inline int renderer_floor_col_bounds_find_next(int *next_idx, int idx)
+{
+    while (next_idx[idx] != idx) {
+        next_idx[idx] = next_idx[next_idx[idx]];
+        idx = next_idx[idx];
+    }
+    return idx;
+}
+
 static void renderer_floor_column_bounds_add_edge(int16_t *col_top_tab,
                                                   int16_t *col_bot_tab,
                                                   int x_min_clamp,
@@ -3525,6 +3566,7 @@ void renderer_shutdown(void)
 {
     renderer_threads_shutdown();
     renderer_reset_level_sky_cache_internal();
+    renderer_floor_fast_release_scratch();
     if (g_automap_mutex) {
         SDL_DestroyMutex(g_automap_mutex);
         g_automap_mutex = NULL;
@@ -4841,6 +4883,7 @@ static void draw_wall_rasterize_segment(
     uint8_t * AB3D_RESTRICT buf = renderer_active_buf();
     uint32_t * AB3D_RESTRICT rgb = renderer_active_rgb();
     uint16_t * AB3D_RESTRICT cw = renderer_active_cw();
+    if (!ctx) return;
     if (!buf || !rgb || !cw) return;
 
     const int expand = g_renderer_rgb_raster_expand;
@@ -6701,6 +6744,112 @@ typedef struct {
     int16_t next_x;
 } FloorRowFast;
 
+static AB3D_THREAD_LOCAL FloorRowFast *g_floor_fast_rows_scratch = NULL;
+static AB3D_THREAD_LOCAL int g_floor_fast_rows_capacity = 0;
+static AB3D_THREAD_LOCAL int16_t *g_floor_fast_col_top_scratch = NULL;
+static AB3D_THREAD_LOCAL int16_t *g_floor_fast_col_bot_scratch = NULL;
+static AB3D_THREAD_LOCAL int *g_floor_fast_next_top_scratch = NULL;
+static AB3D_THREAD_LOCAL int *g_floor_fast_next_bot_scratch = NULL;
+static AB3D_THREAD_LOCAL int *g_floor_fast_cov_diff_scratch = NULL;
+static AB3D_THREAD_LOCAL int g_floor_fast_col_capacity = 0;
+
+static int renderer_floor_fast_ensure_rows_capacity(int row_count)
+{
+    int new_cap;
+    FloorRowFast *new_rows;
+
+    if (row_count <= 0) return 0;
+    if (g_floor_fast_rows_scratch && row_count <= g_floor_fast_rows_capacity) return 1;
+
+    new_cap = (g_floor_fast_rows_capacity > 0) ? g_floor_fast_rows_capacity : 64;
+    while (new_cap < row_count) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = row_count;
+            break;
+        }
+        new_cap *= 2;
+    }
+
+    new_rows = (FloorRowFast *)realloc(g_floor_fast_rows_scratch, (size_t)new_cap * sizeof(*new_rows));
+    if (!new_rows) return 0;
+
+    g_floor_fast_rows_scratch = new_rows;
+    g_floor_fast_rows_capacity = new_cap;
+    return 1;
+}
+
+static int renderer_floor_fast_ensure_cols_capacity(int col_count)
+{
+    int new_cap;
+
+    if (col_count <= 0) return 0;
+    if (g_floor_fast_col_top_scratch &&
+        g_floor_fast_col_bot_scratch &&
+        g_floor_fast_next_top_scratch &&
+        g_floor_fast_next_bot_scratch &&
+        g_floor_fast_cov_diff_scratch &&
+        col_count <= g_floor_fast_col_capacity) {
+        return 1;
+    }
+
+    new_cap = (g_floor_fast_col_capacity > 0) ? g_floor_fast_col_capacity : 64;
+    while (new_cap < col_count) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = col_count;
+            break;
+        }
+        new_cap *= 2;
+    }
+
+    {
+        int16_t *new_top = (int16_t *)realloc(g_floor_fast_col_top_scratch, (size_t)new_cap * sizeof(*new_top));
+        if (!new_top) return 0;
+        g_floor_fast_col_top_scratch = new_top;
+    }
+    {
+        int16_t *new_bot = (int16_t *)realloc(g_floor_fast_col_bot_scratch, (size_t)new_cap * sizeof(*new_bot));
+        if (!new_bot) return 0;
+        g_floor_fast_col_bot_scratch = new_bot;
+    }
+    {
+        int *new_next_top = (int *)realloc(g_floor_fast_next_top_scratch, (size_t)(new_cap + 1) * sizeof(*new_next_top));
+        if (!new_next_top) return 0;
+        g_floor_fast_next_top_scratch = new_next_top;
+    }
+    {
+        int *new_next_bot = (int *)realloc(g_floor_fast_next_bot_scratch, (size_t)(new_cap + 1) * sizeof(*new_next_bot));
+        if (!new_next_bot) return 0;
+        g_floor_fast_next_bot_scratch = new_next_bot;
+    }
+    {
+        int *new_cov_diff = (int *)realloc(g_floor_fast_cov_diff_scratch, (size_t)(new_cap + 1) * sizeof(*new_cov_diff));
+        if (!new_cov_diff) return 0;
+        g_floor_fast_cov_diff_scratch = new_cov_diff;
+    }
+
+    g_floor_fast_col_capacity = new_cap;
+    return 1;
+}
+
+static void renderer_floor_fast_release_scratch(void)
+{
+    free(g_floor_fast_rows_scratch);
+    g_floor_fast_rows_scratch = NULL;
+    g_floor_fast_rows_capacity = 0;
+
+    free(g_floor_fast_col_top_scratch);
+    g_floor_fast_col_top_scratch = NULL;
+    free(g_floor_fast_col_bot_scratch);
+    g_floor_fast_col_bot_scratch = NULL;
+    free(g_floor_fast_next_top_scratch);
+    g_floor_fast_next_top_scratch = NULL;
+    free(g_floor_fast_next_bot_scratch);
+    g_floor_fast_next_bot_scratch = NULL;
+    free(g_floor_fast_cov_diff_scratch);
+    g_floor_fast_cov_diff_scratch = NULL;
+    g_floor_fast_col_capacity = 0;
+}
+
 static void renderer_floor_fast_seed_rows(FloorRowFast *rows,
                                           int row_count,
                                           int use_gour_floor)
@@ -6737,6 +6886,7 @@ static uint64_t renderer_draw_floor_fast_column(const RenderSliceContext *ctx,
                                                 int h,
                                                 int y_base,
                                                 int pick_capture_active,
+                                                int assume_contiguous_coverage,
                                                 int use_gour_floor,
                                                 int expand,
                                                 int x,
@@ -6745,7 +6895,7 @@ static uint64_t renderer_draw_floor_fast_column(const RenderSliceContext *ctx,
 {
     const int16_t *foreground_floor_occlude_top = ctx ? ctx->foreground_floor_occlude_top : NULL;
     uint64_t drawn_pixels = 0;
-    int run_start = pick_capture_active ? -1 : INT_MIN;
+    int run_start = (pick_capture_active && !assume_contiguous_coverage) ? -1 : INT_MIN;
     const int x_next = x + 1;
     const int floor_pf_dist = 8;
     const size_t floor_pf_stride = (size_t)w * (size_t)floor_pf_dist;
@@ -6771,182 +6921,301 @@ static uint64_t renderer_draw_floor_fast_column(const RenderSliceContext *ctx,
         if (!use_gour_floor) {
             if (expand) {
                 FloorRowFast *row = rows + (top - y_base);
-                for (int y = top; y <= bot; y++, row++) {
-                    int draw_here = (x >= row->le && x <= row->re);
-
-                    if (y + floor_pf_dist <= bot) {
-                        AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
-                        AB3D_PREFETCH_WRITE(&rgb[pix + floor_pf_stride]);
-                    }
-
-                    if (draw_here) {
+                if (assume_contiguous_coverage) {
+                    for (int y = top; y <= bot; y++, row++) {
                         if (row->next_x != x) {
                             int dx = x - row->next_x;
                             row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
                             row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
-                            row->next_x = (int16_t)x;
                         }
-                        uint32_t u_fp = row->u_col;
-                        uint32_t v_fp = row->v_col;
-                        uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
-                        uint16_t out_cw = row->span_cw[texel];
+                        {
+                            uint32_t u_fp = row->u_col;
+                            uint32_t v_fp = row->v_col;
+                            uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                            uint16_t out_cw = row->span_cw[texel];
 
-                        if (run_start == -1) run_start = y;
-                        buf[pix] = 1;
-                        AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
-                        rgb[pix] = row->span_rgb[texel];
-                        drawn_pixels++;
+                            buf[pix] = 1;
+                            AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                            rgb[pix] = row->span_rgb[texel];
+                            drawn_pixels++;
+                        }
                         row->u_col += (uint32_t)row->u_step;
                         row->v_col += (uint32_t)row->v_step;
                         row->next_x = (int16_t)x_next;
-                    } else if (run_start >= 0) {
-                        renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
-                        run_start = -1;
-                    }
 
-                    cw_idx += 1u;
-                    pix += (size_t)w;
+                        cw_idx += 1u;
+                        pix += (size_t)w;
+                    }
+                } else {
+                    for (int y = top; y <= bot; y++, row++) {
+                        int draw_here = (x >= row->le && x <= row->re);
+
+                        if (y + floor_pf_dist <= bot) {
+                            AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
+                            AB3D_PREFETCH_WRITE(&rgb[pix + floor_pf_stride]);
+                        }
+
+                        if (draw_here) {
+                            if (row->next_x != x) {
+                                int dx = x - row->next_x;
+                                row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
+                                row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
+                            }
+                            uint32_t u_fp = row->u_col;
+                            uint32_t v_fp = row->v_col;
+                            uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                            uint16_t out_cw = row->span_cw[texel];
+
+                            if (run_start == -1) run_start = y;
+                            buf[pix] = 1;
+                            AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                            rgb[pix] = row->span_rgb[texel];
+                            drawn_pixels++;
+                            row->u_col += (uint32_t)row->u_step;
+                            row->v_col += (uint32_t)row->v_step;
+                            row->next_x = (int16_t)x_next;
+                        } else if (run_start >= 0) {
+                            renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
+                            run_start = -1;
+                        }
+
+                        cw_idx += 1u;
+                        pix += (size_t)w;
+                    }
                 }
             } else {
                 FloorRowFast *row = rows + (top - y_base);
-                for (int y = top; y <= bot; y++, row++) {
-                    int draw_here = (x >= row->le && x <= row->re);
-
-                    if (y + floor_pf_dist <= bot) {
-                        AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
-                    }
-
-                    if (draw_here) {
+                if (assume_contiguous_coverage) {
+                    for (int y = top; y <= bot; y++, row++) {
                         if (row->next_x != x) {
                             int dx = x - row->next_x;
                             row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
                             row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
-                            row->next_x = (int16_t)x;
                         }
-                        uint32_t u_fp = row->u_col;
-                        uint32_t v_fp = row->v_col;
-                        uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
-                        uint16_t out_cw = row->span_cw[texel];
+                        {
+                            uint32_t u_fp = row->u_col;
+                            uint32_t v_fp = row->v_col;
+                            uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                            uint16_t out_cw = row->span_cw[texel];
 
-                        if (run_start == -1) run_start = y;
-                        buf[pix] = 1;
-                        AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
-                        drawn_pixels++;
+                            buf[pix] = 1;
+                            AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                            drawn_pixels++;
+                        }
                         row->u_col += (uint32_t)row->u_step;
                         row->v_col += (uint32_t)row->v_step;
                         row->next_x = (int16_t)x_next;
-                    } else if (run_start >= 0) {
-                        renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
-                        run_start = -1;
-                    }
 
-                    cw_idx += 1u;
-                    pix += (size_t)w;
+                        cw_idx += 1u;
+                        pix += (size_t)w;
+                    }
+                } else {
+                    for (int y = top; y <= bot; y++, row++) {
+                        int draw_here = (x >= row->le && x <= row->re);
+
+                        if (y + floor_pf_dist <= bot) {
+                            AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
+                        }
+
+                        if (draw_here) {
+                            if (row->next_x != x) {
+                                int dx = x - row->next_x;
+                                row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
+                                row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
+                            }
+                            uint32_t u_fp = row->u_col;
+                            uint32_t v_fp = row->v_col;
+                            uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                            uint16_t out_cw = row->span_cw[texel];
+
+                            if (run_start == -1) run_start = y;
+                            buf[pix] = 1;
+                            AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                            drawn_pixels++;
+                            row->u_col += (uint32_t)row->u_step;
+                            row->v_col += (uint32_t)row->v_step;
+                            row->next_x = (int16_t)x_next;
+                        } else if (run_start >= 0) {
+                            renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
+                            run_start = -1;
+                        }
+
+                        cw_idx += 1u;
+                        pix += (size_t)w;
+                    }
                 }
             }
         } else {
             if (expand) {
                 FloorRowFast *row = rows + (top - y_base);
-                for (int y = top; y <= bot; y++, row++) {
-                    int draw_here = (x >= row->le && x <= row->re);
-
-                    if (y + floor_pf_dist <= bot) {
-                        AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
-                        AB3D_PREFETCH_WRITE(&rgb[pix + floor_pf_stride]);
-                    }
-
-                    if (draw_here) {
+                if (assume_contiguous_coverage) {
+                    for (int y = top; y <= bot; y++, row++) {
                         if (row->next_x != x) {
                             int dx = x - row->next_x;
                             row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
                             row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
-                            row->bright_col_fp += dx * row->bright_step_fp;
-                            row->next_x = (int16_t)x;
+                            row->bright_col_fp += (int32_t)(((int64_t)dx) * (int64_t)row->bright_step_fp);
                         }
-                        uint32_t u_fp = row->u_col;
-                        uint32_t v_fp = row->v_col;
-                        uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
-                        int32_t bfp = row->bright_col_fp;
-                        int bright_pix = (int)(bfp >> 16);
-                        int bright_idx = bright_pix + row->bright_term;
-                        uint16_t out_cw;
-                        uint32_t out_rgb;
-
-                        if (bright_idx < 0) bright_idx = 0;
-                        if (bright_idx > 28) bright_idx = 28;
                         {
-                            int level = floor_bright_level_table[bright_idx];
-                            const uint16_t *cw_level = gour_cw_levels[level];
-                            const uint32_t *rgb_level = gour_rgb_levels[level];
-                            out_cw = cw_level ? cw_level[texel] : row->span_cw ? row->span_cw[texel] : 0;
-                            out_rgb = rgb_level ? rgb_level[texel] : row->span_rgb ? row->span_rgb[texel] : amiga12_to_argb(out_cw);
-                        }
+                            uint32_t u_fp = row->u_col;
+                            uint32_t v_fp = row->v_col;
+                            uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                            int level = (int)(row->bright_col_fp >> 16);
+                            uint16_t out_cw;
+                            uint32_t out_rgb;
 
-                        if (run_start == -1) run_start = y;
-                        buf[pix] = 1;
-                        AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
-                        rgb[pix] = out_rgb;
-                        drawn_pixels++;
+                            if (level < 0) level = 0;
+                            if (level >= FLOOR_PAL_LEVEL_COUNT) level = FLOOR_PAL_LEVEL_COUNT - 1;
+                            {
+                                const uint16_t *cw_level = gour_cw_levels[level];
+                                const uint32_t *rgb_level = gour_rgb_levels[level];
+                                out_cw = cw_level ? cw_level[texel] : row->span_cw ? row->span_cw[texel] : 0;
+                                out_rgb = rgb_level ? rgb_level[texel] : row->span_rgb ? row->span_rgb[texel] : amiga12_to_argb(out_cw);
+                            }
+
+                            buf[pix] = 1;
+                            AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                            rgb[pix] = out_rgb;
+                            drawn_pixels++;
+                        }
                         row->u_col += (uint32_t)row->u_step;
                         row->v_col += (uint32_t)row->v_step;
                         row->bright_col_fp += row->bright_step_fp;
                         row->next_x = (int16_t)x_next;
-                    } else if (run_start >= 0) {
-                        renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
-                        run_start = -1;
-                    }
 
-                    cw_idx += 1u;
-                    pix += (size_t)w;
+                        cw_idx += 1u;
+                        pix += (size_t)w;
+                    }
+                } else {
+                    for (int y = top; y <= bot; y++, row++) {
+                        int draw_here = (x >= row->le && x <= row->re);
+
+                        if (y + floor_pf_dist <= bot) {
+                            AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
+                            AB3D_PREFETCH_WRITE(&rgb[pix + floor_pf_stride]);
+                        }
+
+                        if (draw_here) {
+                            if (row->next_x != x) {
+                                int dx = x - row->next_x;
+                                row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
+                                row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
+                                row->bright_col_fp += (int32_t)(((int64_t)dx) * (int64_t)row->bright_step_fp);
+                            }
+                            uint32_t u_fp = row->u_col;
+                            uint32_t v_fp = row->v_col;
+                            uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                            int level = (int)(row->bright_col_fp >> 16);
+                            uint16_t out_cw;
+                            uint32_t out_rgb;
+
+                            if (level < 0) level = 0;
+                            if (level >= FLOOR_PAL_LEVEL_COUNT) level = FLOOR_PAL_LEVEL_COUNT - 1;
+                            {
+                                const uint16_t *cw_level = gour_cw_levels[level];
+                                const uint32_t *rgb_level = gour_rgb_levels[level];
+                                out_cw = cw_level ? cw_level[texel] : row->span_cw ? row->span_cw[texel] : 0;
+                                out_rgb = rgb_level ? rgb_level[texel] : row->span_rgb ? row->span_rgb[texel] : amiga12_to_argb(out_cw);
+                            }
+
+                            if (run_start == -1) run_start = y;
+                            buf[pix] = 1;
+                            AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                            rgb[pix] = out_rgb;
+                            drawn_pixels++;
+                            row->u_col += (uint32_t)row->u_step;
+                            row->v_col += (uint32_t)row->v_step;
+                            row->bright_col_fp += row->bright_step_fp;
+                            row->next_x = (int16_t)x_next;
+                        } else if (run_start >= 0) {
+                            renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
+                            run_start = -1;
+                        }
+
+                        cw_idx += 1u;
+                        pix += (size_t)w;
+                    }
                 }
             } else {
                 FloorRowFast *row = rows + (top - y_base);
-                for (int y = top; y <= bot; y++, row++) {
-                    int draw_here = (x >= row->le && x <= row->re);
-
-                    if (y + floor_pf_dist <= bot) {
-                        AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
-                    }
-
-                    if (draw_here) {
+                if (assume_contiguous_coverage) {
+                    for (int y = top; y <= bot; y++, row++) {
                         if (row->next_x != x) {
                             int dx = x - row->next_x;
                             row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
                             row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
-                            row->bright_col_fp += dx * row->bright_step_fp;
-                            row->next_x = (int16_t)x;
+                            row->bright_col_fp += (int32_t)(((int64_t)dx) * (int64_t)row->bright_step_fp);
                         }
-                        uint32_t u_fp = row->u_col;
-                        uint32_t v_fp = row->v_col;
-                        uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
-                        int32_t bfp = row->bright_col_fp;
-                        int bright_pix = (int)(bfp >> 16);
-                        int bright_idx = bright_pix + row->bright_term;
-                        uint16_t out_cw;
-
-                        if (bright_idx < 0) bright_idx = 0;
-                        if (bright_idx > 28) bright_idx = 28;
                         {
-                            int level = floor_bright_level_table[bright_idx];
-                            const uint16_t *cw_level = gour_cw_levels[level];
-                            out_cw = cw_level ? cw_level[texel] : row->span_cw ? row->span_cw[texel] : 0;
-                        }
+                            uint32_t u_fp = row->u_col;
+                            uint32_t v_fp = row->v_col;
+                            uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                            int level = (int)(row->bright_col_fp >> 16);
+                            uint16_t out_cw;
 
-                        if (run_start == -1) run_start = y;
-                        buf[pix] = 1;
-                        AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
-                        drawn_pixels++;
+                            if (level < 0) level = 0;
+                            if (level >= FLOOR_PAL_LEVEL_COUNT) level = FLOOR_PAL_LEVEL_COUNT - 1;
+                            {
+                                const uint16_t *cw_level = gour_cw_levels[level];
+                                out_cw = cw_level ? cw_level[texel] : row->span_cw ? row->span_cw[texel] : 0;
+                            }
+
+                            buf[pix] = 1;
+                            AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                            drawn_pixels++;
+                        }
                         row->u_col += (uint32_t)row->u_step;
                         row->v_col += (uint32_t)row->v_step;
                         row->bright_col_fp += row->bright_step_fp;
                         row->next_x = (int16_t)x_next;
-                    } else if (run_start >= 0) {
-                        renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
-                        run_start = -1;
-                    }
 
-                    cw_idx += 1u;
-                    pix += (size_t)w;
+                        cw_idx += 1u;
+                        pix += (size_t)w;
+                    }
+                } else {
+                    for (int y = top; y <= bot; y++, row++) {
+                        int draw_here = (x >= row->le && x <= row->re);
+
+                        if (y + floor_pf_dist <= bot) {
+                            AB3D_PREFETCH_WRITE(&buf[pix + floor_pf_stride]);
+                        }
+
+                        if (draw_here) {
+                            if (row->next_x != x) {
+                                int dx = x - row->next_x;
+                                row->u_col += (uint32_t)dx * (uint32_t)row->u_step;
+                                row->v_col += (uint32_t)dx * (uint32_t)row->v_step;
+                                row->bright_col_fp += (int32_t)(((int64_t)dx) * (int64_t)row->bright_step_fp);
+                            }
+                            uint32_t u_fp = row->u_col;
+                            uint32_t v_fp = row->v_col;
+                            uint8_t texel = texture[((u_fp >> 14) & 0xFCu) | ((v_fp >> 6) & 0xFC00u)];
+                            int level = (int)(row->bright_col_fp >> 16);
+                            uint16_t out_cw;
+
+                            if (level < 0) level = 0;
+                            if (level >= FLOOR_PAL_LEVEL_COUNT) level = FLOOR_PAL_LEVEL_COUNT - 1;
+                            {
+                                const uint16_t *cw_level = gour_cw_levels[level];
+                                out_cw = cw_level ? cw_level[texel] : row->span_cw ? row->span_cw[texel] : 0;
+                            }
+
+                            if (run_start == -1) run_start = y;
+                            buf[pix] = 1;
+                            AB3D_NT_STORE_U16(&cwbuf[cw_idx], out_cw);
+                            drawn_pixels++;
+                            row->u_col += (uint32_t)row->u_step;
+                            row->v_col += (uint32_t)row->v_step;
+                            row->bright_col_fp += row->bright_step_fp;
+                            row->next_x = (int16_t)x_next;
+                        } else if (run_start >= 0) {
+                            renderer_pick_mark_wall_column(ctx, x, run_start, y - 1, 0, 0, 0, 0);
+                            run_start = -1;
+                        }
+
+                        cw_idx += 1u;
+                        pix += (size_t)w;
+                    }
                 }
             }
         }
@@ -6954,6 +7223,8 @@ static uint64_t renderer_draw_floor_fast_column(const RenderSliceContext *ctx,
 
     if (run_start >= 0) {
         renderer_pick_mark_wall_column(ctx, x, run_start, bot, 0, 0, 0, 0);
+    } else if (pick_capture_active && assume_contiguous_coverage && drawn_pixels > 0) {
+        renderer_pick_mark_wall_column(ctx, x, top, bot, 0, 0, 0, 0);
     }
 
     return drawn_pixels;
@@ -7005,9 +7276,9 @@ static int renderer_draw_floor_columns_ctx_fast(RenderSliceContext *ctx,
     if (y0 > y1) return 0;
     {
         const int row_count = y1 - y0 + 1;
-        FloorRowFast *rows = (FloorRowFast *)malloc((size_t)row_count * sizeof(*rows));
-        if (!rows) return 0;
-        memset(rows, 0, (size_t)row_count * sizeof(*rows));
+        FloorRowFast *rows;
+        if (!renderer_floor_fast_ensure_rows_capacity(row_count)) return 0;
+        rows = g_floor_fast_rows_scratch;
         for (int row_idx = 0; row_idx < row_count; row_idx++) {
             rows[row_idx].le = 1;
             rows[row_idx].re = 0;
@@ -7018,32 +7289,97 @@ static int renderer_draw_floor_columns_ctx_fast(RenderSliceContext *ctx,
         const int pick_capture_active = (g_pick_capture_active != 0);
         uint64_t drawn_px_count = 0;
         uint64_t drawn_col_count = 0;
-        int any_gour = 0;
         const uint16_t *gour_cw_levels[FLOOR_PAL_LEVEL_COUNT];
         const uint32_t *gour_rgb_levels[FLOOR_PAL_LEVEL_COUNT];
 
-        memset(gour_cw_levels, 0, sizeof(gour_cw_levels));
-        memset(gour_rgb_levels, 0, sizeof(gour_rgb_levels));
         renderer_floor_prepare_common(&floor_common, rs, floor_height, scaleval);
+        floor_span_prepare_pal_cache_all_levels(ctx, floor_pal);
+        for (int level = 0; level < FLOOR_PAL_LEVEL_COUNT; level++) {
+            gour_cw_levels[level] = ctx->floor_pal_cw_levels[level];
+            gour_rgb_levels[level] = expand ? ctx->floor_pal_rgb_levels[level] : NULL;
+        }
 
-        for (int y = y0; y <= y1; y++) {
-            FloorRowFast *row = &rows[y - y0];
-            int16_t le = left_edge[y];
-            int16_t re = right_edge_tab[y];
-            FloorRowMath row_math;
-            if (le >= w || re < 0) continue;
-            if (le < ctx->left_clip) le = ctx->left_clip;
-            if (re >= ctx->right_clip) re = (int16_t)(ctx->right_clip - 1);
-            if (le > re) continue;
+        if (use_gour_floor) {
+            for (int y = y0; y <= y1; y++) {
+                FloorRowFast *row = &rows[y - y0];
+                int16_t raw_le = left_edge[y];
+                int16_t raw_re = right_edge_tab[y];
+                int16_t le = raw_le;
+                int16_t re = raw_re;
+                FloorRowMath row_math;
+                int32_t bl_edge;
+                int32_t br_edge;
+                int32_t full_span_w;
+                int32_t clip_advance;
+                int32_t gour_level_step;
+                int32_t gour_level_fp;
+                int left_level;
+                int right_level;
+                int dist_add;
 
-            renderer_floor_prepare_row_math(&row_math,
-                                            rs,
-                                            &floor_common,
-                                            renderer_floor_row_dist_from_screen_y(y, center));
+                if (le >= w || re < 0) continue;
+                if (le < ctx->left_clip) le = ctx->left_clip;
+                if (re >= ctx->right_clip) re = (int16_t)(ctx->right_clip - 1);
+                if (le > re) continue;
 
-            {
-                int bright_idx = brightness + row_math.bright_term;
+                renderer_floor_prepare_row_math(&row_math,
+                                                rs,
+                                                &floor_common,
+                                                renderer_floor_row_dist_from_screen_y(y, center));
+
+                bl_edge = left_bright_tab ? left_bright_tab[y] : brightness;
+                br_edge = right_bright_tab ? right_bright_tab[y] : brightness;
+                full_span_w = (int32_t)raw_re - (int32_t)raw_le;
+                clip_advance = (int32_t)le - (int32_t)raw_le;
+                dist_add = row_math.dist >> 7;
+
+                left_level = bl_edge + dist_add;
+                right_level = br_edge + dist_add;
+                if (left_level < 0) left_level = 0;
+                if (right_level < 0) right_level = 0;
+                left_level >>= 1;
+                right_level >>= 1;
+                if (left_level >= FLOOR_PAL_LEVEL_COUNT) left_level = FLOOR_PAL_LEVEL_COUNT - 1;
+                if (right_level >= FLOOR_PAL_LEVEL_COUNT) right_level = FLOOR_PAL_LEVEL_COUNT - 1;
+
+                gour_level_step = (full_span_w > 0)
+                    ? (int32_t)(((int64_t)(right_level - left_level) << 16) / (int64_t)full_span_w)
+                    : 0;
+                gour_level_fp = ((int32_t)left_level << 16)
+                    + (int32_t)((int64_t)gour_level_step * (int64_t)clip_advance);
+
+                row->le = le;
+                row->re = re;
+                row->u_step = row_math.u_step;
+                row->v_step = row_math.v_step;
+                row->u_base = row_math.u_base;
+                row->v_base = row_math.v_base;
+                row->bright_term = 0;
+                row->span_cw = NULL;
+                row->span_rgb = NULL;
+                row->bright_base_fp = gour_level_fp;
+                row->bright_step_fp = gour_level_step;
+            }
+        } else {
+            for (int y = y0; y <= y1; y++) {
+                FloorRowFast *row = &rows[y - y0];
+                int16_t le = left_edge[y];
+                int16_t re = right_edge_tab[y];
+                FloorRowMath row_math;
+                int bright_idx;
                 int floor_pal_level;
+
+                if (le >= w || re < 0) continue;
+                if (le < ctx->left_clip) le = ctx->left_clip;
+                if (re >= ctx->right_clip) re = (int16_t)(ctx->right_clip - 1);
+                if (le > re) continue;
+
+                renderer_floor_prepare_row_math(&row_math,
+                                                rs,
+                                                &floor_common,
+                                                renderer_floor_row_dist_from_screen_y(y, center));
+
+                bright_idx = brightness + row_math.bright_term;
                 if (bright_idx < 0) bright_idx = 0;
                 if (bright_idx > 28) bright_idx = 28;
                 floor_pal_level = floor_bright_level_table[bright_idx];
@@ -7054,33 +7390,8 @@ static int renderer_draw_floor_columns_ctx_fast(RenderSliceContext *ctx,
                 row->v_step = row_math.v_step;
                 row->u_base = row_math.u_base;
                 row->v_base = row_math.v_base;
-                row->bright_term = row_math.bright_term;
-                row->span_cw = NULL;
-                row->span_rgb = NULL;
-
-                if (!use_gour_floor) {
-                    floor_span_prepare_pal_cache(ctx, floor_pal, floor_pal_level, &row->span_cw);
-                    row->span_rgb = ctx->floor_pal_rgb_levels[floor_pal_level];
-                }
-
-                if (use_gour_floor) {
-                    int32_t bl = left_bright_tab ? left_bright_tab[y] : brightness;
-                    int32_t br = right_bright_tab ? right_bright_tab[y] : brightness;
-                    int32_t den = (int32_t)(re - le);
-                    row->bright_base_fp = bl << 16;
-                    row->bright_step_fp = (den > 0) ? (int32_t)(((br - bl) << 16) / den) : 0;
-                    any_gour = 1;
-                } else {
-                    row->bright_base_fp = 0;
-                    row->bright_step_fp = 0;
-                }
-            }
-        }
-
-        if (any_gour) {
-            for (int level = 0; level < FLOOR_PAL_LEVEL_COUNT; level++) {
-                floor_span_prepare_pal_cache(ctx, floor_pal, level, &gour_cw_levels[level]);
-                gour_rgb_levels[level] = ctx->floor_pal_rgb_levels[level];
+                row->span_cw = gour_cw_levels[floor_pal_level];
+                row->span_rgb = expand ? gour_rgb_levels[floor_pal_level] : NULL;
             }
         }
 
@@ -7106,6 +7417,7 @@ static int renderer_draw_floor_columns_ctx_fast(RenderSliceContext *ctx,
                                                                           h,
                                                                           y0,
                                                                           pick_capture_active,
+                                                                          0,
                                                                           use_gour_floor,
                                                                           expand,
                                                                           x,
@@ -7127,39 +7439,148 @@ static int renderer_draw_floor_columns_ctx_fast(RenderSliceContext *ctx,
                 if (row->re > x_max) x_max = row->re;
             }
             if (x_min <= x_max) {
-                renderer_floor_fast_seed_rows(rows, row_count, use_gour_floor);
-                for (int x = x_min; x <= x_max; x++) {
-                    int top = y1 + 1;
-                    int bot = y0 - 1;
+                const int col_count = x_max - x_min + 1;
+                if (renderer_floor_fast_ensure_cols_capacity(col_count)) {
+                    int16_t *col_top_exact = g_floor_fast_col_top_scratch;
+                    int16_t *col_bot_exact = g_floor_fast_col_bot_scratch;
+                    int *next_top = g_floor_fast_next_top_scratch;
+                    int *next_bot = g_floor_fast_next_bot_scratch;
+                    int *col_cov_diff = g_floor_fast_cov_diff_scratch;
+                    for (int i = 0; i < col_count; i++) {
+                        col_top_exact[i] = renderer_clamp_edge_y_i16(h);
+                        col_bot_exact[i] = -1;
+                    }
+                    for (int i = 0; i <= col_count; i++) {
+                        next_top[i] = i;
+                        next_bot[i] = i;
+                        col_cov_diff[i] = 0;
+                    }
+
                     for (int y = y0; y <= y1; y++) {
                         const FloorRowFast *row = &rows[y - y0];
-                        if (row->le > row->re) continue;
-                        if (x < row->le || x > row->re) continue;
-                        if (y < top) top = y;
-                        bot = y;
+                        int xl = row->le;
+                        int xr = row->re;
+                        if (xl > xr) continue;
+                        if (xl < x_min) xl = x_min;
+                        if (xr > x_max) xr = x_max;
+                        if (xl > xr) continue;
+
+                        {
+                            const int l_idx = xl - x_min;
+                            const int r_idx = xr - x_min;
+                            col_cov_diff[l_idx] += 1;
+                            col_cov_diff[r_idx + 1] -= 1;
+
+                            int idx = renderer_floor_col_bounds_find_next(next_top, xl - x_min);
+                            const int end_idx = xr - x_min;
+                            while (idx <= end_idx) {
+                                col_top_exact[idx] = (int16_t)y;
+                                next_top[idx] = renderer_floor_col_bounds_find_next(next_top, idx + 1);
+                                idx = next_top[idx];
+                            }
+                        }
                     }
-                    if (top > bot) continue;
+
+                    for (int y = y1; y >= y0; y--) {
+                        const FloorRowFast *row = &rows[y - y0];
+                        int xl = row->le;
+                        int xr = row->re;
+                        if (xl > xr) continue;
+                        if (xl < x_min) xl = x_min;
+                        if (xr > x_max) xr = x_max;
+                        if (xl > xr) continue;
+
+                        {
+                            int idx = renderer_floor_col_bounds_find_next(next_bot, xl - x_min);
+                            const int end_idx = xr - x_min;
+                            while (idx <= end_idx) {
+                                col_bot_exact[idx] = (int16_t)y;
+                                next_bot[idx] = renderer_floor_col_bounds_find_next(next_bot, idx + 1);
+                                idx = next_bot[idx];
+                            }
+                        }
+                    }
+
+                    renderer_floor_fast_seed_rows(rows, row_count, use_gour_floor);
                     {
-                        uint64_t col_pixels = renderer_draw_floor_fast_column(ctx,
-                                                                              rows,
-                                                                              gour_cw_levels,
-                                                                              gour_rgb_levels,
-                                                                              texture,
-                                                                              buf,
-                                                                              rgb,
-                                                                              cwbuf,
-                                                                              w,
-                                                                              h,
-                                                                              y0,
-                                                                              pick_capture_active,
-                                                                              use_gour_floor,
-                                                                              expand,
-                                                                              x,
-                                                                              top,
-                                                                              bot);
-                        if (col_pixels > 0) {
-                            drawn_px_count += col_pixels;
-                            drawn_col_count++;
+                        int cov_count = 0;
+                        for (int x = x_min; x <= x_max; x++) {
+                            int idx = x - x_min;
+                            int top;
+                            int bot;
+                            int assume_contiguous;
+
+                            cov_count += col_cov_diff[idx];
+                            top = (int)col_top_exact[idx];
+                            bot = (int)col_bot_exact[idx];
+                            if (top > bot) continue;
+                            if (top < y0) top = y0;
+                            if (bot > y1) bot = y1;
+                            if (top > bot) continue;
+
+                            assume_contiguous = (cov_count == (bot - top + 1)) ? 1 : 0;
+                            {
+                                uint64_t col_pixels = renderer_draw_floor_fast_column(ctx,
+                                                                                      rows,
+                                                                                      gour_cw_levels,
+                                                                                      gour_rgb_levels,
+                                                                                      texture,
+                                                                                      buf,
+                                                                                      rgb,
+                                                                                      cwbuf,
+                                                                                      w,
+                                                                                      h,
+                                                                                      y0,
+                                                                                      pick_capture_active,
+                                                                                      assume_contiguous,
+                                                                                      use_gour_floor,
+                                                                                      expand,
+                                                                                      x,
+                                                                                      top,
+                                                                                      bot);
+                                if (col_pixels > 0) {
+                                    drawn_px_count += col_pixels;
+                                    drawn_col_count++;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    renderer_floor_fast_seed_rows(rows, row_count, use_gour_floor);
+                    for (int x = x_min; x <= x_max; x++) {
+                        int top = y1 + 1;
+                        int bot = y0 - 1;
+                        for (int y = y0; y <= y1; y++) {
+                            const FloorRowFast *row = &rows[y - y0];
+                            if (row->le > row->re) continue;
+                            if (x < row->le || x > row->re) continue;
+                            if (y < top) top = y;
+                            bot = y;
+                        }
+                        if (top > bot) continue;
+                        {
+                            uint64_t col_pixels = renderer_draw_floor_fast_column(ctx,
+                                                                                  rows,
+                                                                                  gour_cw_levels,
+                                                                                  gour_rgb_levels,
+                                                                                  texture,
+                                                                                  buf,
+                                                                                  rgb,
+                                                                                  cwbuf,
+                                                                                  w,
+                                                                                  h,
+                                                                                  y0,
+                                                                                  pick_capture_active,
+                                                                                  0,
+                                                                                  use_gour_floor,
+                                                                                  expand,
+                                                                                  x,
+                                                                                  top,
+                                                                                  bot);
+                            if (col_pixels > 0) {
+                                drawn_px_count += col_pixels;
+                                drawn_col_count++;
+                            }
                         }
                     }
                 }
@@ -7172,7 +7593,6 @@ static int renderer_draw_floor_columns_ctx_fast(RenderSliceContext *ctx,
             ctx->workload_stats.floor_fast_spans += drawn_col_count;
             ctx->workload_stats.floor_fast_pixels += drawn_px_count;
         }
-        free(rows);
         return 1;
     }
 #endif
@@ -7247,6 +7667,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     (void)sprite_type;
     uint32_t *rgb = renderer_active_rgb();
     uint16_t *cw = renderer_active_cw();
+    if (!ctx) return;
     if (!rgb || !cw) return;
     if (z <= SPRITE_NEAR_CLIP_Z) return;
     if (!wad || !ptr_data) return;
@@ -10431,12 +10852,11 @@ static void renderer_draw_zone_backdrop_sky_ctx(RenderSliceContext *ctx,
 
 static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, int16_t zone_id, int use_upper)
 {
+    if (!ctx || !state) return;
     RendererState *r = &g_renderer;
     LevelState *level = &state->level;
-    if (ctx) {
-        ctx->pick_zone_id = zone_id;
-        ctx->pick_player_id = 0;
-    }
+    ctx->pick_zone_id = zone_id;
+    ctx->pick_player_id = 0;
 
     if (!level->data || !level->zone_adds || !level->zone_graph_adds) return;
     {
@@ -10731,7 +11151,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                     }
                     {
                         /* See-through/sky wall polys should not occlude billboards. */
-                        int8_t prev_update_column_clip = ctx->update_column_clip;
+                        int8_t prev_wall_update_column_clip = ctx->update_column_clip;
                         if (entry_type == 13) ctx->update_column_clip = 0;
                         renderer_draw_wall_ctx(ctx, rx1, rz1, rx2, rz2,
                                                wall_top, wall_bot,
@@ -10740,7 +11160,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                                                use_valand, use_valshift, horand,
                                                eff_totalyoff, eff_fromtile, tex_id,
                                                wall_height_for_tex, wall_d6_max);
-                        ctx->update_column_clip = prev_update_column_clip;
+                        ctx->update_column_clip = prev_wall_update_column_clip;
                     }
                 }
             }
@@ -10871,7 +11291,15 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
             int16_t *right_bright_tab = NULL;
             int col_x_min = g_renderer.width;
             int col_x_max = -1;
-            const int build_floor_col_bounds = (AB3D_ENABLE_FLOOR_COL_FAST && AB3D_CW_COL_MAJOR && entry_type != 7);
+            const int allow_floor_col_fast =
+                (AB3D_ENABLE_FLOOR_COL_FAST && AB3D_CW_COL_MAJOR &&
+                 (!state || !state->cfg_render_threads));
+            const int allow_floor_col_fast_poly =
+                (allow_floor_col_fast && entry_type != 7 &&
+                 !use_gour_floor &&
+                 (floor_y_dist > 0 || AB3D_FLOOR_COL_FAST_INCLUDE_CEILING));
+            const int build_floor_col_bounds =
+                (allow_floor_col_fast_poly && AB3D_FLOOR_FAST_USE_EDGE_BOUNDS);
             if (build_floor_col_bounds) {
                 col_top_tab = (int16_t*)malloc((size_t)g_renderer.width * sizeof(int16_t));
                 col_bot_tab = (int16_t*)malloc((size_t)g_renderer.width * sizeof(int16_t));
@@ -11134,7 +11562,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                                                              poly_bot);
             ctx->active_floor_trace_stats = floor_trace_stats.active ? &floor_trace_stats : NULL;
 
-            if (AB3D_ENABLE_FLOOR_COL_FAST && AB3D_CW_COL_MAJOR && entry_type != 7 && floor_tex && floor_pal) {
+            if (allow_floor_col_fast_poly && floor_tex && floor_pal) {
                 if (ctx->profile_collect_stats) {
                     uint64_t floor_t0 = SDL_GetPerformanceCounter();
                     renderer_draw_floor_columns_ctx_fast(ctx, left_edge, right_edge_tab,
@@ -11961,6 +12389,11 @@ void renderer_draw_display(GameState *state)
         g_renderer_profile_collect_stats = 0;
         return;
     }
+    if (!state) {
+        g_renderer_zone_trace_active = 0;
+        g_renderer_profile_collect_stats = 0;
+        return;
+    }
     int prof_on = renderer_profile_env_enabled() ? renderer_profile_enabled() : 0;
     uint64_t t0 = 0;
     uint64_t t_after_setup = 0;
@@ -12188,9 +12621,7 @@ void renderer_draw_display(GameState *state)
 
     /* 8. Swap buffers (the just-drawn buffer becomes the display buffer) */
     /* Flush non-temporal store write-combine buffers before the display path reads cw_buffer. */
-#if AB3D_HAVE_SSE2
-    _mm_sfence();
-#endif
+    AB3D_NT_STORE_FENCE();
     renderer_swap();
     g_pick_last_frame_valid = pick_this_frame;
     g_pick_capture_active = 0;

@@ -85,6 +85,15 @@ Typical outputs:
 - Windows: `build/Release/ab3d1.exe`
 - Linux/macOS: `build/ab3d1`
 
+Experimental floor-column profiling build:
+
+```bash
+cmake -S . -B build -DAB3D_ENABLE_FLOOR_COL_FAST=ON
+cmake --build build --config Release
+```
+
+This enables the experimental column-major floor fast path for profiling and tuning. It is off by default.
+
 ### Web (Emscripten)
 
 Requires [Emscripten](https://emscripten.org/) (e.g. `emsdk`) on your PATH so `emcmake` / `emcc` are available.
