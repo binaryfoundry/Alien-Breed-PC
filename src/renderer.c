@@ -1354,6 +1354,7 @@ typedef AB3D_CACHELINE_ALIGN struct {
     int8_t  update_column_clip;
     uint8_t profile_collect_stats;
     uint8_t _profile_pad[3];
+    const RendererWorldZonePrepass *zone_prepass;
     RendererWorkloadStats workload_stats;
 
     /* ---- Cold: floor palette span cache (lazily populated) ---- */
@@ -1403,6 +1404,7 @@ static void render_slice_context_init(RenderSliceContext *ctx,
     ctx->wall_cache_valid = 0;
     renderer_workload_stats_reset(&ctx->workload_stats);
     ctx->profile_collect_stats = g_renderer_profile_collect_stats ? 1u : 0u;
+    ctx->zone_prepass = NULL;
     ctx->floor_pal_cache_src = NULL;
     ctx->floor_pal_cache_all_levels_ready = 0u;
     memset(ctx->floor_pal_cache_valid, 0, sizeof(ctx->floor_pal_cache_valid));
@@ -8687,6 +8689,30 @@ static int renderer_zone_order_index(const GameState *state, int16_t zone_id)
     return -1;
 }
 
+static int renderer_lookup_zone_prepass_clip_span(const RenderSliceContext *ctx,
+                                                  int16_t zone_id,
+                                                  int16_t *out_left,
+                                                  int16_t *out_right)
+{
+    if (!ctx || !ctx->zone_prepass || !out_left || !out_right || zone_id < 0)
+        return 0;
+
+    const RendererWorldZonePrepass *prepass = ctx->zone_prepass;
+    int count = prepass->count;
+    if (count < 0) count = 0;
+    if (count > RENDERER_MAX_ZONE_ORDER) count = RENDERER_MAX_ZONE_ORDER;
+
+    for (int i = 0; i < count; i++) {
+        if (prepass->zone_ids[i] != zone_id) continue;
+        if (!prepass->valid[i]) continue;
+        *out_left = prepass->left_px[i];
+        *out_right = prepass->right_px[i];
+        return 1;
+    }
+
+    return 0;
+}
+
 static int renderer_find_adj_zone_slot(const RendererAdjZone *adj, int adj_count, int16_t zone_id)
 {
     for (int i = 0; i < adj_count; i++) {
@@ -9008,7 +9034,13 @@ static int renderer_collect_adjacent_zone_sources(const RenderSliceContext *ctx,
     for (int i = 0; i < adj_count; i++) {
         int ambiguous = 0;
         int16_t adj_left = 0, adj_right = 0;
-        if (renderer_compute_zone_clip_span(state, out_adj[i].zone_id, 0u, 0, &adj_left, &adj_right)) {
+        int have_adj_clip = renderer_lookup_zone_prepass_clip_span(ctx, out_adj[i].zone_id,
+                                                                   &adj_left, &adj_right);
+        if (!have_adj_clip) {
+            have_adj_clip = renderer_compute_zone_clip_span(state, out_adj[i].zone_id,
+                                                            0u, 0, &adj_left, &adj_right);
+        }
+        if (have_adj_clip) {
             int l = (adj_left > ctx->left_clip) ? adj_left : ctx->left_clip;
             int r = (adj_right < ctx->right_clip) ? adj_right : ctx->right_clip;
             if (l < r) ambiguous = 1;
@@ -9050,7 +9082,12 @@ static int renderer_resolve_sprite_zone_draw_clip(const RenderSliceContext *ctx,
     int16_t draw_right = ctx->right_clip;
     {
         int16_t zl = 0, zr = 0;
-        if (renderer_compute_zone_clip_span(state, zone_id, 0u, 0, &zl, &zr)) {
+        int have_zone_clip = renderer_lookup_zone_prepass_clip_span(ctx, zone_id, &zl, &zr);
+        if (!have_zone_clip) {
+            have_zone_clip = renderer_compute_zone_clip_span(state, zone_id,
+                                                             0u, 0, &zl, &zr);
+        }
+        if (have_zone_clip) {
             if (zl > draw_left) draw_left = zl;
             if (zr < draw_right) draw_right = zr;
         }
@@ -12019,7 +12056,6 @@ static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
         }
         const uint8_t *clip_ptr = (clip_off >= 0) ? (state->level.clips + clip_off * 2) : NULL;
 
-        const int proj_x_scale = renderer_proj_x_scale_px();
         int invalid_clip = 0;
         int guard = 0;
 
@@ -12138,7 +12174,8 @@ static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
                     }
                 }
                 if (allow && sxpx < right_clip_px) {
-                    right_clip_px = sxpx + proj_x_scale;
+                    /* Bounds are already in render pixels; keep right edge as a 1px-exclusive bound. */
+                    right_clip_px = sxpx + 1;
                 }
             } else if (connect_table) {
                 /* Portal vertex behind camera — clip edge to near plane for a tighter bound. */
@@ -12152,7 +12189,7 @@ static int renderer_compute_zone_clip_span(GameState *state, int16_t zone_id,
                             int32_t clip_x = r->rotated[pt].x +
                                 (int32_t)((int64_t)(r->rotated[cpt].x - r->rotated[pt].x) * (ROT_Z_FROM_INT(1) - pz) / dz);
                             int sxpx = project_x_to_pixels(clip_x, ROT_Z_FROM_INT(1));
-                            int sxpx_r = sxpx + proj_x_scale;
+                            int sxpx_r = sxpx + 1;
                             if (sxpx_r < right_clip_px)
                                 right_clip_px = sxpx_r;
                         }
@@ -12284,6 +12321,7 @@ static void renderer_draw_world_slice(GameState *state,
     int16_t strip_bot = (int16_t)(h - 1);
 
     render_slice_context_init(&frame_ctx, (int16_t)cs, (int16_t)ce, strip_top, strip_bot);
+    frame_ctx.zone_prepass = zone_prepass;
     /* Column strips assign disjoint x ranges to workers; single-threaded full-width is one worker. */
     frame_ctx.update_column_clip = 1;
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
