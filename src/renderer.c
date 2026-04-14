@@ -172,6 +172,11 @@ static inline void renderer_cw_store_xy(uint16_t *cw, int x, int y, int width, i
 #define AB3D_THREAD_LOCAL
 #endif
 
+/* Sprite row caches for renderer_draw_sprite_ctx hot path (per-thread). */
+static AB3D_THREAD_LOCAL int g_sprite_src_row_lut[RENDER_INTERNAL_MAX_DIM];
+static AB3D_THREAD_LOCAL uint8_t g_sprite_spill_row_occluded_lut[RENDER_INTERNAL_MAX_DIM];
+static AB3D_THREAD_LOCAL uint8_t g_sprite_col_texel_lut[256];
+
 /* Floor/ceiling UV step per pixel: d1>>FLOOR_STEP_SHIFT (same at any width so texture scale is correct). */
 #define FLOOR_STEP_SHIFT  (6 + RENDER_SCALE_LOG2)  /* d1>>9 at RENDER_SCALE=8 */
 /* Camera UV scale in fixed-point, matching Amiga sxoff/szoff setup in pastsides:
@@ -7784,6 +7789,8 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
         if (draw_bot > (int)clip_bot_sy) draw_bot = (int)clip_bot_sy;
     }
     if (draw_top > draw_bot) return;
+    const int draw_row_count = draw_bot - draw_top + 1;
+    if (draw_row_count <= 0 || draw_row_count > RENDER_INTERNAL_MAX_DIM) return;
     const int profile_collect_stats = (ctx && ctx->profile_collect_stats);
     uint64_t sprite_visible_rows_total = 0;
     uint64_t sprite_wall_occluded_rows_total = 0;
@@ -7850,12 +7857,46 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     const uint32_t spill_vis_rgb = amiga12_to_argb(spill_vis_cw);
     uint8_t *pick_player = renderer_active_pick_player();
     const uint8_t pick_player_id = ctx->pick_player_id;
+    const int have_pick = (pick_player && pick_player_id) ? 1 : 0;
+    const int fast_common_no_spill =
+        (!have_spill_plane_depth_clip && !have_pick) ? 1 : 0;
 
     /* Fixed-point 16.16 DDA stepping (replaces per-pixel integer division). */
     const int32_t src_col_step = (width > 1)
         ? (int32_t)(((uint32_t)eff_cols << 16) / (uint32_t)width) : 0;
     const int32_t src_row_step = (height > 1)
         ? (int32_t)(((uint32_t)eff_rows << 16) / (uint32_t)height) : 0;
+    const int prefer_col_texel_lut =
+        (height >= (eff_rows << 1) && eff_rows <= (int)sizeof(g_sprite_col_texel_lut)) ? 1 : 0;
+
+    int *row_src_lut = g_sprite_src_row_lut;
+    {
+        int32_t row_fp_lut = (int32_t)(draw_top - sy) * src_row_step;
+        for (int row_i = 0; row_i < draw_row_count; row_i++) {
+            int src_row = row_fp_lut >> 16;
+            row_fp_lut += src_row_step;
+            if (src_row >= eff_rows) src_row = eff_rows - 1;
+            row_src_lut[row_i] = src_row;
+        }
+    }
+
+    uint8_t *spill_row_occluded_lut = g_sprite_spill_row_occluded_lut;
+    if (have_spill_plane_depth_clip) {
+        for (int row_i = 0; row_i < draw_row_count; row_i++) {
+            int screen_row = draw_top + row_i;
+            spill_row_occluded_lut[row_i] =
+                (uint8_t)(renderer_spill_pixel_occluded_by_zone_planes(screen_row,
+                                                                        center_y,
+                                                                        z32,
+                                                                        zone_top_rel_8,
+                                                                        zone_bot_rel_8,
+                                                                        ignore_spill_top_plane,
+                                                                        g_renderer.proj_y_scale)
+                          ? 1
+                          : 0);
+        }
+    }
+
     int32_t src_col_fp = (int32_t)dx_start * src_col_step;
 
     const ColumnClip *wall_clip = &g_renderer.clip;
@@ -7894,30 +7935,58 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
          * Each row is 2 bytes; need (row_idx + 1) * 2 <= remaining WAD. */
         const int max_row_idx = (int)((wad_size - wad_off) / 2) - 1;
         if (max_row_idx < 0) continue;
+        if (down_strip_i > max_row_idx) continue;
+
+        const uint8_t *src_base = src + (size_t)down_strip_i * 2u;
+        const int max_src_row_col = max_row_idx - down_strip_i;
+        const int need_src_row_bounds = (max_src_row_col < (eff_rows - 1));
+        uint8_t *col_texel_lut = g_sprite_col_texel_lut;
+        int use_col_texel_lut = 0;
+        if (prefer_col_texel_lut) {
+            int decode_rows = max_src_row_col + 1;
+            if (decode_rows > eff_rows) decode_rows = eff_rows;
+            if (decode_rows > 0) {
+                for (int rr = 0; rr < decode_rows; rr++) {
+                    const int src_byte = rr << 1;
+                    const uint16_t w = (uint16_t)((src_base[src_byte] << 8) | src_base[src_byte + 1]);
+                    col_texel_lut[rr] = (uint8_t)((w >> texel_shift) & 0x1F);
+                }
+                use_col_texel_lut = 1;
+            }
+        }
 
         /* Per-column zone clip: subtract occluder spans so split columns can
          * render all visible pieces (top/middle/bottom) instead of choosing
          * only one side of an interior occluder. */
         int seg_top[3], seg_bot[3], seg_count = 0;
-        {
+        if (!have_wall_clip) {
+            seg_top[0] = draw_top;
+            seg_bot[0] = draw_bot;
+            seg_count = 1;
+        } else {
             int occ_top[2], occ_bot[2], occ_count = 0;
-            if (have_wall_clip) {
-                int16_t wt0 = wall_clip->top[screen_col];
-                int16_t wb0 = wall_clip->bot[screen_col];
-                int32_t wz0 = wall_clip->z[screen_col];
-                if (wz0 > 0 && wt0 <= wb0 && z32 >= wz0) {
-                    int t = (wt0 > draw_top) ? (int)wt0 : draw_top;
-                    int b = (wb0 < draw_bot) ? (int)wb0 : draw_bot;
-                    if (t <= b) { occ_top[occ_count] = t; occ_bot[occ_count] = b; occ_count++; }
-                }
-                int16_t wt1 = wall_clip->top2[screen_col];
-                int16_t wb1 = wall_clip->bot2[screen_col];
-                int32_t wz1 = wall_clip->z2[screen_col];
-                if (wz1 > 0 && wt1 <= wb1 && z32 >= wz1) {
-                    int t = (wt1 > draw_top) ? (int)wt1 : draw_top;
-                    int b = (wb1 < draw_bot) ? (int)wb1 : draw_bot;
-                    if (t <= b) { occ_top[occ_count] = t; occ_bot[occ_count] = b; occ_count++; }
-                }
+            int16_t wt0 = wall_clip->top[screen_col];
+            int16_t wb0 = wall_clip->bot[screen_col];
+            int32_t wz0 = wall_clip->z[screen_col];
+            if (wz0 > 0 && wt0 <= wb0 && z32 >= wz0) {
+                int t = (wt0 > draw_top) ? (int)wt0 : draw_top;
+                int b = (wb0 < draw_bot) ? (int)wb0 : draw_bot;
+                if (t <= b) { occ_top[occ_count] = t; occ_bot[occ_count] = b; occ_count++; }
+            }
+            int16_t wt1 = wall_clip->top2[screen_col];
+            int16_t wb1 = wall_clip->bot2[screen_col];
+            int32_t wz1 = wall_clip->z2[screen_col];
+            if (wz1 > 0 && wt1 <= wb1 && z32 >= wz1) {
+                int t = (wt1 > draw_top) ? (int)wt1 : draw_top;
+                int b = (wb1 < draw_bot) ? (int)wb1 : draw_bot;
+                if (t <= b) { occ_top[occ_count] = t; occ_bot[occ_count] = b; occ_count++; }
+            }
+
+            if (occ_count == 0) {
+                seg_top[0] = draw_top;
+                seg_bot[0] = draw_bot;
+                seg_count = 1;
+            } else {
                 if (occ_count == 2) {
                     if (occ_top[1] < occ_top[0]) {
                         int t = occ_top[0]; int b = occ_bot[0];
@@ -7929,28 +7998,28 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                         occ_count = 1;
                     }
                 }
-            }
 
-            /* Build visible segments by subtracting merged occluders from
-             * [draw_top, draw_bot]. */
-            int scan_top = draw_top;
-            for (int i = 0; i < occ_count; i++) {
-                int ot = occ_top[i];
-                int ob = occ_bot[i];
-                if (ob < scan_top) continue;
-                if (ot > draw_bot) break;
-                if (ot > scan_top && seg_count < 3) {
+                /* Build visible segments by subtracting merged occluders from
+                 * [draw_top, draw_bot]. */
+                int scan_top = draw_top;
+                for (int i = 0; i < occ_count; i++) {
+                    int ot = occ_top[i];
+                    int ob = occ_bot[i];
+                    if (ob < scan_top) continue;
+                    if (ot > draw_bot) break;
+                    if (ot > scan_top && seg_count < 3) {
+                        seg_top[seg_count] = scan_top;
+                        seg_bot[seg_count] = ot - 1;
+                        seg_count++;
+                    }
+                    if (ob >= scan_top) scan_top = ob + 1;
+                    if (scan_top > draw_bot) break;
+                }
+                if (scan_top <= draw_bot && seg_count < 3) {
                     seg_top[seg_count] = scan_top;
-                    seg_bot[seg_count] = ot - 1;
+                    seg_bot[seg_count] = draw_bot;
                     seg_count++;
                 }
-                if (ob >= scan_top) scan_top = ob + 1;
-                if (scan_top > draw_bot) break;
-            }
-            if (scan_top <= draw_bot && seg_count < 3) {
-                seg_top[seg_count] = scan_top;
-                seg_bot[seg_count] = draw_bot;
-                seg_count++;
             }
         }
         if (profile_collect_stats) {
@@ -7974,31 +8043,86 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                 int col_top = seg_top[si];
                 int col_bot = seg_bot[si];
                 if (col_top > col_bot) continue;
-                int32_t row_fp = (int32_t)(col_top - sy) * src_row_step;
+                int row_lut_idx = col_top - draw_top;
                 size_t pix = (size_t)col_top * rw_stride + (size_t)screen_col;
                 size_t pix_cw = renderer_cw_index_xy(screen_col, col_top, rw, rh);
-                for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
-                    int src_row = row_fp >> 16;
-                    row_fp += src_row_step;
-                    if (src_row >= eff_rows) src_row = eff_rows - 1;
-                    if (have_spill_plane_depth_clip &&
-                        renderer_spill_pixel_occluded_by_zone_planes(screen_row,
-                                                                      center_y,
-                                                                      z32,
-                                                                      zone_top_rel_8,
-                                                                      zone_bot_rel_8,
-                                                                      ignore_spill_top_plane,
-                                                                      g_renderer.proj_y_scale)) {
-                        if (profile_collect_stats) sprite_spill_occluded_rows_total++;
-                        pix += rw_stride;
-                        pix_cw += cw_step_y;
-                        continue;
+                if (fast_common_no_spill) {
+                    const int *row_src_ptr = row_src_lut + row_lut_idx;
+                    if (!need_src_row_bounds) {
+                        if (use_col_texel_lut) {
+                            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                                const int src_row = *row_src_ptr++;
+                                const uint8_t texel = col_texel_lut[src_row];
+                                if (texel != 0) {
+                                    if (profile_collect_stats) sprite_opaque_writes_total++;
+                                    rgb[pix] = spr_rgb[texel];
+                                    cw[pix_cw] = spr_cw[texel];
+                                }
+                                pix += rw_stride;
+                                pix_cw += cw_step_y;
+                            }
+                        } else {
+                            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                                const int src_row = *row_src_ptr++;
+                                const int src_byte = src_row << 1;
+                                const uint16_t w = (uint16_t)((src_base[src_byte] << 8) | src_base[src_byte + 1]);
+                                const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
+                                if (texel != 0) {
+                                    if (profile_collect_stats) sprite_opaque_writes_total++;
+                                    rgb[pix] = spr_rgb[texel];
+                                    cw[pix_cw] = spr_cw[texel];
+                                }
+                                pix += rw_stride;
+                                pix_cw += cw_step_y;
+                            }
+                        }
+                    } else {
+                        if (use_col_texel_lut) {
+                            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                                const int src_row = *row_src_ptr++;
+                                if (src_row <= max_src_row_col) {
+                                    const uint8_t texel = col_texel_lut[src_row];
+                                    if (texel != 0) {
+                                        if (profile_collect_stats) sprite_opaque_writes_total++;
+                                        rgb[pix] = spr_rgb[texel];
+                                        cw[pix_cw] = spr_cw[texel];
+                                    }
+                                }
+                                pix += rw_stride;
+                                pix_cw += cw_step_y;
+                            }
+                        } else {
+                            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                                const int src_row = *row_src_ptr++;
+                                if (src_row <= max_src_row_col) {
+                                    const int src_byte = src_row << 1;
+                                    const uint16_t w = (uint16_t)((src_base[src_byte] << 8) | src_base[src_byte + 1]);
+                                    const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
+                                    if (texel != 0) {
+                                        if (profile_collect_stats) sprite_opaque_writes_total++;
+                                        rgb[pix] = spr_rgb[texel];
+                                        cw[pix_cw] = spr_cw[texel];
+                                    }
+                                }
+                                pix += rw_stride;
+                                pix_cw += cw_step_y;
+                            }
+                        }
                     }
-                    if (pick_player && pick_player_id) pick_player[pix] = pick_player_id;
-                    {
-                        const int row_idx = down_strip_i + src_row;
-                        if (row_idx <= max_row_idx) {
-                            const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
+                } else {
+                    for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                        const int src_row = row_src_lut[row_lut_idx];
+                        if (have_spill_plane_depth_clip && spill_row_occluded_lut[row_lut_idx]) {
+                            if (profile_collect_stats) sprite_spill_occluded_rows_total++;
+                            pix += rw_stride;
+                            pix_cw += cw_step_y;
+                            row_lut_idx++;
+                            continue;
+                        }
+                        if (have_pick) pick_player[pix] = pick_player_id;
+                        if (!need_src_row_bounds || src_row <= max_src_row_col) {
+                            const int src_byte = src_row << 1;
+                            const uint16_t w = (uint16_t)((src_base[src_byte] << 8) | src_base[src_byte + 1]);
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
                                 if (profile_collect_stats) sprite_opaque_writes_total++;
@@ -8011,9 +8135,10 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                 }
                             }
                         }
+                        pix += rw_stride;
+                        pix_cw += cw_step_y;
+                        row_lut_idx++;
                     }
-                    pix += rw_stride;
-                    pix_cw += cw_step_y;
                 }
             }
         } else {
@@ -8021,40 +8146,92 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                 int col_top = seg_top[si];
                 int col_bot = seg_bot[si];
                 if (col_top > col_bot) continue;
-                int32_t row_fp = (int32_t)(col_top - sy) * src_row_step;
+                int row_lut_idx = col_top - draw_top;
                 size_t pix = (size_t)col_top * rw_stride + (size_t)screen_col;
                 size_t pix_cw = renderer_cw_index_xy(screen_col, col_top, rw, rh);
-                for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
-                    int src_row = row_fp >> 16;
-                    row_fp += src_row_step;
-                    if (src_row >= eff_rows) src_row = eff_rows - 1;
-                    if (have_spill_plane_depth_clip &&
-                        renderer_spill_pixel_occluded_by_zone_planes(screen_row,
-                                                                      center_y,
-                                                                      z32,
-                                                                      zone_top_rel_8,
-                                                                      zone_bot_rel_8,
-                                                                      ignore_spill_top_plane,
-                                                                      g_renderer.proj_y_scale)) {
-                        if (profile_collect_stats) sprite_spill_occluded_rows_total++;
-                        pix += rw_stride;
-                        pix_cw += cw_step_y;
-                        continue;
+                if (fast_common_no_spill) {
+                    const int *row_src_ptr = row_src_lut + row_lut_idx;
+                    if (!need_src_row_bounds) {
+                        if (use_col_texel_lut) {
+                            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                                const int src_row = *row_src_ptr++;
+                                const uint8_t texel = col_texel_lut[src_row];
+                                if (texel != 0) {
+                                    if (profile_collect_stats) sprite_opaque_writes_total++;
+                                    cw[pix_cw] = spr_cw[texel];
+                                }
+                                pix += rw_stride;
+                                pix_cw += cw_step_y;
+                            }
+                        } else {
+                            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                                const int src_row = *row_src_ptr++;
+                                const int src_byte = src_row << 1;
+                                const uint16_t w = (uint16_t)((src_base[src_byte] << 8) | src_base[src_byte + 1]);
+                                const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
+                                if (texel != 0) {
+                                    if (profile_collect_stats) sprite_opaque_writes_total++;
+                                    cw[pix_cw] = spr_cw[texel];
+                                }
+                                pix += rw_stride;
+                                pix_cw += cw_step_y;
+                            }
+                        }
+                    } else {
+                        if (use_col_texel_lut) {
+                            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                                const int src_row = *row_src_ptr++;
+                                if (src_row <= max_src_row_col) {
+                                    const uint8_t texel = col_texel_lut[src_row];
+                                    if (texel != 0) {
+                                        if (profile_collect_stats) sprite_opaque_writes_total++;
+                                        cw[pix_cw] = spr_cw[texel];
+                                    }
+                                }
+                                pix += rw_stride;
+                                pix_cw += cw_step_y;
+                            }
+                        } else {
+                            for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                                const int src_row = *row_src_ptr++;
+                                if (src_row <= max_src_row_col) {
+                                    const int src_byte = src_row << 1;
+                                    const uint16_t w = (uint16_t)((src_base[src_byte] << 8) | src_base[src_byte + 1]);
+                                    const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
+                                    if (texel != 0) {
+                                        if (profile_collect_stats) sprite_opaque_writes_total++;
+                                        cw[pix_cw] = spr_cw[texel];
+                                    }
+                                }
+                                pix += rw_stride;
+                                pix_cw += cw_step_y;
+                            }
+                        }
                     }
-                    if (pick_player && pick_player_id) pick_player[pix] = pick_player_id;
-                    {
-                        const int row_idx = down_strip_i + src_row;
-                        if (row_idx <= max_row_idx) {
-                            const uint16_t w = (uint16_t)((src[row_idx * 2] << 8) | src[row_idx * 2 + 1]);
+                } else {
+                    for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
+                        const int src_row = row_src_lut[row_lut_idx];
+                        if (have_spill_plane_depth_clip && spill_row_occluded_lut[row_lut_idx]) {
+                            if (profile_collect_stats) sprite_spill_occluded_rows_total++;
+                            pix += rw_stride;
+                            pix_cw += cw_step_y;
+                            row_lut_idx++;
+                            continue;
+                        }
+                        if (have_pick) pick_player[pix] = pick_player_id;
+                        if (!need_src_row_bounds || src_row <= max_src_row_col) {
+                            const int src_byte = src_row << 1;
+                            const uint16_t w = (uint16_t)((src_base[src_byte] << 8) | src_base[src_byte + 1]);
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
                                 if (profile_collect_stats) sprite_opaque_writes_total++;
                                 cw[pix_cw] = spill_visualize ? spill_vis_cw : spr_cw[texel];
                             }
                         }
+                        pix += rw_stride;
+                        pix_cw += cw_step_y;
+                        row_lut_idx++;
                     }
-                    pix += rw_stride;
-                    pix_cw += cw_step_y;
                 }
             }
         }
