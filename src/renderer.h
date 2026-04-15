@@ -356,6 +356,10 @@ void renderer_request_zone_trace(void);
 void renderer_request_center_pick_capture(void);
 /* Picking buffer query: returns center-pixel zone id and player id (0 = none). */
 void renderer_get_center_pick(int16_t *out_zone_id, int *out_player_id);
+/* Emit one-shot F2 debug summary for the last captured frame (zones/walls/sprites/overdraw). */
+void renderer_log_f2_pick_debug(const GameState *state,
+                                int16_t standing_zone,
+                                int16_t looking_zone);
 /* Automap: change world-units-per-pixel (PgUp = zoom in, PgDn = zoom out). */
 void renderer_automap_adjust_scale(int delta_steps);
 /* Stable dedupe key for one seen wall segment (stored as key+1; 0 reserved empty). */

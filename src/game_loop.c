@@ -542,8 +542,7 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
             PlayerState *view_plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
             int16_t looking_zone = -1;
             renderer_get_center_pick(&looking_zone, NULL);
-            printf("[DEBUG][F2] standing_zone=%d looking_zone=%d\n",
-                   (int)view_plr->zone, (int)looking_zone);
+            renderer_log_f2_pick_debug(state, view_plr->zone, looking_zone);
             level_log_zones(&state->level);
             level_log_player_zone_full(state);
             level_log_zone_full(&state->level, looking_zone, "looking");

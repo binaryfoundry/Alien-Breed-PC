@@ -345,6 +345,24 @@ typedef struct {
 } RendererWorkloadStats;
 
 typedef struct {
+    int valid;
+    uint32_t frame_idx;
+    int width;
+    int height;
+    double frame_ms;
+    int prepass_total_zones;
+    int prepass_valid_zones;
+    int zones_drawn;
+    int zones_drawn_lower;
+    int zones_drawn_upper;
+    int zone_draw_order_count;
+    int16_t zone_draw_order[RENDERER_MAX_ZONE_ORDER];
+    RendererWorkloadStats workload;
+} RendererF2PickSnapshot;
+
+static RendererF2PickSnapshot g_renderer_f2_pick_snapshot;
+
+typedef struct {
     int active;
     int zone_id;
     int entry_index;
@@ -4141,6 +4159,133 @@ void renderer_get_center_pick(int16_t *out_zone_id, int *out_player_id)
             *out_player_id = (int)g_pick_player_back_buffer[idx];
         }
     }
+}
+
+static double renderer_percent_u64(uint64_t part, uint64_t whole)
+{
+    if (whole == 0) return 0.0;
+    return ((double)part * 100.0) / (double)whole;
+}
+
+void renderer_log_f2_pick_debug(const GameState *state,
+                                int16_t standing_zone,
+                                int16_t looking_zone)
+{
+    const RendererF2PickSnapshot *snap = &g_renderer_f2_pick_snapshot;
+    const PlayerState *view_plr = (state && state->mode == MODE_SLAVE) ? &state->plr2 : (state ? &state->plr1 : NULL);
+    int level_1_indexed = state ? ((state->current_level >= 0) ? ((int)state->current_level + 1) : -1) : -1;
+    int player_x = view_plr ? (int)(view_plr->xoff >> 16) : 0;
+    int player_y = view_plr ? (int)(view_plr->yoff >> 8) : 0;
+    int player_z = view_plr ? (int)(view_plr->zoff >> 16) : 0;
+    int player_x_raw = view_plr ? (int)view_plr->xoff : 0;
+    int player_y_raw = view_plr ? (int)view_plr->yoff : 0;
+    int player_z_raw = view_plr ? (int)view_plr->zoff : 0;
+    int fps_hud = state ? (int)state->fps_display : 0;
+    double frame_ms = snap->valid ? snap->frame_ms : 0.0;
+    uint64_t wall_px = 0;
+    uint64_t dry_floor_px = 0;
+    uint64_t sprite_alpha_drop = 0;
+    uint64_t writes = 0;
+    uint64_t screen_px = 0;
+    double overdraw = 0.0;
+    double fps_frame = (frame_ms > 0.0) ? (1000.0 / frame_ms) : 0.0;
+
+            printf("[DEBUG][F2] level=%d standing_zone=%d looking_zone=%d player_xyz=(%d,%d,%d) player_raw=(%d,%d,%d) fps_hud=%d fps_frame=%.1f frame_ms=%.3f\n",
+            level_1_indexed,
+           (int)standing_zone,
+           (int)looking_zone,
+            player_x,
+            player_y,
+            player_z,
+                player_x_raw,
+                player_y_raw,
+                player_z_raw,
+           fps_hud,
+           fps_frame,
+           frame_ms);
+
+    if (!snap->valid) {
+        printf("[DEBUG][F2] renderer snapshot unavailable\n");
+        fflush(stdout);
+        return;
+    }
+
+    wall_px = snap->workload.wall_pixels_core +
+              snap->workload.wall_pixels_side_ext +
+              snap->workload.wall_pixels_cap_ext;
+    dry_floor_px = (snap->workload.floor_pixels >= snap->workload.water_pixels)
+        ? (snap->workload.floor_pixels - snap->workload.water_pixels)
+        : 0;
+    sprite_alpha_drop = (snap->workload.sprite_pixels_tested >= snap->workload.sprite_pixels_drawn)
+        ? (snap->workload.sprite_pixels_tested - snap->workload.sprite_pixels_drawn)
+        : 0;
+    writes = renderer_workload_estimated_writes(&snap->workload);
+    screen_px = (uint64_t)(snap->width > 0 ? snap->width : 0) *
+                (uint64_t)(snap->height > 0 ? snap->height : 0);
+    overdraw = (screen_px > 0) ? ((double)writes / (double)screen_px) : 0.0;
+
+    printf("[DEBUG][F2] frame=%u size=%dx%d zones_drawn=%d (lower_passes=%d upper_passes=%d) prepass_valid=%d prepass_total=%d\n",
+           (unsigned)snap->frame_idx,
+           snap->width,
+           snap->height,
+           snap->zones_drawn,
+           snap->zones_drawn_lower,
+           snap->zones_drawn_upper,
+           snap->prepass_valid_zones,
+           snap->prepass_total_zones);
+
+    if (snap->zone_draw_order_count > 0) {
+        printf("[DEBUG][F2] zones_draw_order[%d]:", snap->zone_draw_order_count);
+        for (int i = 0; i < snap->zone_draw_order_count; i++) {
+            printf((i == 0) ? " %d" : ",%d", (int)snap->zone_draw_order[i]);
+        }
+        printf("\n");
+    } else {
+        printf("[DEBUG][F2] zones_draw_order[0]: none\n");
+    }
+
+    printf("[DEBUG][F2] walls segments=%llu columns=%llu pixels(core=%llu side_ext=%llu cap_ext=%llu total=%llu)\n",
+           (unsigned long long)snap->workload.wall_segments,
+           (unsigned long long)snap->workload.wall_columns,
+           (unsigned long long)snap->workload.wall_pixels_core,
+           (unsigned long long)snap->workload.wall_pixels_side_ext,
+           (unsigned long long)snap->workload.wall_pixels_cap_ext,
+           (unsigned long long)wall_px);
+
+    printf("[DEBUG][F2] billboards calls=%llu columns=%llu visible_rows=%llu tested_rows=%llu drawn_px=%llu wall_occluded_rows=%llu spill_occluded_rows=%llu alpha_drop=%llu\n",
+           (unsigned long long)snap->workload.sprite_calls,
+           (unsigned long long)snap->workload.sprite_columns,
+           (unsigned long long)snap->workload.sprite_pixels_visible,
+           (unsigned long long)snap->workload.sprite_pixels_tested,
+           (unsigned long long)snap->workload.sprite_pixels_drawn,
+           (unsigned long long)snap->workload.sprite_pixels_wall_occluded,
+           (unsigned long long)snap->workload.sprite_pixels_spill_occluded,
+           (unsigned long long)sprite_alpha_drop);
+
+    printf("[DEBUG][F2] spill breakdown tested=%.1f%% of visible spill_occ=%.1f%% of visible wall_occ=%.1f%% of visible alpha_drop=%.1f%% of tested drawn=%.1f%% of tested (%.1f%% of visible)\n",
+           renderer_percent_u64(snap->workload.sprite_pixels_tested,
+                                snap->workload.sprite_pixels_visible),
+           renderer_percent_u64(snap->workload.sprite_pixels_spill_occluded,
+                                snap->workload.sprite_pixels_visible),
+           renderer_percent_u64(snap->workload.sprite_pixels_wall_occluded,
+                                snap->workload.sprite_pixels_visible),
+           renderer_percent_u64(sprite_alpha_drop,
+                                snap->workload.sprite_pixels_tested),
+           renderer_percent_u64(snap->workload.sprite_pixels_drawn,
+                                snap->workload.sprite_pixels_tested),
+           renderer_percent_u64(snap->workload.sprite_pixels_drawn,
+                                snap->workload.sprite_pixels_visible));
+
+    printf("[DEBUG][F2] overdraw writes=%llu screen_px=%llu overdraw=%.2fx write_mix(wall=%.1f%% floor=%.1f%% sprite=%.1f%%) floor(dry=%llu water=%llu)\n",
+           (unsigned long long)writes,
+           (unsigned long long)screen_px,
+           overdraw,
+           renderer_percent_u64(wall_px, writes),
+           renderer_percent_u64(snap->workload.floor_pixels, writes),
+           renderer_percent_u64(snap->workload.sprite_pixels_drawn, writes),
+           (unsigned long long)dry_floor_px,
+           (unsigned long long)snap->workload.water_pixels);
+    fflush(stdout);
 }
 
 int renderer_get_width(void)  { return g_renderer.width; }
@@ -10804,17 +10949,60 @@ static AB3D_ATTR_UNUSED int zone_stream_has_explicit_roof_polygon(const uint8_t 
     return 0;
 }
 
+#define ZONE_STREAM_ENTRY_TYPE_CACHE_SIZE 256u
+
+typedef struct {
+    const uint8_t *gfx_data;
+    int16_t want_type;
+    uint16_t sig0;
+    uint16_t sig1;
+    uint8_t valid;
+    uint8_t result;
+} ZoneStreamEntryTypeCacheEntry;
+
+/* Per-thread cache: this lookup runs in hot zone loops (including worker threads). */
+static AB3D_THREAD_LOCAL ZoneStreamEntryTypeCacheEntry
+    g_zone_stream_entry_type_cache[ZONE_STREAM_ENTRY_TYPE_CACHE_SIZE];
+
+static inline unsigned zone_stream_entry_type_cache_slot(const uint8_t *gfx_data, int16_t want_type)
+{
+    uintptr_t k = (uintptr_t)gfx_data;
+    k ^= (uintptr_t)((uint32_t)(uint16_t)want_type * 0x9E3779B1u);
+    k ^= (k >> 11);
+    return (unsigned)(k & (ZONE_STREAM_ENTRY_TYPE_CACHE_SIZE - 1u));
+}
+
 static int zone_stream_has_entry_type(const uint8_t *gfx_data, int16_t want_type)
 {
+    unsigned slot;
+    uint16_t sig0;
+    uint16_t sig1;
+
     if (!gfx_data) return 0;
+
+    /* Small signature guards against stale cache hits if allocator reuses an address. */
+    sig0 = (uint16_t)rd16(gfx_data + 0);
+    sig1 = (uint16_t)rd16(gfx_data + 2);
+    slot = zone_stream_entry_type_cache_slot(gfx_data, want_type);
+    {
+        ZoneStreamEntryTypeCacheEntry *ce = &g_zone_stream_entry_type_cache[slot];
+        if (ce->valid && ce->gfx_data == gfx_data &&
+            ce->want_type == want_type && ce->sig0 == sig0 && ce->sig1 == sig1) {
+            return ce->result ? 1 : 0;
+        }
+    }
 
     const uint8_t *scan = gfx_data + 2;
     int scan_iter = 500;
+    int found = 0;
     while (scan_iter-- > 0) {
         int16_t t = rd16(scan);
         scan += 2;
         if (t < 0) break;
-        if (t == want_type) return 1;
+        if (t == want_type) {
+            found = 1;
+            break;
+        }
 
         {
             size_t skip = zone_gfx_entry_data_skip(t, scan);
@@ -10825,7 +11013,18 @@ static int zone_stream_has_entry_type(const uint8_t *gfx_data, int16_t want_type
             scan += skip;
         }
     }
-    return 0;
+
+    {
+        ZoneStreamEntryTypeCacheEntry *ce = &g_zone_stream_entry_type_cache[slot];
+        ce->gfx_data = gfx_data;
+        ce->want_type = want_type;
+        ce->sig0 = sig0;
+        ce->sig1 = sig1;
+        ce->valid = 1;
+        ce->result = (uint8_t)(found ? 1 : 0);
+    }
+
+    return found;
 }
 
 /* Rasterize a floor-outline polygon at zone_roof height as a sky ceiling.
@@ -11220,7 +11419,6 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
     int has_door_wall_list = (level->door_wall_list && level->door_wall_list_offsets && level->num_doors > 0);
     int has_lift_wall_list = (level->lift_wall_list && level->lift_wall_list_offsets && level->num_lifts > 0);
     int current_stream_has_object_entries = zone_stream_has_entry_type(gfx_data, 4);
-    int other_stream_has_object_entries = zone_stream_has_entry_type(other_gfx_data, 4);
     int is_multi_floor_zone = (other_gfx_data != NULL);
     int fallback_object_pass = (!current_stream_has_object_entries && !has_split_water) ? 1 : 0;
 
@@ -12676,6 +12874,9 @@ void renderer_draw_display(GameState *state)
     int trace_clip = 0;
     g_pick_capture_armed = 0;
     g_pick_capture_active = pick_this_frame;
+    if (pick_this_frame) {
+        g_renderer_f2_pick_snapshot.valid = 0;
+    }
     if (!r->buffer) {
         g_renderer_zone_trace_active = 0;
         g_renderer_profile_collect_stats = 0;
@@ -12687,6 +12888,7 @@ void renderer_draw_display(GameState *state)
         return;
     }
     int prof_on = renderer_profile_env_enabled() ? renderer_profile_enabled() : 0;
+    uint64_t frame_perf_freq = 0;
     uint64_t t0 = 0;
     uint64_t t_after_setup = 0;
     uint64_t t_after_world = 0;
@@ -12698,12 +12900,21 @@ void renderer_draw_display(GameState *state)
     int prepass_total_zones = 0;
     int prepass_valid_zones = 0;
     int prepass_clip_pixels = 0;
+    int prepass_draw_zones = 0;
+    int prepass_draw_lower = 0;
+    int prepass_draw_upper = 0;
+    int prepass_draw_order_count = 0;
+    int16_t prepass_draw_order[RENDERER_MAX_ZONE_ORDER];
     RendererWorkloadStats world_workload_stats;
     renderer_workload_stats_reset(&world_workload_stats);
-    if (prof_on) t0 = SDL_GetPerformanceCounter();
+    if (prof_on || pick_this_frame) {
+        frame_perf_freq = SDL_GetPerformanceFrequency();
+        if (frame_perf_freq == 0) frame_perf_freq = 1;
+        t0 = SDL_GetPerformanceCounter();
+    }
     uint32_t frame_idx = g_render_frame_counter++;
     g_renderer_zone_trace_active = 0;
-    g_renderer_profile_collect_stats = prof_on ? 1 : 0;
+    g_renderer_profile_collect_stats = (prof_on || pick_this_frame) ? 1 : 0;
 
     /* 1. Projection setup.
      * Horizontal projection uses a normalized logical width so supersampling changes
@@ -12816,7 +13027,7 @@ void renderer_draw_display(GameState *state)
             trace_clip = 1;
             renderer_consume_clip_trace_slot();
         }
-        g_renderer_profile_collect_stats = (prof_on || zone_trace) ? 1 : 0;
+        g_renderer_profile_collect_stats = (prof_on || zone_trace || pick_this_frame) ? 1 : 0;
         if (trace_clip) {
             printf("[CLIP][frame %u] begin\n", (unsigned)frame_idx);
         }
@@ -12827,17 +13038,23 @@ void renderer_draw_display(GameState *state)
     renderer_rotate_object_pts(state);
     RendererWorldZonePrepass world_zone_prepass;
     renderer_build_world_zone_prepass(state, frame_idx, trace_clip, &world_zone_prepass);
-    if (prof_on) {
-        prepass_total_zones = world_zone_prepass.count;
-        if (prepass_total_zones < 0) prepass_total_zones = 0;
-        if (prepass_total_zones > RENDERER_MAX_ZONE_ORDER) prepass_total_zones = RENDERER_MAX_ZONE_ORDER;
-        for (int i = 0; i < prepass_total_zones; i++) {
-            if (!world_zone_prepass.valid[i]) continue;
-            prepass_valid_zones++;
-            {
-                int wclip = (int)world_zone_prepass.right_px[i] - (int)world_zone_prepass.left_px[i];
-                if (wclip > 0) prepass_clip_pixels += wclip;
+    prepass_total_zones = world_zone_prepass.count;
+    if (prepass_total_zones < 0) prepass_total_zones = 0;
+    if (prepass_total_zones > RENDERER_MAX_ZONE_ORDER) prepass_total_zones = RENDERER_MAX_ZONE_ORDER;
+    for (int i = 0; i < prepass_total_zones; i++) {
+        if (!world_zone_prepass.valid[i]) continue;
+        prepass_valid_zones++;
+        if (world_zone_prepass.lower_clip[i].valid) prepass_draw_lower++;
+        if (world_zone_prepass.upper_clip[i].valid) prepass_draw_upper++;
+        if (world_zone_prepass.lower_clip[i].valid || world_zone_prepass.upper_clip[i].valid) {
+            prepass_draw_zones++;
+            if (prepass_draw_order_count < RENDERER_MAX_ZONE_ORDER) {
+                prepass_draw_order[prepass_draw_order_count++] = world_zone_prepass.zone_ids[i];
             }
+        }
+        {
+            int wclip = (int)world_zone_prepass.right_px[i] - (int)world_zone_prepass.left_px[i];
+            if (wclip > 0) prepass_clip_pixels += wclip;
         }
     }
     if (zone_trace) {
@@ -12918,10 +13135,39 @@ void renderer_draw_display(GameState *state)
     g_pick_last_frame_valid = pick_this_frame;
     g_pick_capture_active = 0;
 
+    uint64_t frame_end_counter = 0;
+    double frame_ms = 0.0;
+    if (prof_on || pick_this_frame) {
+        frame_end_counter = SDL_GetPerformanceCounter();
+        if (t0 > 0 && frame_end_counter >= t0) {
+            frame_ms = ((double)(frame_end_counter - t0) * 1000.0) / (double)frame_perf_freq;
+        }
+    }
+
+    if (pick_this_frame) {
+        g_renderer_f2_pick_snapshot.valid = 1;
+        g_renderer_f2_pick_snapshot.frame_idx = frame_idx;
+        g_renderer_f2_pick_snapshot.width = w;
+        g_renderer_f2_pick_snapshot.height = h;
+        g_renderer_f2_pick_snapshot.frame_ms = frame_ms;
+        g_renderer_f2_pick_snapshot.prepass_total_zones = prepass_total_zones;
+        g_renderer_f2_pick_snapshot.prepass_valid_zones = prepass_valid_zones;
+        g_renderer_f2_pick_snapshot.zones_drawn = prepass_draw_zones;
+        g_renderer_f2_pick_snapshot.zones_drawn_lower = prepass_draw_lower;
+        g_renderer_f2_pick_snapshot.zones_drawn_upper = prepass_draw_upper;
+        g_renderer_f2_pick_snapshot.zone_draw_order_count = prepass_draw_order_count;
+        if (prepass_draw_order_count > 0) {
+            memcpy(g_renderer_f2_pick_snapshot.zone_draw_order,
+                   prepass_draw_order,
+                   (size_t)prepass_draw_order_count * sizeof(int16_t));
+        }
+        g_renderer_f2_pick_snapshot.workload = world_workload_stats;
+    }
+
     /* Automap is drawn via SDL in display.c after the frame is composited. */
     if (prof_on) {
         RendererProfileState *ps = &g_renderer_profile;
-        t_after_swap = SDL_GetPerformanceCounter();
+        t_after_swap = frame_end_counter ? frame_end_counter : SDL_GetPerformanceCounter();
         ps->frames++;
         if (used_threaded_world) ps->threaded_world_frames++;
         if (used_threaded_tint) ps->threaded_tint_frames++;
