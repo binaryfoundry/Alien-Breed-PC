@@ -9386,6 +9386,7 @@ static int renderer_resolve_sprite_zone_draw_clip(const RenderSliceContext *ctx,
                                                   int16_t zone_id,
                                                   int32_t section_top_world,
                                                   int32_t section_bot_world,
+                                                  int ignore_sky_top_clip,
                                                   int16_t *out_left,
                                                   int16_t *out_right,
                                                   int32_t *out_top_world,
@@ -9428,7 +9429,7 @@ static int renderer_resolve_sprite_zone_draw_clip(const RenderSliceContext *ctx,
     *out_right = draw_right;
     *out_top_world = zone_roof;
     *out_bot_world = zone_floor;
-    *out_ignore_top = (zone_roof < 0) ? 1 : 0;
+    *out_ignore_top = ignore_sky_top_clip ? 1 : 0;
     return 1;
 }
 
@@ -9532,7 +9533,6 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                   int level_filter, int allow_adjacent_spill,
                                   int ignore_sky_top_clip)
 {
-    (void)ignore_sky_top_clip;
     RendererState *r = &g_renderer;
     LevelState *level = &state->level;
     if (!level->object_data || !level->object_points) return;
@@ -9631,10 +9631,16 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         int draw_ignore_top = 0;
         if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, zone_id,
                                                     top_of_room, bot_of_room,
+                                                    ignore_sky_top_clip,
                                                     &draw_clip_left, &draw_clip_right,
                                                     &draw_zone_top, &draw_zone_bot,
                                                     &draw_ignore_top)) {
             continue;
+        }
+        if (!in_this_zone && level_filter == 0 && obj_on_upper) {
+            /* Lower-pass spill can legitimately show upper neighbors through openings.
+             * Keep top plane open for this cross-section spill path only. */
+            draw_ignore_top = 1;
         }
 
         ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
@@ -9762,10 +9768,14 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int draw_ignore_top = 0;
             if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, zone_id,
                                                         top_of_room, bot_of_room,
+                                                        ignore_sky_top_clip,
                                                         &draw_clip_left, &draw_clip_right,
                                                         &draw_zone_top, &draw_zone_bot,
                                                         &draw_ignore_top)) {
                 continue;
+            }
+            if (!in_this_zone && level_filter == 0 && shot_on_upper) {
+                draw_ignore_top = 1;
             }
             ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
             if (orp->z <= ROT_Z_FROM_INT(SPRITE_NEAR_CLIP_Z)) continue;
@@ -9883,10 +9893,14 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int draw_ignore_top = 0;
             if (!renderer_resolve_sprite_zone_draw_clip(ctx, state, zone_id,
                                                         top_of_room, bot_of_room,
+                                                        ignore_sky_top_clip,
                                                         &draw_clip_left, &draw_clip_right,
                                                         &draw_zone_top, &draw_zone_bot,
                                                         &draw_ignore_top)) {
                 continue;
+            }
+            if (!in_this_zone && level_filter == 0 && expl_on_upper) {
+                draw_ignore_top = 1;
             }
 
             int16_t dx = (int16_t)(state->explosions[ei].x - cam_x);
@@ -11419,6 +11433,12 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
     int has_door_wall_list = (level->door_wall_list && level->door_wall_list_offsets && level->num_doors > 0);
     int has_lift_wall_list = (level->lift_wall_list && level->lift_wall_list_offsets && level->num_lifts > 0);
     int current_stream_has_object_entries = zone_stream_has_entry_type(gfx_data, 4);
+    int zone_backdrop_flag = (rd16(zone_data + ZONE_OFF_BACK) != 0);
+    int stream_has_backdrop_marker = zone_stream_has_entry_type(gfx_data, 12);
+    if (!stream_has_backdrop_marker && other_gfx_data) {
+        stream_has_backdrop_marker = zone_stream_has_entry_type(other_gfx_data, 12);
+    }
+    int zone_open_sky = ((zone_roof < 0) && (zone_backdrop_flag || stream_has_backdrop_marker)) ? 1 : 0;
     int is_multi_floor_zone = (other_gfx_data != NULL);
     int fallback_object_pass = (!current_stream_has_object_entries && !has_split_water) ? 1 : 0;
 
@@ -12212,7 +12232,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
             int is_multi_floor = (zone_upper_gfx > 0) &&
                                  (level->graphics_byte_count == 0 ||
                                   ((size_t)zone_upper_gfx + 2u <= level->graphics_byte_count));
-            int ignore_sky_top_clip = (zone_roof < 0) ? 1 : 0;
+            int ignore_sky_top_clip = (zone_open_sky && obj_top == zone_roof) ? 1 : 0;
             int allow_adjacent_spill = 0;
             if (!has_split_water) {
                 /* In non-water rooms the before-water/full-room object clips collapse
@@ -12350,7 +12370,7 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
         }
 
         if (fallback_object_pass) {
-            int ignore_sky_top_clip = (zone_roof < 0) ? 1 : 0;
+            int ignore_sky_top_clip = zone_open_sky;
             draw_zone_objects_ctx(ctx, state, zone_id, zone_roof, zone_floor,
                                   is_multi_floor_zone ? (use_upper ? 1 : 0) : -1,
                                   1,
