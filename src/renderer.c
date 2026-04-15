@@ -560,6 +560,21 @@ static int renderer_resolve_lgr_entry_zone_id(const LevelState *level, int16_t e
 /* Forward decls used by early helpers (defined later). */
 static uint32_t amiga12_to_argb(uint16_t c12);
 static int renderer_zone_contains_point(const LevelState *level, int16_t zone_id, int32_t x, int32_t z);
+static int renderer_zone_clip_segment_to_dx_ranges(const LevelState *level,
+                                                   int16_t zone_id,
+                                                   int32_t seg_x0,
+                                                   int32_t seg_z0,
+                                                   int32_t seg_x1,
+                                                   int32_t seg_z1,
+                                                   int width,
+                                                   int clip_dx_start,
+                                                   int clip_dx_end,
+                                                   int *out_dx_start,
+                                                   int *out_dx_end,
+                                                   int max_ranges);
+
+#define RENDERER_GEOM_CLIP_MAX_T_VALUES 1024
+#define RENDERER_GEOM_CLIP_MAX_SPANS    256
 
 /* -----------------------------------------------------------------------
  * Automap (seen wall list + raster)
@@ -8170,13 +8185,14 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     const int sx = screen_x - width / 2;
     const int sy = screen_y - height / 2;
 
-    /* --- Horizontal clipping (early-out before palette build) --- */
-    int clip_left = (int)clip_left_sx;
-    int clip_right = (int)clip_right_sx;
-    if (clip_left < (int)ctx->left_clip) clip_left = (int)ctx->left_clip;
-    if (clip_right > (int)ctx->right_clip) clip_right = (int)ctx->right_clip;
+    /* --- Horizontal span (thread slice + screen bounds) --- */
+    int clip_left = (int)ctx->left_clip;
+    int clip_right = (int)ctx->right_clip;
+    if ((int)clip_left_sx > clip_left) clip_left = (int)clip_left_sx;
+    if ((int)clip_right_sx < clip_right) clip_right = (int)clip_right_sx;
     if (clip_left < 0) clip_left = 0;
     if (clip_right > rw) clip_right = rw;
+
     int col_start = (sx > clip_left) ? sx : clip_left;
     if (col_start < 0) col_start = 0;
     const int dx_start = col_start - sx;
@@ -8279,8 +8295,134 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
         (!have_pick) ? 1 : 0;
     const int have_geometric_zone_clip =
         (geom_clip_level && geom_clip_zone >= 0 && billboard_world_w > 0 && width > 0) ? 1 : 0;
-    const int64_t billboard_world_w64 = (billboard_world_w > 0) ? (int64_t)billboard_world_w : 1;
-    const int64_t billboard_world_den = (int64_t)width * 2;
+    int geom_dx_starts[RENDERER_GEOM_CLIP_MAX_SPANS];
+    int geom_dx_ends[RENDERER_GEOM_CLIP_MAX_SPANS];
+    int geom_dx_count = 1;
+    int geom_dx_idx = 0;
+
+    geom_dx_starts[0] = dx_start;
+    geom_dx_ends[0] = dx_end;
+    if (have_geometric_zone_clip) {
+        int32_t half_span_world = billboard_world_w / 2;
+        int64_t off_x64;
+        int64_t off_z64;
+        int32_t seg_x0;
+        int32_t seg_z0;
+        int32_t seg_x1;
+        int32_t seg_z1;
+
+        if (half_span_world < 1) half_span_world = 1;
+        off_x64 = ((int64_t)billboard_view_right_x * (int64_t)half_span_world) / 16384;
+        off_z64 = ((int64_t)billboard_view_right_z * (int64_t)half_span_world) / 16384;
+        if (off_x64 == 0 && off_z64 == 0) {
+            if (billboard_view_right_x != 0) {
+                off_x64 = (billboard_view_right_x > 0) ? 1 : -1;
+            } else if (billboard_view_right_z != 0) {
+                off_z64 = (billboard_view_right_z > 0) ? 1 : -1;
+            } else {
+                off_x64 = 1;
+            }
+        }
+
+        seg_x0 = (int32_t)((int64_t)billboard_world_x - off_x64);
+        seg_z0 = (int32_t)((int64_t)billboard_world_z - off_z64);
+        seg_x1 = (int32_t)((int64_t)billboard_world_x + off_x64);
+        seg_z1 = (int32_t)((int64_t)billboard_world_z + off_z64);
+
+        geom_dx_count = renderer_zone_clip_segment_to_dx_ranges(geom_clip_level,
+                                                                geom_clip_zone,
+                                                                seg_x0, seg_z0,
+                                                                seg_x1, seg_z1,
+                                                                width,
+                                                                0,
+                                                                width,
+                                                                geom_dx_starts,
+                                                                geom_dx_ends,
+                                                                RENDERER_GEOM_CLIP_MAX_SPANS);
+        if (geom_dx_count <= 0) {
+            if (profile_collect_stats) {
+                int total_rows = draw_bot - draw_top + 1;
+                if (total_rows > 0) {
+                    sprite_wall_occluded_rows_total += (uint64_t)total_rows * (uint64_t)(dx_end - dx_start);
+                }
+            }
+            return;
+        }
+
+        /* Spill-only post-clip margin expansion: apply after geometric
+         * clipping so ownership is geometry-derived while keeping texcoords
+         * unchanged (src_col mapping still uses original dx range). */
+        if (is_spill && geom_dx_count > 0) {
+            const int spill_margin_percent = 30;
+            int merged_count = 0;
+
+            for (int gi = 0; gi < geom_dx_count; gi++) {
+                int s = geom_dx_starts[gi];
+                int e = geom_dx_ends[gi];
+                int run = e - s;
+                int extra;
+
+                if (run <= 0) continue;
+
+                extra = (run * spill_margin_percent + 99) / 100;
+                if (extra < 1) extra = 1;
+
+                s -= extra;
+                e += extra;
+                if (s < dx_start) s = dx_start;
+                if (e > dx_end) e = dx_end;
+                if (e <= s) continue;
+
+                if (merged_count > 0 && s <= geom_dx_ends[merged_count - 1]) {
+                    if (e > geom_dx_ends[merged_count - 1]) {
+                        geom_dx_ends[merged_count - 1] = e;
+                    }
+                } else if (merged_count < RENDERER_GEOM_CLIP_MAX_SPANS) {
+                    geom_dx_starts[merged_count] = s;
+                    geom_dx_ends[merged_count] = e;
+                    merged_count++;
+                }
+            }
+
+            if (merged_count > 0) {
+                geom_dx_count = merged_count;
+            }
+        }
+
+        /* Intersect geometric ranges with this worker slice after all geometric
+         * adjustments so threaded and single-thread paths produce identical
+         * ownership at slice boundaries. */
+        {
+            int sliced_count = 0;
+            for (int gi = 0; gi < geom_dx_count; gi++) {
+                int s = geom_dx_starts[gi];
+                int e = geom_dx_ends[gi];
+                if (s < dx_start) s = dx_start;
+                if (e > dx_end) e = dx_end;
+                if (e <= s) continue;
+
+                if (sliced_count > 0 && s <= geom_dx_ends[sliced_count - 1]) {
+                    if (e > geom_dx_ends[sliced_count - 1]) {
+                        geom_dx_ends[sliced_count - 1] = e;
+                    }
+                } else {
+                    geom_dx_starts[sliced_count] = s;
+                    geom_dx_ends[sliced_count] = e;
+                    sliced_count++;
+                }
+            }
+            geom_dx_count = sliced_count;
+            if (geom_dx_count <= 0) {
+                if (profile_collect_stats) {
+                    int total_rows = draw_bot - draw_top + 1;
+                    if (total_rows > 0) {
+                        sprite_wall_occluded_rows_total += (uint64_t)total_rows * (uint64_t)(dx_end - dx_start);
+                    }
+                }
+                return;
+            }
+        }
+    }
 
     /* Fixed-point 16.16 DDA stepping (replaces per-pixel integer division). */
     const int32_t src_col_step = (width > 1)
@@ -8315,16 +8457,10 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
         if ((uint32_t)src_col >= max_ptr_col) src_col = (int)(max_ptr_col - 1);
 
         if (have_geometric_zone_clip) {
-            int64_t col_num = ((int64_t)dx * 2 + 1 - (int64_t)width) * billboard_world_w64;
-            int64_t lateral_off = (billboard_world_den != 0) ? (col_num / billboard_world_den) : 0;
-            int64_t wx64 = (int64_t)billboard_world_x +
-                           ((int64_t)billboard_view_right_x * lateral_off) / 16384;
-            int64_t wz64 = (int64_t)billboard_world_z +
-                           ((int64_t)billboard_view_right_z * lateral_off) / 16384;
-            if (!renderer_zone_contains_point(geom_clip_level,
-                                              geom_clip_zone,
-                                              (int32_t)wx64,
-                                              (int32_t)wz64)) {
+            while (geom_dx_idx < geom_dx_count && dx >= geom_dx_ends[geom_dx_idx]) {
+                geom_dx_idx++;
+            }
+            if (geom_dx_idx >= geom_dx_count || dx < geom_dx_starts[geom_dx_idx]) {
                 if (profile_collect_stats) {
                     int total_rows = draw_bot - draw_top + 1;
                     if (total_rows > 0)
@@ -9309,7 +9445,13 @@ static int renderer_billboard_lateral_hits_adj_lines(const LevelState *level,
         int64_t off_x64 = ((int64_t)view_right_x * (int64_t)half_span_world) / 16384;
         int64_t off_z64 = ((int64_t)view_right_z * (int64_t)half_span_world) / 16384;
         if (off_x64 == 0 && off_z64 == 0) {
-            off_x64 = (view_right_x >= 0) ? 1 : -1;
+            if (view_right_x != 0) {
+                off_x64 = (view_right_x > 0) ? 1 : -1;
+            } else if (view_right_z != 0) {
+                off_z64 = (view_right_z > 0) ? 1 : -1;
+            } else {
+                off_x64 = 1;
+            }
         }
 
         int32_t sx1 = (int32_t)((int64_t)px - off_x64);
@@ -9429,6 +9571,190 @@ static int renderer_zone_contains_point(const LevelState *level, int16_t zone_id
         if (edges == 0) return 0;
         return inside;
     }
+}
+
+static void renderer_geom_clip_add_t_unique(double *vals, int *io_count, int max_vals, double t)
+{
+    const double eps = 1e-9;
+    int count;
+    if (!vals || !io_count || max_vals <= 0) return;
+
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
+
+    count = *io_count;
+    if (count < 0) count = 0;
+    if (count > max_vals) count = max_vals;
+
+    for (int i = 0; i < count; i++) {
+        if (fabs(vals[i] - t) <= eps) return;
+    }
+
+    if (count >= max_vals) return;
+    vals[count] = t;
+    *io_count = count + 1;
+}
+
+static int renderer_zone_clip_segment_to_dx_ranges(const LevelState *level,
+                                                   int16_t zone_id,
+                                                   int32_t seg_x0,
+                                                   int32_t seg_z0,
+                                                   int32_t seg_x1,
+                                                   int32_t seg_z1,
+                                                   int width,
+                                                   int clip_dx_start,
+                                                   int clip_dx_end,
+                                                   int *out_dx_start,
+                                                   int *out_dx_end,
+                                                   int max_ranges)
+{
+    const double eps = 1e-9;
+    const uint8_t *list;
+    size_t data_len;
+    double t_vals[RENDERER_GEOM_CLIP_MAX_T_VALUES];
+    int t_count = 0;
+    int out_count = 0;
+
+    if (!level || !level->data || !level->zone_adds || !level->floor_lines) return 0;
+    if (!out_dx_start || !out_dx_end || max_ranges <= 0) return 0;
+    if (width <= 0 || clip_dx_end <= clip_dx_start) return 0;
+
+    list = renderer_zone_exit_list_ptr(level, zone_id);
+    if (!list) return 0;
+    data_len = level->data_byte_count;
+
+    renderer_geom_clip_add_t_unique(t_vals, &t_count, RENDERER_GEOM_CLIP_MAX_T_VALUES, 0.0);
+    renderer_geom_clip_add_t_unique(t_vals, &t_count, RENDERER_GEOM_CLIP_MAX_T_VALUES, 1.0);
+
+    for (int i = 0; i < 256; i++) {
+        if (data_len != 0) {
+            size_t list_off = (size_t)(list - level->data) + (size_t)i * 2u;
+            if (list_off + 2u > data_len)
+                break;
+        }
+
+        {
+            int16_t entry = rd16(list + (size_t)i * 2u);
+            if (entry == -2)
+                break;
+            if (entry < 0)
+                continue;
+            if ((int32_t)entry >= level->num_floor_lines)
+                continue;
+
+            {
+                const uint8_t *fl = level->floor_lines + (size_t)(uint16_t)entry * RENDERER_FLINE_SIZE;
+                int32_t ex0 = rd16(fl + RENDERER_FLINE_X_OFF);
+                int32_t ez0 = rd16(fl + RENDERER_FLINE_Z_OFF);
+                int32_t ex1 = ex0 + rd16(fl + RENDERER_FLINE_XLEN_OFF);
+                int32_t ez1 = ez0 + rd16(fl + RENDERER_FLINE_ZLEN_OFF);
+
+                if (!renderer_segments_intersect_i32(seg_x0, seg_z0, seg_x1, seg_z1,
+                                                     ex0, ez0, ex1, ez1)) {
+                    continue;
+                }
+
+                {
+                    double sdx = (double)seg_x1 - (double)seg_x0;
+                    double sdz = (double)seg_z1 - (double)seg_z0;
+                    double edx = (double)ex1 - (double)ex0;
+                    double edz = (double)ez1 - (double)ez0;
+                    double denom = sdx * edz - sdz * edx;
+
+                    if (fabs(denom) > eps) {
+                        double nx = (double)ex0 - (double)seg_x0;
+                        double nz = (double)ez0 - (double)seg_z0;
+                        double t = (nx * edz - nz * edx) / denom;
+                        renderer_geom_clip_add_t_unique(t_vals, &t_count,
+                                                        RENDERER_GEOM_CLIP_MAX_T_VALUES,
+                                                        t);
+                    } else {
+                        int64_t o0 = renderer_orient2d_i64(seg_x0, seg_z0, seg_x1, seg_z1, ex0, ez0);
+                        int64_t o1 = renderer_orient2d_i64(seg_x0, seg_z0, seg_x1, seg_z1, ex1, ez1);
+                        if (o0 == 0 && o1 == 0) {
+                            if (llabs((long long)seg_x1 - (long long)seg_x0) >=
+                                llabs((long long)seg_z1 - (long long)seg_z0)) {
+                                int64_t denom_i = (int64_t)seg_x1 - (int64_t)seg_x0;
+                                if (denom_i != 0) {
+                                    double t0 = ((double)ex0 - (double)seg_x0) / (double)denom_i;
+                                    double t1 = ((double)ex1 - (double)seg_x0) / (double)denom_i;
+                                    renderer_geom_clip_add_t_unique(t_vals, &t_count,
+                                                                    RENDERER_GEOM_CLIP_MAX_T_VALUES,
+                                                                    t0);
+                                    renderer_geom_clip_add_t_unique(t_vals, &t_count,
+                                                                    RENDERER_GEOM_CLIP_MAX_T_VALUES,
+                                                                    t1);
+                                }
+                            } else {
+                                int64_t denom_i = (int64_t)seg_z1 - (int64_t)seg_z0;
+                                if (denom_i != 0) {
+                                    double t0 = ((double)ez0 - (double)seg_z0) / (double)denom_i;
+                                    double t1 = ((double)ez1 - (double)seg_z0) / (double)denom_i;
+                                    renderer_geom_clip_add_t_unique(t_vals, &t_count,
+                                                                    RENDERER_GEOM_CLIP_MAX_T_VALUES,
+                                                                    t0);
+                                    renderer_geom_clip_add_t_unique(t_vals, &t_count,
+                                                                    RENDERER_GEOM_CLIP_MAX_T_VALUES,
+                                                                    t1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (int i = 1; i < t_count; i++) {
+        double v = t_vals[i];
+        int j = i - 1;
+        while (j >= 0 && t_vals[j] > v) {
+            t_vals[j + 1] = t_vals[j];
+            j--;
+        }
+        t_vals[j + 1] = v;
+    }
+
+    for (int i = 0; i + 1 < t_count; i++) {
+        double a = t_vals[i];
+        double b = t_vals[i + 1];
+        double mid;
+        int32_t mx;
+        int32_t mz;
+        int sx;
+        int ex;
+
+        if (b - a <= eps) continue;
+
+        mid = (a + b) * 0.5;
+        mx = (int32_t)llround((double)seg_x0 + ((double)seg_x1 - (double)seg_x0) * mid);
+        mz = (int32_t)llround((double)seg_z0 + ((double)seg_z1 - (double)seg_z0) * mid);
+        if (!renderer_zone_contains_point(level, zone_id, mx, mz)) continue;
+
+        sx = (int)floor(a * (double)width);
+        ex = (int)ceil(b * (double)width);
+
+        if (sx < 0) sx = 0;
+        if (ex > width) ex = width;
+        if (sx < clip_dx_start) sx = clip_dx_start;
+        if (ex > clip_dx_end) ex = clip_dx_end;
+        if (ex <= sx) continue;
+
+        if (out_count > 0 && sx <= out_dx_end[out_count - 1]) {
+            if (ex > out_dx_end[out_count - 1])
+                out_dx_end[out_count - 1] = ex;
+            continue;
+        }
+
+        if (out_count >= max_ranges) {
+            break;
+        }
+        out_dx_start[out_count] = sx;
+        out_dx_end[out_count] = ex;
+        out_count++;
+    }
+
+    return out_count;
 }
 
 static void renderer_append_boundary_lines_between_zones(const LevelState *level,
@@ -9795,18 +10121,6 @@ static int renderer_resolve_sprite_zone_draw_clip(const RenderSliceContext *ctx,
 
     int16_t draw_left = ctx->left_clip;
     int16_t draw_right = ctx->right_clip;
-    {
-        int16_t zl = 0, zr = 0;
-        int have_zone_clip = renderer_lookup_zone_prepass_clip_span(ctx, zone_id, &zl, &zr);
-        if (!have_zone_clip) {
-            have_zone_clip = renderer_compute_zone_clip_span(state, zone_id,
-                                                             0u, 0, &zl, &zr);
-        }
-        if (have_zone_clip) {
-            if (zl > draw_left) draw_left = zl;
-            if (zr < draw_right) draw_right = zr;
-        }
-    }
     if (draw_left >= draw_right) return 0;
 
     int32_t zone_roof = section_top_world;
@@ -9910,10 +10224,17 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
     RendererAdjZone adj_zones[RENDERER_MAX_ADJ_ZONES];
     int16_t adj_lines[RENDERER_MAX_ADJ_LINES];
     int adj_zone_count = 0;
+    int adj_line_total = 0;
     if (allow_adjacent_spill) {
         adj_zone_count = renderer_collect_adjacent_zone_sources(ctx, state, zone_id,
                                                                 adj_zones, RENDERER_MAX_ADJ_ZONES,
                                                                 adj_lines, RENDERER_MAX_ADJ_LINES);
+        if (adj_zone_count > 0) {
+            int last = adj_zone_count - 1;
+            adj_line_total = adj_zones[last].line_start + adj_zones[last].line_count;
+            if (adj_line_total < 0) adj_line_total = 0;
+            if (adj_line_total > RENDERER_MAX_ADJ_LINES) adj_line_total = RENDERER_MAX_ADJ_LINES;
+        }
     }
 
     /* Build one depth-sorted list for sprites and particles so painter order is consistent. */
@@ -10055,8 +10376,22 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         objs[obj_count].source_zone = obj_zone;
         objs[obj_count].draw_zone = zone_id;
         {
-            int16_t geom_zone = in_this_zone ? obj_zone : zone_id;
-            if (geom_zone < 0) geom_zone = zone_id;
+            int16_t geom_zone = in_this_zone ? -1 : zone_id;
+            if (in_this_zone) {
+                int32_t ox = rd16(level->object_points + (size_t)(uint16_t)pt_num * 8u + 0u);
+                int32_t oz = rd16(level->object_points + (size_t)(uint16_t)pt_num * 8u + 4u);
+                int32_t half_span = spill_world_w / 2;
+                if (half_span < 1) half_span = 1;
+                if (adj_line_total > 0 &&
+                    renderer_billboard_lateral_hits_adj_lines(level,
+                                                               ox, oz,
+                                                               half_span,
+                                                               r->cosval, (int16_t)-r->sinval,
+                                                               adj_lines,
+                                                               adj_line_total)) {
+                    geom_zone = obj_zone;
+                }
+            }
             objs[obj_count].geom_clip_zone = geom_zone;
         }
         objs[obj_count].ignore_top_clip = (uint8_t)(draw_ignore_top ? 1 : 0);
@@ -10149,8 +10484,22 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             objs[obj_count].source_zone = shot_zone;
             objs[obj_count].draw_zone = zone_id;
             {
-                int16_t geom_zone = in_this_zone ? shot_zone : zone_id;
-                if (geom_zone < 0) geom_zone = zone_id;
+                int16_t geom_zone = in_this_zone ? -1 : zone_id;
+                if (in_this_zone) {
+                    int32_t ox = rd16(level->object_points + (size_t)(uint16_t)pt_num * 8u + 0u);
+                    int32_t oz = rd16(level->object_points + (size_t)(uint16_t)pt_num * 8u + 4u);
+                    int32_t half_span = spill_world_w / 2;
+                    if (half_span < 1) half_span = 1;
+                    if (adj_line_total > 0 &&
+                        renderer_billboard_lateral_hits_adj_lines(level,
+                                                                   ox, oz,
+                                                                   half_span,
+                                                                   r->cosval, (int16_t)-r->sinval,
+                                                                   adj_lines,
+                                                                   adj_line_total)) {
+                        geom_zone = shot_zone;
+                    }
+                }
                 objs[obj_count].geom_clip_zone = geom_zone;
             }
             objs[obj_count].ignore_top_clip = (uint8_t)(draw_ignore_top ? 1 : 0);
@@ -10252,8 +10601,24 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             objs[obj_count].source_zone = expl_zone;
             objs[obj_count].draw_zone = zone_id;
             {
-                int16_t geom_zone = in_this_zone ? expl_zone : zone_id;
-                if (geom_zone < 0) geom_zone = zone_id;
+                int16_t geom_zone = in_this_zone ? -1 : zone_id;
+                if (in_this_zone) {
+                    int local_expl_w = 100;
+                    int32_t half_span;
+                    renderer_get_explosion_frame_and_world_size(state, ei, NULL, &local_expl_w, NULL);
+                    half_span = (local_expl_w * EXPLOSION_SIZE_CORRECTION) / 2;
+                    if (half_span < 1) half_span = 1;
+                    if (adj_line_total > 0 &&
+                        renderer_billboard_lateral_hits_adj_lines(level,
+                                                                   (int32_t)state->explosions[ei].x,
+                                                                   (int32_t)state->explosions[ei].z,
+                                                                   half_span,
+                                                                   r->cosval, (int16_t)-r->sinval,
+                                                                   adj_lines,
+                                                                   adj_line_total)) {
+                        geom_zone = expl_zone;
+                    }
+                }
                 objs[obj_count].geom_clip_zone = geom_zone;
             }
             objs[obj_count].ignore_top_clip = (uint8_t)(draw_ignore_top ? 1 : 0);
