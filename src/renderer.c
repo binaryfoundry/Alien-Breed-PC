@@ -174,7 +174,6 @@ static inline void renderer_cw_store_xy(uint16_t *cw, int x, int y, int width, i
 
 /* Sprite row caches for renderer_draw_sprite_ctx hot path (per-thread). */
 static AB3D_THREAD_LOCAL int g_sprite_src_row_lut[RENDER_INTERNAL_MAX_DIM];
-static AB3D_THREAD_LOCAL uint8_t g_sprite_spill_row_occluded_lut[RENDER_INTERNAL_MAX_DIM];
 static AB3D_THREAD_LOCAL uint8_t g_sprite_col_texel_lut[256];
 
 /* Floor/ceiling UV step per pixel: d1>>FLOOR_STEP_SHIFT (same at any width so texture scale is correct). */
@@ -8085,35 +8084,6 @@ static int renderer_draw_floor_columns_ctx_fast(RenderSliceContext *ctx,
 #endif
 }
 
-static inline int renderer_spill_pixel_occluded_by_zone_planes(int screen_row,
-                                                                int center_y,
-                                                                int32_t sprite_z,
-                                                                int32_t zone_top_rel_8,
-                                                                int32_t zone_bot_rel_8,
-                                                                int ignore_top_clip,
-                                                                int32_t proj_y_scale)
-{
-    int row_dist = screen_row - center_y;
-    if (row_dist > 0 && zone_bot_rel_8 > 0) {
-        int32_t z_floor = (int32_t)(((int64_t)zone_bot_rel_8 *
-                                     (int64_t)proj_y_scale *
-                                     (int64_t)RENDER_SCALE +
-                                     (int64_t)(row_dist / 2)) /
-                                    (int64_t)row_dist);
-        if (z_floor > 0 && sprite_z > z_floor) return 1;
-    } else if (row_dist < 0 && !ignore_top_clip && zone_top_rel_8 < 0) {
-        int32_t ad = -row_dist;
-        int32_t rel = -zone_top_rel_8;
-        int32_t z_roof = (int32_t)(((int64_t)rel *
-                                    (int64_t)proj_y_scale *
-                                    (int64_t)RENDER_SCALE +
-                                    (int64_t)(ad / 2)) /
-                                   (int64_t)ad);
-        if (z_roof > 0 && sprite_z > z_roof) return 1;
-    }
-    return 0;
-}
-
 /* -----------------------------------------------------------------------
  * Sprite rendering
  *
@@ -8151,6 +8121,8 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                      int32_t clip_top_sy, int32_t clip_bot_sy,
                                      int is_spill)
 {
+    (void)clip_top_world;
+    (void)clip_bot_world;
     (void)sprite_type;
     uint32_t *rgb = renderer_active_rgb();
     uint16_t *cw = renderer_active_cw();
@@ -8267,16 +8239,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     const size_t cw_step_y = renderer_cw_step_y(rw);
     const int down_strip_i = (int)down_strip;
     const int32_t z32 = (int32_t)z;
-    const int center_y = rh / 2;
-    const int ignore_spill_top_plane = (is_spill && clip_top_sy == INT32_MIN) ? 1 : 0;
-    int have_spill_plane_depth_clip = 0;
-    int32_t zone_top_rel_8 = 0;
-    int32_t zone_bot_rel_8 = 0;
-    if (is_spill) {
-        zone_top_rel_8 = (clip_top_world - g_renderer.yoff) >> WORLD_Y_FRAC_BITS;
-        zone_bot_rel_8 = (clip_bot_world - g_renderer.yoff) >> WORLD_Y_FRAC_BITS;
-        have_spill_plane_depth_clip = 1;
-    }
     const int spill_visualize = (is_spill && g_debug_spill_visualize) ? 1 : 0;
     const uint16_t spill_vis_cw = 0x0F0Fu;
     const uint32_t spill_vis_rgb = amiga12_to_argb(spill_vis_cw);
@@ -8286,7 +8248,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     const int have_pick = (pick_player && pick_player_id) ? 1 : 0;
     const int mark_sprite_pick_zone_none = (g_debug_spill_visualize && pick_zone) ? 1 : 0;
     const int fast_common_no_spill =
-        (!have_spill_plane_depth_clip && !have_pick) ? 1 : 0;
+        (!have_pick) ? 1 : 0;
 
     /* Fixed-point 16.16 DDA stepping (replaces per-pixel integer division). */
     const int32_t src_col_step = (width > 1)
@@ -8304,23 +8266,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
             row_fp_lut += src_row_step;
             if (src_row >= eff_rows) src_row = eff_rows - 1;
             row_src_lut[row_i] = src_row;
-        }
-    }
-
-    uint8_t *spill_row_occluded_lut = g_sprite_spill_row_occluded_lut;
-    if (have_spill_plane_depth_clip) {
-        for (int row_i = 0; row_i < draw_row_count; row_i++) {
-            int screen_row = draw_top + row_i;
-            spill_row_occluded_lut[row_i] =
-                (uint8_t)(renderer_spill_pixel_occluded_by_zone_planes(screen_row,
-                                                                        center_y,
-                                                                        z32,
-                                                                        zone_top_rel_8,
-                                                                        zone_bot_rel_8,
-                                                                        ignore_spill_top_plane,
-                                                                        g_renderer.proj_y_scale)
-                          ? 1
-                          : 0);
         }
     }
 
@@ -8543,13 +8488,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                 } else {
                     for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
                         const int src_row = row_src_lut[row_lut_idx];
-                        if (have_spill_plane_depth_clip && spill_row_occluded_lut[row_lut_idx]) {
-                            if (profile_collect_stats) sprite_spill_occluded_rows_total++;
-                            pix += rw_stride;
-                            pix_cw += cw_step_y;
-                            row_lut_idx++;
-                            continue;
-                        }
                         if (have_pick) pick_player[pix] = pick_player_id;
                         if (!need_src_row_bounds || src_row <= max_src_row_col) {
                             const int src_byte = src_row << 1;
@@ -8647,13 +8585,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                 } else {
                     for (int screen_row = col_top; screen_row <= col_bot; screen_row++) {
                         const int src_row = row_src_lut[row_lut_idx];
-                        if (have_spill_plane_depth_clip && spill_row_occluded_lut[row_lut_idx]) {
-                            if (profile_collect_stats) sprite_spill_occluded_rows_total++;
-                            pix += rw_stride;
-                            pix_cw += cw_step_y;
-                            row_lut_idx++;
-                            continue;
-                        }
                         if (have_pick) pick_player[pix] = pick_player_id;
                         if (!need_src_row_bounds || src_row <= max_src_row_col) {
                             const int src_byte = src_row << 1;
@@ -8675,10 +8606,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     }
 
     if (profile_collect_stats) {
-        uint64_t tested_pixels = 0;
-        if (sprite_visible_rows_total > sprite_spill_occluded_rows_total) {
-            tested_pixels = sprite_visible_rows_total - sprite_spill_occluded_rows_total;
-        }
+        uint64_t tested_pixels = sprite_visible_rows_total;
         ctx->workload_stats.sprite_pixels_visible += sprite_visible_rows_total;
         ctx->workload_stats.sprite_pixels_wall_occluded += sprite_wall_occluded_rows_total;
         ctx->workload_stats.sprite_pixels_spill_occluded += sprite_spill_occluded_rows_total;
@@ -9876,7 +9804,7 @@ static int renderer_collect_adjacent_zone_sources(const RenderSliceContext *ctx,
             if (src_order >= 0 && cur_order >= 0) {
                 int d = src_order - cur_order;
                 if (d < 0) d = -d;
-                if (d <= 1) ambiguous = 1;
+                if (d <= 2) ambiguous = 1;
             }
         }
         out_adj[i].ambiguous = (uint8_t)(ambiguous ? 1 : 0);
