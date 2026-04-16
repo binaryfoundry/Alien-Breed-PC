@@ -728,10 +728,10 @@ int play_game_outer_emscripten_finish(GameState *state)
     case EM_OUTER_BR_WELLDONE:
         display_clear_screen_tint();
         printf("[MUSIC] outcome: well done\n");
-        /* Web build: after level 3 (1-indexed), loop to the first level instead of continuing. */
-        if (state->current_level == 2) {
+        /* Web build: after level 4 (1-indexed), loop to the first level instead of continuing. */
+        if (state->current_level == 3) {
             state->current_level = 0;
-            printf("[CONTROL] Web: after level 3, looping to level 0 (player state preserved)\n");
+            printf("[CONTROL] Web: after level 4, looping to level 0 (player state preserved)\n");
             return 1;
         }
         state->current_level++;

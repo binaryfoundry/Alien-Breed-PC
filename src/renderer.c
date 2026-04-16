@@ -6142,7 +6142,6 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
 
     int center = rs->height / 2;  /* Match wall/floor projection center */
     int row_dist = renderer_floor_row_dist_from_screen_y(y, center);
-    int abs_row_dist = (row_dist < 0) ? -row_dist : row_dist;
     const int use_gour = (use_gouraud != 0 && !is_water);
     /* Amiga floor distance attenuation uses 80-line screen-space row offsets (d0 around center=40). */
     int row80 = (int)(((int64_t)y * 80) / ((rs->height > 0) ? rs->height : 1));
@@ -9523,6 +9522,14 @@ typedef struct {
     int16_t line_count;
     uint8_t ambiguous;
 } RendererAdjZone;
+
+static int renderer_collect_adjacent_zone_sources(const RenderSliceContext *ctx,
+                                                  GameState *state,
+                                                  int16_t zone_id,
+                                                  RendererAdjZone *out_adj,
+                                                  int max_adj,
+                                                  int16_t *out_lines,
+                                                  int max_lines);
 
 static int renderer_zone_order_index(const GameState *state, int16_t zone_id)
 {

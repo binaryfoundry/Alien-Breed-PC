@@ -199,7 +199,7 @@
         <p><strong>Mouse:</strong> The pointer is visible until you <strong>left-click</strong> in the window to capture it (windowed or fullscreen). Press <strong>Esc</strong> once to release capture</p>
         <p><strong>Move:</strong> WASD or arrow keys; <strong>mouse</strong> turns when captured. Shift: run; C: duck; L: look behind. <strong>Fire:</strong> mouse or Alt/Ctrl; <strong>use:</strong> Space or right mouse when captured.</p>
         <p><strong>Weapons:</strong> 1–5 (or numpad); mouse wheel cycles. <strong>Tab:</strong> automap; PgUp/PgDn zoom. F5/F9 quick save/load. Save games will not currently persist between sessions.</p>
-        <p><strong>Web build:</strong> After you finish level 3, the game returns to level 1, this is a 3 level demo. <strong>F11</strong> toggles fullscreen.</p>
+        <p><strong>Web build:</strong> After you finish level 4, the game returns to level 1, this is a 4 level demo. <strong>F11</strong> toggles fullscreen.</p>
       </div>
       <div class="remote-multiplayer-tip__note">
         Audio may stay muted until you click or tap the page (browser autoplay policy).
