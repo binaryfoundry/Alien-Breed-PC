@@ -8254,6 +8254,17 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
         if (draw_top < (int)clip_top_sy) draw_top = (int)clip_top_sy;
         if (draw_bot > (int)clip_bot_sy) draw_bot = (int)clip_bot_sy;
     }
+    /* For spill sprites, world-space clip_bot_sy is projected with the sprite's Z,
+     * but the step face wall between zones is at a shorter Z (closer to camera).
+     * This causes clip_bot_sy to land too low on screen, letting the sprite bleed
+     * through the step face.  The draw zone's ctx->bot_clip is computed from the
+     * actual wall geometry during zone rendering and is always correct.  Apply it
+     * as an additional hard cap so the spill can never exceed the draw zone's
+     * screen bounds.  Apply the ceiling cap symmetrically. */
+    if (is_spill) {
+        if (draw_top < (int)ctx->top_clip) draw_top = (int)ctx->top_clip;
+        if (draw_bot > (int)ctx->bot_clip) draw_bot = (int)ctx->bot_clip;
+    }
     if (draw_top > draw_bot) return;
     const int draw_row_count = draw_bot - draw_top + 1;
     if (draw_row_count <= 0 || draw_row_count > RENDER_INTERNAL_MAX_DIM) return;
@@ -10939,9 +10950,10 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             draw_ignore_top = 1;
         }
         if (!in_this_zone) {
-            /* Clamp spill vertical clip to source zone so the sprite never
-             * extends below its home floor or above its home ceiling when
-             * drawn in an adjacent zone at a different height. */
+            /* Intersect source zone and draw zone bounds: take the more
+             * restrictive ceiling (max, less negative) and floor (min, more
+             * negative).  This prevents the sprite drawing above its home
+             * ceiling or below the draw zone's floor (the step-face smear). */
             int32_t src_top = 0, src_bot = 0;
             int src_filter = obj_on_upper ? 1 : 0;
             if (renderer_resolve_zone_section_world_bounds(level, obj_zone, src_filter, &src_top, &src_bot)) {
@@ -10949,8 +10961,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 if (src_bot < draw_zone_bot) draw_zone_bot = src_bot;
                 if (draw_zone_top >= draw_zone_bot) continue;
             }
-            /* Reject trivial slivers (e.g. pillar step zones): discard if the
-             * overlap after clamping is less than half the sprite height. */
+            /* Reject trivial slivers after intersection. */
             if ((draw_zone_bot - draw_zone_top) < ((int32_t)(spill_world_h >> 1) << WORLD_Y_FRAC_BITS))
                 continue;
         }
@@ -11060,7 +11071,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                     if (src_bot < draw_zone_bot) draw_zone_bot = src_bot;
                     if (draw_zone_top >= draw_zone_bot) continue;
                 }
-                /* Reject trivial slivers after clamping. */
+                /* Reject trivial slivers after intersection. */
                 if ((draw_zone_bot - draw_zone_top) < ((int32_t)(spill_world_h >> 1) << WORLD_Y_FRAC_BITS))
                     continue;
             }
@@ -11160,7 +11171,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                     if (src_bot < draw_zone_bot) draw_zone_bot = src_bot;
                     if (draw_zone_top >= draw_zone_bot) continue;
                 }
-                /* Reject trivial slivers after clamping. */
+                /* Reject trivial slivers after intersection. */
                 if ((draw_zone_bot - draw_zone_top) < ((int32_t)(expl_h_est >> 1) << WORLD_Y_FRAC_BITS))
                     continue;
             }
