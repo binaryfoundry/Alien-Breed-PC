@@ -9723,6 +9723,42 @@ static int renderer_segments_intersect_i32(int32_t a1x, int32_t a1z,
     return 0;
 }
 
+static int renderer_point_within_segment_radius_i32(int32_t px, int32_t pz,
+                                                    int32_t x1, int32_t z1,
+                                                    int32_t x2, int32_t z2,
+                                                    int32_t radius)
+{
+    int64_t dx = (int64_t)x2 - (int64_t)x1;
+    int64_t dz = (int64_t)z2 - (int64_t)z1;
+    int64_t vx = (int64_t)px - (int64_t)x1;
+    int64_t vz = (int64_t)pz - (int64_t)z1;
+    int64_t seg_len2 = dx * dx + dz * dz;
+    int64_t dist2;
+    int64_t r2;
+
+    if (radius < 0) radius = 0;
+
+    if (seg_len2 <= 0) {
+        dist2 = vx * vx + vz * vz;
+    } else {
+        int64_t t_num = vx * dx + vz * dz;
+        if (t_num <= 0) {
+            dist2 = vx * vx + vz * vz;
+        } else if (t_num >= seg_len2) {
+            int64_t wx = (int64_t)px - (int64_t)x2;
+            int64_t wz = (int64_t)pz - (int64_t)z2;
+            dist2 = wx * wx + wz * wz;
+        } else {
+            int64_t v2 = vx * vx + vz * vz;
+            dist2 = v2 - (t_num * t_num) / seg_len2;
+            if (dist2 < 0) dist2 = 0;
+        }
+    }
+
+    r2 = (int64_t)radius * (int64_t)radius;
+    return dist2 <= r2;
+}
+
 /* Spill criterion: use the billboard's world-space lateral segment (sprite plane
  * facing the player) and require that it intersects a boundary line shared with
  * the destination zone. */
@@ -9767,6 +9803,16 @@ static int renderer_billboard_lateral_hits_adj_lines(const LevelState *level,
                 if (renderer_segments_intersect_i32(sx1, sz1, sx2, sz2, x1, z1, x2, z2)) {
                     return 1;
                 }
+                /* Angle-robust fallback: treat the billboard as a capsule around
+                 * its centerline so near-parallel view directions still admit
+                 * valid spill when the sprite is close enough to the shared
+                 * boundary segment. */
+                if (renderer_point_within_segment_radius_i32(px, pz,
+                                                            x1, z1,
+                                                            x2, z2,
+                                                            half_span_world)) {
+                    return 1;
+                }
             }
         }
     }
@@ -9787,7 +9833,8 @@ static int renderer_billboard_crosses_zone_portal_mode(const LevelState *level,
                                                        int16_t view_right_z,
                                                        int allow_ambiguous)
 {
-    int16_t lines[16];
+    enum { RENDERER_PORTAL_CROSS_LINE_CAP = 64 };
+    int16_t lines[RENDERER_PORTAL_CROSS_LINE_CAP];
     int line_count = 0;
     int zone_slots;
     if (!level || !level->floor_lines) return allow_ambiguous ? 1 : 0;
@@ -9804,7 +9851,7 @@ static int renderer_billboard_crosses_zone_portal_mode(const LevelState *level,
             if (list_abs >= 0 &&
                 (level->data_byte_count == 0 || (size_t)list_abs + 2u <= level->data_byte_count)) {
                 const uint8_t *el = level->data + (size_t)list_abs;
-                for (int i = 0; i < 128 && line_count < 16; i++) {
+                for (int i = 0; i < 128 && line_count < RENDERER_PORTAL_CROSS_LINE_CAP; i++) {
                     int16_t entry = rd16(el + (size_t)i * 2u);
                     if (entry < 0) break;
                     if ((int32_t)entry >= level->num_floor_lines) continue;
@@ -9825,7 +9872,7 @@ static int renderer_billboard_crosses_zone_portal_mode(const LevelState *level,
             if (list_abs >= 0 &&
                 (level->data_byte_count == 0 || (size_t)list_abs + 2u <= level->data_byte_count)) {
                 const uint8_t *el = level->data + (size_t)list_abs;
-                for (int i = 0; i < 128 && line_count < 16; i++) {
+                for (int i = 0; i < 128 && line_count < RENDERER_PORTAL_CROSS_LINE_CAP; i++) {
                     int16_t entry = rd16(el + (size_t)i * 2u);
                     if (entry < 0) break;
                     if ((int32_t)entry >= level->num_floor_lines) continue;
@@ -9842,6 +9889,7 @@ static int renderer_billboard_crosses_zone_portal_mode(const LevelState *level,
     }
 
     if (line_count == 0) return allow_ambiguous ? 1 : 0;
+
     return renderer_billboard_lateral_hits_adj_lines(level,
                                                       world_x, world_z,
                                                       half_span_world,
