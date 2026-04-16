@@ -10979,10 +10979,9 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             draw_ignore_top = 1;
         }
         if (!in_this_zone) {
-            /* Intersect source zone and draw zone bounds: take the more
-             * restrictive ceiling (max, less negative) and floor (min, more
-             * negative).  This prevents the sprite drawing above its home
-             * ceiling or below the draw zone's floor (the step-face smear). */
+            /* Clamp spill vertical clip to source zone so the sprite never
+             * extends below its home floor or above its home ceiling when
+             * drawn in an adjacent zone at a different height. */
             int32_t src_top = 0, src_bot = 0;
             int src_filter = obj_on_upper ? 1 : 0;
             if (renderer_resolve_zone_section_world_bounds(level, obj_zone, src_filter, &src_top, &src_bot)) {
@@ -10990,7 +10989,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 if (src_bot < draw_zone_bot) draw_zone_bot = src_bot;
                 if (draw_zone_top >= draw_zone_bot) continue;
             }
-            /* Reject trivial slivers after intersection. */
+            /* Reject trivial slivers (e.g. pillar step zones): discard if the
+             * overlap after clamping is less than half the sprite height. */
             if ((draw_zone_bot - draw_zone_top) < ((int32_t)(spill_world_h >> 1) << WORLD_Y_FRAC_BITS))
                 continue;
         }
@@ -11102,7 +11102,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                     if (src_bot < draw_zone_bot) draw_zone_bot = src_bot;
                     if (draw_zone_top >= draw_zone_bot) continue;
                 }
-                /* Reject trivial slivers after intersection. */
+                /* Reject trivial slivers after clamping. */
                 if ((draw_zone_bot - draw_zone_top) < ((int32_t)(spill_world_h >> 1) << WORLD_Y_FRAC_BITS))
                     continue;
             }
@@ -11204,7 +11204,7 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                     if (src_bot < draw_zone_bot) draw_zone_bot = src_bot;
                     if (draw_zone_top >= draw_zone_bot) continue;
                 }
-                /* Reject trivial slivers after intersection. */
+                /* Reject trivial slivers after clamping. */
                 if ((draw_zone_bot - draw_zone_top) < ((int32_t)(expl_h_est >> 1) << WORLD_Y_FRAC_BITS))
                     continue;
             }
