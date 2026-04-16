@@ -7308,6 +7308,35 @@ static AB3D_THREAD_LOCAL int *g_floor_fast_next_top_scratch = NULL;
 static AB3D_THREAD_LOCAL int *g_floor_fast_next_bot_scratch = NULL;
 static AB3D_THREAD_LOCAL int *g_floor_fast_cov_diff_scratch = NULL;
 static AB3D_THREAD_LOCAL int g_floor_fast_col_capacity = 0;
+static AB3D_THREAD_LOCAL int16_t *g_viewer_floor_occlude_scratch = NULL;
+static AB3D_THREAD_LOCAL int g_viewer_floor_occlude_capacity = 0;
+
+static int16_t *renderer_viewer_floor_occlude_get_scratch(int width)
+{
+    int new_cap;
+    int16_t *new_buf;
+
+    if (width <= 0) return NULL;
+    if (g_viewer_floor_occlude_scratch && width <= g_viewer_floor_occlude_capacity)
+        return g_viewer_floor_occlude_scratch;
+
+    new_cap = (g_viewer_floor_occlude_capacity > 0) ? g_viewer_floor_occlude_capacity : 128;
+    while (new_cap < width) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = width;
+            break;
+        }
+        new_cap *= 2;
+    }
+
+    new_buf = (int16_t *)realloc(g_viewer_floor_occlude_scratch,
+                                 (size_t)new_cap * sizeof(*new_buf));
+    if (!new_buf) return NULL;
+
+    g_viewer_floor_occlude_scratch = new_buf;
+    g_viewer_floor_occlude_capacity = new_cap;
+    return new_buf;
+}
 
 static int renderer_floor_fast_ensure_rows_capacity(int row_count)
 {
@@ -10479,6 +10508,32 @@ static int renderer_zone_list_contains(const int16_t *zones, int count, int16_t 
     return 0;
 }
 
+#define RENDERER_CONNECTED_ZONE_CACHE_SIZE 128u
+
+typedef struct {
+    const LevelState *level;
+    const uint8_t *data;
+    const uint8_t *zone_adds;
+    const uint8_t *floor_lines;
+    int32_t num_floor_lines;
+    int16_t zone_id;
+    uint8_t valid;
+    uint8_t count;
+    int16_t zones[RENDERER_SPILL_SEARCH_MAX_NEIGHBORS];
+} RendererConnectedZoneCacheEntry;
+
+static AB3D_THREAD_LOCAL RendererConnectedZoneCacheEntry
+    g_renderer_connected_zone_cache[RENDERER_CONNECTED_ZONE_CACHE_SIZE];
+
+static inline unsigned renderer_connected_zone_cache_slot(const LevelState *level,
+                                                          int16_t zone_id)
+{
+    uintptr_t k = (uintptr_t)level;
+    k ^= (uintptr_t)((uint32_t)(uint16_t)zone_id * 0x9E3779B1u);
+    k ^= (k >> 9);
+    return (unsigned)(k & (RENDERER_CONNECTED_ZONE_CACHE_SIZE - 1u));
+}
+
 static int renderer_collect_connected_zones_fast(const LevelState *level,
                                                  int16_t zone_id,
                                                  int16_t *out_zones,
@@ -10487,8 +10542,31 @@ static int renderer_collect_connected_zones_fast(const LevelState *level,
     const uint8_t *exit_list;
     int zone_slots;
     int out_count = 0;
+    int cacheable;
+    unsigned cache_slot = 0;
+    RendererConnectedZoneCacheEntry *cache_entry = NULL;
 
     if (!level || !out_zones || max_zones <= 0 || !level->floor_lines) return 0;
+
+    cacheable = (max_zones >= RENDERER_SPILL_SEARCH_MAX_NEIGHBORS) ? 1 : 0;
+    if (cacheable) {
+        cache_slot = renderer_connected_zone_cache_slot(level, zone_id);
+        cache_entry = &g_renderer_connected_zone_cache[cache_slot];
+
+        if (cache_entry->valid &&
+            cache_entry->level == level &&
+            cache_entry->data == level->data &&
+            cache_entry->zone_adds == level->zone_adds &&
+            cache_entry->floor_lines == level->floor_lines &&
+            cache_entry->num_floor_lines == level->num_floor_lines &&
+            cache_entry->zone_id == zone_id) {
+            out_count = (int)cache_entry->count;
+            if (out_count > max_zones) out_count = max_zones;
+            if (out_count > 0)
+                memcpy(out_zones, cache_entry->zones, (size_t)out_count * sizeof(*out_zones));
+            return out_count;
+        }
+    }
 
     zone_slots = level_zone_slot_count(level);
     if (zone_slots <= 0 || zone_id < 0 || zone_id >= zone_slots) return 0;
@@ -10541,6 +10619,24 @@ static int renderer_collect_connected_zones_fast(const LevelState *level,
 
         if (!points_to_zone) continue;
         out_zones[out_count++] = (int16_t)src_zone;
+    }
+
+    if (cacheable && cache_entry) {
+        int cached_count = out_count;
+        if (cached_count < 0) cached_count = 0;
+        if (cached_count > RENDERER_SPILL_SEARCH_MAX_NEIGHBORS)
+            cached_count = RENDERER_SPILL_SEARCH_MAX_NEIGHBORS;
+
+        if (cached_count > 0)
+            memcpy(cache_entry->zones, out_zones, (size_t)cached_count * sizeof(*cache_entry->zones));
+        cache_entry->level = level;
+        cache_entry->data = level->data;
+        cache_entry->zone_adds = level->zone_adds;
+        cache_entry->floor_lines = level->floor_lines;
+        cache_entry->num_floor_lines = level->num_floor_lines;
+        cache_entry->zone_id = zone_id;
+        cache_entry->count = (uint8_t)cached_count;
+        cache_entry->valid = 1;
     }
 
     return out_count;
@@ -14441,7 +14537,7 @@ static void renderer_draw_world_slice(GameState *state,
     PlayerState *plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
     const int trace_zone = (g_renderer_zone_trace_active && cs == 0 && ce == w) ? 1 : 0;
 
-    viewer_floor_occlude_top = (int16_t *)malloc((size_t)w * sizeof(*viewer_floor_occlude_top));
+    viewer_floor_occlude_top = renderer_viewer_floor_occlude_get_scratch(w);
     if (viewer_floor_occlude_top) {
         have_viewer_floor_occlude = renderer_build_viewer_split_floor_occluder(state, plr->zone,
                                                                                (int16_t)cs, (int16_t)ce,
@@ -14541,7 +14637,6 @@ static void renderer_draw_world_slice(GameState *state,
 
     if (out_fill_screen_water) *out_fill_screen_water = frame_ctx.fill_screen_water;
     if (out_workload_stats) *out_workload_stats = frame_ctx.workload_stats;
-    free(viewer_floor_occlude_top);
 }
 
 static void renderer_apply_underwater_tint_slice(int8_t fill_screen_water,
