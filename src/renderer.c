@@ -8328,8 +8328,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     const int mark_sprite_pick_zone_none = (g_debug_spill_visualize && pick_zone) ? 1 : 0;
     const int fast_common_no_spill =
         (!have_pick) ? 1 : 0;
-    const int have_geometric_zone_clip =
-        (is_spill && geom_clip_level && geom_clip_zone >= 0 && billboard_world_w > 0 && width > 0) ? 1 : 0;
+    const int have_geometric_zone_clip = 0;
     int geom_dx_starts[RENDERER_GEOM_CLIP_MAX_SPANS];
     int geom_dx_ends[RENDERER_GEOM_CLIP_MAX_SPANS];
     double geom_t_starts[RENDERER_GEOM_CLIP_MAX_SPANS];
@@ -8536,10 +8535,69 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
             }
         }
 
-        /* Billboards are rendered with geometric zone clipping only (no per-column depth occluders). */
-        int seg_top[1], seg_bot[1], seg_count = 1;
-        seg_top[0] = draw_top;
-        seg_bot[0] = draw_bot;
+        /* Per-column wall depth occlusion: spill sprites only.
+         * Local sprites rely on painter's algorithm — spans from step-face walls
+         * in other zones get merged (min-z), which incorrectly occludes local
+         * sprites that are in front of the real wall. */
+        int seg_top[3], seg_bot[3], seg_count;
+        if (!is_spill) {
+            seg_top[0] = draw_top;
+            seg_bot[0] = draw_bot;
+            seg_count = 1;
+        } else {
+            const ColumnClip *cc = &g_renderer.clip;
+            int occ_top[2], occ_bot[2], occ_count = 0;
+
+            if (cc->z && cc->top && cc->bot &&
+                screen_col >= 0 && screen_col < rw) {
+                if (cc->z[screen_col] > 0 &&
+                    cc->top[screen_col] <= cc->bot[screen_col] &&
+                    cc->z[screen_col] < (int32_t)z) {
+                    occ_top[occ_count] = cc->top[screen_col];
+                    occ_bot[occ_count] = cc->bot[screen_col];
+                    occ_count++;
+                }
+                if (cc->z2 && cc->top2 && cc->bot2 &&
+                    cc->z2[screen_col] > 0 &&
+                    cc->top2[screen_col] <= cc->bot2[screen_col] &&
+                    cc->z2[screen_col] < (int32_t)z) {
+                    occ_top[occ_count] = cc->top2[screen_col];
+                    occ_bot[occ_count] = cc->bot2[screen_col];
+                    occ_count++;
+                }
+            }
+
+            if (occ_count == 0) {
+                seg_top[0] = draw_top;
+                seg_bot[0] = draw_bot;
+                seg_count = 1;
+            } else {
+                if (occ_count == 2 && occ_top[0] > occ_top[1]) {
+                    int tt = occ_top[0]; occ_top[0] = occ_top[1]; occ_top[1] = tt;
+                    int tb = occ_bot[0]; occ_bot[0] = occ_bot[1]; occ_bot[1] = tb;
+                }
+                if (occ_count == 2 && occ_top[1] <= occ_bot[0] + 1) {
+                    if (occ_bot[1] > occ_bot[0]) occ_bot[0] = occ_bot[1];
+                    occ_count = 1;
+                }
+                seg_count = 0;
+                int cur = draw_top;
+                for (int oi = 0; oi < occ_count; oi++) {
+                    if (cur < occ_top[oi] && seg_count < 3) {
+                        seg_top[seg_count] = cur;
+                        seg_bot[seg_count] = occ_top[oi] - 1;
+                        seg_count++;
+                    }
+                    if (occ_bot[oi] >= cur)
+                        cur = occ_bot[oi] + 1;
+                }
+                if (cur <= draw_bot && seg_count < 3) {
+                    seg_top[seg_count] = cur;
+                    seg_bot[seg_count] = draw_bot;
+                    seg_count++;
+                }
+            }
+        }
         if (profile_collect_stats) {
             int total_rows = draw_bot - draw_top + 1;
             int visible_rows = 0;
@@ -9610,6 +9668,80 @@ static int renderer_billboard_lateral_hits_adj_lines(const LevelState *level,
     }
 
     return 0;
+}
+
+/* Returns 1 if the billboard lateral segment crosses any boundary line shared
+ * between from_zone and to_zone (portals in either direction).
+ * Returns 1 (allow) if no shared boundary lines are found — ambiguous data. */
+static int renderer_billboard_crosses_zone_portal(const LevelState *level,
+                                                  int16_t from_zone,
+                                                  int16_t to_zone,
+                                                  int32_t world_x,
+                                                  int32_t world_z,
+                                                  int32_t half_span_world,
+                                                  int16_t view_right_x,
+                                                  int16_t view_right_z)
+{
+    int16_t lines[16];
+    int line_count = 0;
+    int zone_slots;
+    if (!level || !level->floor_lines) return 1;
+    zone_slots = level_zone_slot_count(level);
+    if (from_zone < 0 || from_zone >= zone_slots) return 1;
+    if (to_zone   < 0 || to_zone   >= zone_slots) return 1;
+
+    /* Walk from_zone exit list for lines connecting to to_zone. */
+    {
+        int32_t zone_off = rd32(level->zone_adds + (size_t)(uint16_t)from_zone * 4u);
+        if (zone_off >= 0 && level->data) {
+            int16_t list_rel = rd16(level->data + zone_off + RENDERER_ZONE_EXIT_LIST_OFF);
+            int64_t list_abs = (int64_t)zone_off + (int64_t)list_rel;
+            if (list_abs >= 0 &&
+                (level->data_byte_count == 0 || (size_t)list_abs + 2u <= level->data_byte_count)) {
+                const uint8_t *el = level->data + (size_t)list_abs;
+                for (int i = 0; i < 128 && line_count < 16; i++) {
+                    int16_t entry = rd16(el + (size_t)i * 2u);
+                    if (entry < 0) break;
+                    if ((int32_t)entry >= level->num_floor_lines) continue;
+                    const uint8_t *fl = level->floor_lines + (size_t)(uint16_t)entry * RENDERER_FLINE_SIZE;
+                    int16_t connect = rd16(fl + RENDERER_FLINE_CONNECT_OFF);
+                    if (level_connect_to_zone_index(level, connect) == (int)to_zone)
+                        lines[line_count++] = entry;
+                }
+            }
+        }
+    }
+    /* Walk to_zone exit list for lines connecting back to from_zone. */
+    {
+        int32_t zone_off = rd32(level->zone_adds + (size_t)(uint16_t)to_zone * 4u);
+        if (zone_off >= 0 && level->data) {
+            int16_t list_rel = rd16(level->data + zone_off + RENDERER_ZONE_EXIT_LIST_OFF);
+            int64_t list_abs = (int64_t)zone_off + (int64_t)list_rel;
+            if (list_abs >= 0 &&
+                (level->data_byte_count == 0 || (size_t)list_abs + 2u <= level->data_byte_count)) {
+                const uint8_t *el = level->data + (size_t)list_abs;
+                for (int i = 0; i < 128 && line_count < 16; i++) {
+                    int16_t entry = rd16(el + (size_t)i * 2u);
+                    if (entry < 0) break;
+                    if ((int32_t)entry >= level->num_floor_lines) continue;
+                    int dup = 0;
+                    for (int j = 0; j < line_count; j++) { if (lines[j] == entry) { dup = 1; break; } }
+                    if (dup) continue;
+                    const uint8_t *fl = level->floor_lines + (size_t)(uint16_t)entry * RENDERER_FLINE_SIZE;
+                    int16_t connect = rd16(fl + RENDERER_FLINE_CONNECT_OFF);
+                    if (level_connect_to_zone_index(level, connect) == (int)from_zone)
+                        lines[line_count++] = entry;
+                }
+            }
+        }
+    }
+
+    if (line_count == 0) return 1; /* no boundary data — allow spill */
+    return renderer_billboard_lateral_hits_adj_lines(level,
+                                                      world_x, world_z,
+                                                      half_span_world,
+                                                      view_right_x, view_right_z,
+                                                      lines, line_count);
 }
 
 static const uint8_t *renderer_zone_exit_list_ptr(const LevelState *level, int16_t zone_id)
@@ -10764,6 +10896,19 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                                   bot_of_room)) {
                 continue;
             }
+            /* Only spill if the billboard lateral segment crosses the portal. */
+            if (level->object_points && (unsigned)pt_num < (unsigned)num_pts) {
+                const uint8_t *pt_ptr = level->object_points + (size_t)(uint16_t)pt_num * 8u;
+                int32_t obj_wx = (int32_t)rd16(pt_ptr + 0);
+                int32_t obj_wz = (int32_t)rd16(pt_ptr + 4);
+                if (!renderer_billboard_crosses_zone_portal(level,
+                                                            obj_zone, zone_id,
+                                                            obj_wx, obj_wz,
+                                                            spill_world_w / 2,
+                                                            billboard_view_right_x,
+                                                            billboard_view_right_z))
+                    continue;
+            }
         }
 
         if (level_filter >= 0 && in_this_zone) {
@@ -10785,6 +10930,22 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
         }
         if (!in_this_zone && level_filter == 0 && obj_on_upper) {
             draw_ignore_top = 1;
+        }
+        if (!in_this_zone) {
+            /* Clamp spill vertical clip to source zone so the sprite never
+             * extends below its home floor or above its home ceiling when
+             * drawn in an adjacent zone at a different height. */
+            int32_t src_top = 0, src_bot = 0;
+            int src_filter = obj_on_upper ? 1 : 0;
+            if (renderer_resolve_zone_section_world_bounds(level, obj_zone, src_filter, &src_top, &src_bot)) {
+                if (src_top > draw_zone_top) draw_zone_top = src_top;
+                if (src_bot < draw_zone_bot) draw_zone_bot = src_bot;
+                if (draw_zone_top >= draw_zone_bot) continue;
+            }
+            /* Reject trivial slivers (e.g. pillar step zones): discard if the
+             * overlap after clamping is less than half the sprite height. */
+            if ((draw_zone_bot - draw_zone_top) < ((int32_t)(spill_world_h >> 1) << WORLD_Y_FRAC_BITS))
+                continue;
         }
         ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
         int is_poly_object = ((uint8_t)obj[6] == (uint8_t)OBJ_3D_SPRITE);
@@ -10851,6 +11012,18 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                                       bot_of_room)) {
                     continue;
                 }
+                if (level->object_points && (unsigned)pt_num < (unsigned)num_pts) {
+                    const uint8_t *pt_ptr = level->object_points + (size_t)(uint16_t)pt_num * 8u;
+                    int32_t shot_wx = (int32_t)rd16(pt_ptr + 0);
+                    int32_t shot_wz = (int32_t)rd16(pt_ptr + 4);
+                    if (!renderer_billboard_crosses_zone_portal(level,
+                                                                shot_zone, zone_id,
+                                                                shot_wx, shot_wz,
+                                                                spill_world_w / 2,
+                                                                billboard_view_right_x,
+                                                                billboard_view_right_z))
+                        continue;
+                }
             }
             if (level_filter >= 0 && in_this_zone) {
                 if ((level_filter == 1 && !shot_on_upper) ||
@@ -10871,6 +11044,18 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             }
             if (!in_this_zone && level_filter == 0 && shot_on_upper) {
                 draw_ignore_top = 1;
+            }
+            if (!in_this_zone) {
+                int32_t src_top = 0, src_bot = 0;
+                int src_filter = shot_on_upper ? 1 : 0;
+                if (renderer_resolve_zone_section_world_bounds(level, shot_zone, src_filter, &src_top, &src_bot)) {
+                    if (src_top > draw_zone_top) draw_zone_top = src_top;
+                    if (src_bot < draw_zone_bot) draw_zone_bot = src_bot;
+                    if (draw_zone_top >= draw_zone_bot) continue;
+                }
+                /* Reject trivial slivers after clamping. */
+                if ((draw_zone_bot - draw_zone_top) < ((int32_t)(spill_world_h >> 1) << WORLD_Y_FRAC_BITS))
+                    continue;
             }
             ObjRotatedPoint *orp = &r->obj_rotated[pt_num];
             if (orp->z <= ROT_Z_FROM_INT(SPRITE_NEAR_CLIP_Z)) continue;
@@ -10926,6 +11111,19 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                                       bot_of_room)) {
                     continue;
                 }
+                {
+                    int expl_w_est2 = 100;
+                    renderer_get_explosion_frame_and_world_size(state, ei, NULL, &expl_w_est2, NULL);
+                    int32_t half_w = (int32_t)(expl_w_est2 * EXPLOSION_SIZE_CORRECTION) / 2;
+                    if (!renderer_billboard_crosses_zone_portal(level,
+                                                                expl_zone, zone_id,
+                                                                (int32_t)state->explosions[ei].x,
+                                                                (int32_t)state->explosions[ei].z,
+                                                                half_w,
+                                                                billboard_view_right_x,
+                                                                billboard_view_right_z))
+                        continue;
+                }
             }
             if (level_filter >= 0 && in_this_zone) {
                 if ((level_filter == 1 && !expl_on_upper) ||
@@ -10946,6 +11144,18 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             }
             if (!in_this_zone && level_filter == 0 && expl_on_upper) {
                 draw_ignore_top = 1;
+            }
+            if (!in_this_zone) {
+                int32_t src_top = 0, src_bot = 0;
+                int src_filter = expl_on_upper ? 1 : 0;
+                if (renderer_resolve_zone_section_world_bounds(level, expl_zone, src_filter, &src_top, &src_bot)) {
+                    if (src_top > draw_zone_top) draw_zone_top = src_top;
+                    if (src_bot < draw_zone_bot) draw_zone_bot = src_bot;
+                    if (draw_zone_top >= draw_zone_bot) continue;
+                }
+                /* Reject trivial slivers after clamping. */
+                if ((draw_zone_bot - draw_zone_top) < ((int32_t)(expl_h_est >> 1) << WORLD_Y_FRAC_BITS))
+                    continue;
             }
             int16_t dx = (int16_t)(state->explosions[ei].x - cam_x);
             int16_t dz = (int16_t)(state->explosions[ei].z - cam_z);
