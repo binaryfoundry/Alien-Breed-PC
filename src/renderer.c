@@ -9545,6 +9545,12 @@ static int renderer_collect_adjacent_zone_sources(const RenderSliceContext *ctx,
                                                   int16_t *out_lines,
                                                   int max_lines);
 
+static int renderer_resolve_zone_section_world_bounds(const LevelState *level,
+                                                      int16_t zone_id,
+                                                      int level_filter,
+                                                      int32_t *out_top_world,
+                                                      int32_t *out_bot_world);
+
 static int renderer_zone_order_index(const GameState *state, int16_t zone_id)
 {
     if (!state || zone_id < 0) return -1;
@@ -9601,6 +9607,7 @@ static int renderer_spill_draw_still_valid(const GameState *state,
                                            int32_t sprite_w)
 {
     int allow_ambiguous = 1;
+    int strict_order = 0;
 
     if (draw_clip_left >= draw_clip_right) return 0;
 
@@ -9621,6 +9628,7 @@ static int renderer_spill_draw_still_valid(const GameState *state,
             /* Backward/in-order spills are where rare smear artifacts occur.
              * Require concrete shared-boundary data here (no fail-open). */
             allow_ambiguous = 0;
+            strict_order = 1;
         }
 
         if (half_w < 1) half_w = 1;
@@ -9632,8 +9640,40 @@ static int renderer_spill_draw_still_valid(const GameState *state,
                                                          half_w,
                                                          billboard_view_right_x,
                                                          billboard_view_right_z,
-                                                         allow_ambiguous)) {
+                                                         allow_ambiguous,
+                                                         1)) {
             return 0;
+        }
+
+        if (strict_order) {
+            int32_t src_top = 0, src_bot = 0;
+            int32_t draw_top = 0, draw_bot = 0;
+            int have_src_bounds = renderer_resolve_zone_section_world_bounds(level, source_zone, 0,
+                                                                              &src_top, &src_bot);
+            int have_draw_bounds = renderer_resolve_zone_section_world_bounds(level, draw_zone, 0,
+                                                                               &draw_top, &draw_bot);
+
+            if (have_src_bounds && have_draw_bounds) {
+                int32_t floor_delta = src_bot - draw_bot;
+                if (floor_delta < 0) floor_delta = -floor_delta;
+
+                /* For stepped-floor backward spill, capsule-only acceptance can
+                 * smear. Require true centerline boundary intersection. */
+                if (floor_delta > 1024) {
+                    if (!renderer_billboard_crosses_zone_portal_mode(level,
+                                                                     source_zone,
+                                                                     draw_zone,
+                                                                     billboard_world_x,
+                                                                     billboard_world_z,
+                                                                     half_w,
+                                                                     billboard_view_right_x,
+                                                                     billboard_view_right_z,
+                                                                     0,
+                                                                     0)) {
+                        return 0;
+                    }
+                }
+            }
         }
     }
 
@@ -9767,6 +9807,7 @@ static int renderer_billboard_lateral_hits_adj_lines(const LevelState *level,
                                                      int32_t half_span_world,
                                                      int16_t view_right_x,
                                                      int16_t view_right_z,
+                                                     int allow_near_fallback,
                                                      const int16_t *line_ids,
                                                      int line_count)
 {
@@ -9807,11 +9848,13 @@ static int renderer_billboard_lateral_hits_adj_lines(const LevelState *level,
                  * its centerline so near-parallel view directions still admit
                  * valid spill when the sprite is close enough to the shared
                  * boundary segment. */
-                if (renderer_point_within_segment_radius_i32(px, pz,
-                                                            x1, z1,
-                                                            x2, z2,
-                                                            half_span_world)) {
-                    return 1;
+                if (allow_near_fallback) {
+                    if (renderer_point_within_segment_radius_i32(px, pz,
+                                                                x1, z1,
+                                                                x2, z2,
+                                                                half_span_world)) {
+                        return 1;
+                    }
                 }
             }
         }
@@ -9831,7 +9874,8 @@ static int renderer_billboard_crosses_zone_portal_mode(const LevelState *level,
                                                        int32_t half_span_world,
                                                        int16_t view_right_x,
                                                        int16_t view_right_z,
-                                                       int allow_ambiguous)
+                                                       int allow_ambiguous,
+                                                       int allow_near_fallback)
 {
     enum { RENDERER_PORTAL_CROSS_LINE_CAP = 64 };
     int16_t lines[RENDERER_PORTAL_CROSS_LINE_CAP];
@@ -9894,6 +9938,7 @@ static int renderer_billboard_crosses_zone_portal_mode(const LevelState *level,
                                                       world_x, world_z,
                                                       half_span_world,
                                                       view_right_x, view_right_z,
+                                                      allow_near_fallback,
                                                       lines, line_count);
 }
 
@@ -9915,6 +9960,7 @@ static int renderer_billboard_crosses_zone_portal(const LevelState *level,
                                                        half_span_world,
                                                        view_right_x,
                                                        view_right_z,
+                                                       1,
                                                        1);
 }
 
@@ -10439,6 +10485,7 @@ static int renderer_collect_spill_zones_recursive(const RenderSliceContext *ctx,
                                                                                 billboard_world_w / 2,
                                                                                 billboard_view_right_x,
                                                                                 billboard_view_right_z,
+                                                                                1,
                                                                                 adj_lines + line_start,
                                                                                 line_count);
                 if (!hit_shared_boundary) {
