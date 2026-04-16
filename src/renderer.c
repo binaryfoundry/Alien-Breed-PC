@@ -9972,6 +9972,156 @@ static int renderer_billboard_lateral_hits_adj_lines(const LevelState *level,
     return 0;
 }
 
+#define RENDERER_PORTAL_CROSS_LINE_CAP 64
+#define RENDERER_PORTAL_LINE_CACHE_SIZE 128u
+
+typedef struct {
+    const LevelState *level;
+    const uint8_t *data;
+    const uint8_t *zone_adds;
+    const uint8_t *floor_lines;
+    int32_t num_floor_lines;
+    int16_t zone_a;
+    int16_t zone_b;
+    uint8_t valid;
+    uint8_t line_count;
+    int16_t lines[RENDERER_PORTAL_CROSS_LINE_CAP];
+} RendererPortalLineCacheEntry;
+
+static AB3D_THREAD_LOCAL RendererPortalLineCacheEntry
+    g_renderer_portal_line_cache[RENDERER_PORTAL_LINE_CACHE_SIZE];
+
+static inline unsigned renderer_portal_line_cache_slot(const LevelState *level,
+                                                       int16_t zone_a,
+                                                       int16_t zone_b)
+{
+    uintptr_t k = (uintptr_t)level;
+    k ^= (uintptr_t)((uint32_t)(uint16_t)zone_a * 0x9E3779B1u);
+    k ^= (uintptr_t)((uint32_t)(uint16_t)zone_b * 0x85EBCA6Bu);
+    k ^= (k >> 11);
+    return (unsigned)(k & (RENDERER_PORTAL_LINE_CACHE_SIZE - 1u));
+}
+
+static int renderer_collect_shared_portal_lines_uncached(const LevelState *level,
+                                                         int16_t zone_a,
+                                                         int16_t zone_b,
+                                                         int16_t *out_lines,
+                                                         int max_lines)
+{
+    int line_count = 0;
+
+    if (!level || !level->data || !level->zone_adds || !level->floor_lines ||
+        !out_lines || max_lines <= 0) {
+        return 0;
+    }
+
+    for (int pass = 0; pass < 2 && line_count < max_lines; pass++) {
+        int16_t src_zone = (pass == 0) ? zone_a : zone_b;
+        int16_t dst_zone = (pass == 0) ? zone_b : zone_a;
+        int32_t zone_off = rd32(level->zone_adds + (size_t)(uint16_t)src_zone * 4u);
+
+        if (zone_off < 0) continue;
+
+        {
+            int16_t list_rel = rd16(level->data + zone_off + RENDERER_ZONE_EXIT_LIST_OFF);
+            int64_t list_abs = (int64_t)zone_off + (int64_t)list_rel;
+
+            if (list_abs < 0) continue;
+            if (level->data_byte_count != 0 && (size_t)list_abs + 2u > level->data_byte_count)
+                continue;
+
+            {
+                const uint8_t *el = level->data + (size_t)list_abs;
+                for (int i = 0; i < 128 && line_count < max_lines; i++) {
+                    int16_t entry = rd16(el + (size_t)i * 2u);
+                    if (entry < 0) break;
+                    if ((int32_t)entry >= level->num_floor_lines) continue;
+
+                    {
+                        int dup = 0;
+                        for (int j = 0; j < line_count; j++) {
+                            if (out_lines[j] == entry) {
+                                dup = 1;
+                                break;
+                            }
+                        }
+                        if (dup) continue;
+                    }
+
+                    {
+                        const uint8_t *fl = level->floor_lines + (size_t)(uint16_t)entry * RENDERER_FLINE_SIZE;
+                        int16_t connect = rd16(fl + RENDERER_FLINE_CONNECT_OFF);
+                        if (level_connect_to_zone_index(level, connect) == (int)dst_zone)
+                            out_lines[line_count++] = entry;
+                    }
+                }
+            }
+        }
+    }
+
+    return line_count;
+}
+
+static int renderer_get_shared_portal_lines(const LevelState *level,
+                                            int16_t from_zone,
+                                            int16_t to_zone,
+                                            int16_t *out_lines,
+                                            int max_lines)
+{
+    int16_t zone_a = from_zone;
+    int16_t zone_b = to_zone;
+    int line_count = 0;
+    unsigned slot;
+    RendererPortalLineCacheEntry *entry;
+
+    if (!out_lines || max_lines <= 0) return 0;
+    if (!level || !level->data || !level->zone_adds || !level->floor_lines) return 0;
+
+    if (zone_a > zone_b) {
+        int16_t t = zone_a;
+        zone_a = zone_b;
+        zone_b = t;
+    }
+
+    slot = renderer_portal_line_cache_slot(level, zone_a, zone_b);
+    entry = &g_renderer_portal_line_cache[slot];
+
+    if (entry->valid &&
+        entry->level == level &&
+        entry->data == level->data &&
+        entry->zone_adds == level->zone_adds &&
+        entry->floor_lines == level->floor_lines &&
+        entry->num_floor_lines == level->num_floor_lines &&
+        entry->zone_a == zone_a &&
+        entry->zone_b == zone_b) {
+        line_count = (int)entry->line_count;
+    } else {
+        line_count = renderer_collect_shared_portal_lines_uncached(level,
+                                                                   zone_a,
+                                                                   zone_b,
+                                                                   entry->lines,
+                                                                   RENDERER_PORTAL_CROSS_LINE_CAP);
+        if (line_count < 0) line_count = 0;
+        if (line_count > RENDERER_PORTAL_CROSS_LINE_CAP)
+            line_count = RENDERER_PORTAL_CROSS_LINE_CAP;
+
+        entry->level = level;
+        entry->data = level->data;
+        entry->zone_adds = level->zone_adds;
+        entry->floor_lines = level->floor_lines;
+        entry->num_floor_lines = level->num_floor_lines;
+        entry->zone_a = zone_a;
+        entry->zone_b = zone_b;
+        entry->line_count = (uint8_t)line_count;
+        entry->valid = 1;
+    }
+
+    if (line_count > max_lines) line_count = max_lines;
+    if (line_count > 0)
+        memcpy(out_lines, entry->lines, (size_t)line_count * sizeof(*out_lines));
+    return line_count;
+}
+
 /* Returns 1 if the billboard lateral segment crosses any boundary line shared
  * between from_zone and to_zone (portals in either direction).
  * If allow_ambiguous is non-zero, missing boundary data is treated as allow. */
@@ -9986,60 +10136,20 @@ static int renderer_billboard_crosses_zone_portal_mode(const LevelState *level,
                                                        int allow_ambiguous,
                                                        int allow_near_fallback)
 {
-    enum { RENDERER_PORTAL_CROSS_LINE_CAP = 64 };
     int16_t lines[RENDERER_PORTAL_CROSS_LINE_CAP];
-    int line_count = 0;
+    int line_count;
     int zone_slots;
+
     if (!level || !level->floor_lines) return allow_ambiguous ? 1 : 0;
     zone_slots = level_zone_slot_count(level);
     if (from_zone < 0 || from_zone >= zone_slots) return allow_ambiguous ? 1 : 0;
     if (to_zone   < 0 || to_zone   >= zone_slots) return allow_ambiguous ? 1 : 0;
 
-    /* Walk from_zone exit list for lines connecting to to_zone. */
-    {
-        int32_t zone_off = rd32(level->zone_adds + (size_t)(uint16_t)from_zone * 4u);
-        if (zone_off >= 0 && level->data) {
-            int16_t list_rel = rd16(level->data + zone_off + RENDERER_ZONE_EXIT_LIST_OFF);
-            int64_t list_abs = (int64_t)zone_off + (int64_t)list_rel;
-            if (list_abs >= 0 &&
-                (level->data_byte_count == 0 || (size_t)list_abs + 2u <= level->data_byte_count)) {
-                const uint8_t *el = level->data + (size_t)list_abs;
-                for (int i = 0; i < 128 && line_count < RENDERER_PORTAL_CROSS_LINE_CAP; i++) {
-                    int16_t entry = rd16(el + (size_t)i * 2u);
-                    if (entry < 0) break;
-                    if ((int32_t)entry >= level->num_floor_lines) continue;
-                    const uint8_t *fl = level->floor_lines + (size_t)(uint16_t)entry * RENDERER_FLINE_SIZE;
-                    int16_t connect = rd16(fl + RENDERER_FLINE_CONNECT_OFF);
-                    if (level_connect_to_zone_index(level, connect) == (int)to_zone)
-                        lines[line_count++] = entry;
-                }
-            }
-        }
-    }
-    /* Walk to_zone exit list for lines connecting back to from_zone. */
-    {
-        int32_t zone_off = rd32(level->zone_adds + (size_t)(uint16_t)to_zone * 4u);
-        if (zone_off >= 0 && level->data) {
-            int16_t list_rel = rd16(level->data + zone_off + RENDERER_ZONE_EXIT_LIST_OFF);
-            int64_t list_abs = (int64_t)zone_off + (int64_t)list_rel;
-            if (list_abs >= 0 &&
-                (level->data_byte_count == 0 || (size_t)list_abs + 2u <= level->data_byte_count)) {
-                const uint8_t *el = level->data + (size_t)list_abs;
-                for (int i = 0; i < 128 && line_count < RENDERER_PORTAL_CROSS_LINE_CAP; i++) {
-                    int16_t entry = rd16(el + (size_t)i * 2u);
-                    if (entry < 0) break;
-                    if ((int32_t)entry >= level->num_floor_lines) continue;
-                    int dup = 0;
-                    for (int j = 0; j < line_count; j++) { if (lines[j] == entry) { dup = 1; break; } }
-                    if (dup) continue;
-                    const uint8_t *fl = level->floor_lines + (size_t)(uint16_t)entry * RENDERER_FLINE_SIZE;
-                    int16_t connect = rd16(fl + RENDERER_FLINE_CONNECT_OFF);
-                    if (level_connect_to_zone_index(level, connect) == (int)from_zone)
-                        lines[line_count++] = entry;
-                }
-            }
-        }
-    }
+    line_count = renderer_get_shared_portal_lines(level,
+                                                  from_zone,
+                                                  to_zone,
+                                                  lines,
+                                                  RENDERER_PORTAL_CROSS_LINE_CAP);
 
     if (line_count == 0) return allow_ambiguous ? 1 : 0;
 
@@ -12201,7 +12311,11 @@ static int renderer_build_viewer_split_floor_occluder(const GameState *state,
     w = g_renderer.width;
     h = g_renderer.height;
     if (w <= 0 || h <= 0) return 0;
-    for (int x = 0; x < w; x++) out_top[x] = (int16_t)h;
+
+    if (col_start < 0) col_start = 0;
+    if (col_end > w) col_end = (int16_t)w;
+    if (col_start >= col_end) return 0;
+    for (int x = col_start; x < col_end; x++) out_top[x] = (int16_t)h;
 
     if (viewer_zone < 0 || viewer_zone >= level_zone_slot_count(level)) return 0;
     if (level->num_zone_graph_entries > 0 && viewer_zone >= level->num_zone_graph_entries) return 0;
@@ -12224,9 +12338,6 @@ static int renderer_build_viewer_split_floor_occluder(const GameState *state,
 
     y_off = r->yoff;
     half_h = h / 2;
-    if (col_start < 0) col_start = 0;
-    if (col_end > w) col_end = (int16_t)w;
-    if (col_start >= col_end) return 0;
 
     left_edge = (int16_t *)malloc((size_t)h * sizeof(*left_edge));
     right_edge = (int16_t *)malloc((size_t)h * sizeof(*right_edge));
