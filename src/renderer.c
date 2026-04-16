@@ -9608,27 +9608,38 @@ static int renderer_spill_draw_still_valid(const GameState *state,
 {
     int allow_ambiguous = 1;
     int strict_order = 0;
+    int deep_backward_order = 0;
+    int spr_l;
+    int spr_r;
 
     if (draw_clip_left >= draw_clip_right) return 0;
 
-    {
-        int spr_l = (int)scr_x - (int)sprite_w / 2;
-        int spr_r = spr_l + (int)sprite_w;
-        if (spr_r <= (int)draw_clip_left || spr_l >= (int)draw_clip_right)
-            return 0;
-    }
+    spr_l = (int)scr_x - (int)sprite_w / 2;
+    spr_r = spr_l + (int)sprite_w;
+    if (spr_r <= (int)draw_clip_left || spr_l >= (int)draw_clip_right)
+        return 0;
 
     if (source_zone >= 0 && draw_zone >= 0 && source_zone != draw_zone && state) {
         const LevelState *level = &state->level;
         int src_order = renderer_zone_order_index(state, source_zone);
         int draw_order = renderer_zone_order_index(state, draw_zone);
+        int order_delta = 0;
         int32_t half_w = billboard_world_w / 2;
 
-        if (src_order >= 0 && draw_order >= 0 && draw_order <= src_order) {
-            /* Backward/in-order spills are where rare smear artifacts occur.
-             * Require concrete shared-boundary data here (no fail-open). */
-            allow_ambiguous = 0;
-            strict_order = 1;
+        if (src_order >= 0 && draw_order >= 0) {
+            order_delta = draw_order - src_order;
+            if (order_delta <= 0) {
+                /* Backward/in-order spills are where rare smear artifacts occur.
+                 * Require concrete shared-boundary data here (no fail-open). */
+                allow_ambiguous = 0;
+                strict_order = 1;
+            }
+
+            /* The widened order tolerance admits deeper backward spill. Keep it,
+             * but for those deepest backward cases require stricter geometry to
+             * prevent smear regressions. */
+            if (order_delta <= -6)
+                deep_backward_order = 1;
         }
 
         if (half_w < 1) half_w = 1;
@@ -9641,7 +9652,7 @@ static int renderer_spill_draw_still_valid(const GameState *state,
                                                          billboard_view_right_x,
                                                          billboard_view_right_z,
                                                          allow_ambiguous,
-                                                         1)) {
+                                                         deep_backward_order ? 0 : 1)) {
             return 0;
         }
 
@@ -9674,6 +9685,73 @@ static int renderer_spill_draw_still_valid(const GameState *state,
                     }
                 }
             }
+        }
+
+        if (strict_order && deep_backward_order && sprite_w > 0) {
+            int clip_dx_start = (int)draw_clip_left - spr_l;
+            int clip_dx_end = (int)draw_clip_right - spr_l;
+            int span_starts[RENDERER_GEOM_CLIP_MAX_SPANS];
+            int span_ends[RENDERER_GEOM_CLIP_MAX_SPANS];
+            int32_t seg_x0;
+            int32_t seg_z0;
+            int32_t seg_x1;
+            int32_t seg_z1;
+            int64_t off_x64;
+            int64_t off_z64;
+            int geom_span_count;
+            int geom_cover_px = 0;
+            int clip_cover_px;
+
+            if (clip_dx_start < 0) clip_dx_start = 0;
+            if (clip_dx_end > (int)sprite_w) clip_dx_end = (int)sprite_w;
+            if (clip_dx_end <= clip_dx_start)
+                return 0;
+
+            off_x64 = ((int64_t)billboard_view_right_x * (int64_t)half_w) / 16384;
+            off_z64 = ((int64_t)billboard_view_right_z * (int64_t)half_w) / 16384;
+            if (off_x64 == 0 && off_z64 == 0) {
+                if (billboard_view_right_x != 0) {
+                    off_x64 = (billboard_view_right_x > 0) ? 1 : -1;
+                } else if (billboard_view_right_z != 0) {
+                    off_z64 = (billboard_view_right_z > 0) ? 1 : -1;
+                } else {
+                    off_x64 = 1;
+                }
+            }
+
+            seg_x0 = (int32_t)((int64_t)billboard_world_x - off_x64);
+            seg_z0 = (int32_t)((int64_t)billboard_world_z - off_z64);
+            seg_x1 = (int32_t)((int64_t)billboard_world_x + off_x64);
+            seg_z1 = (int32_t)((int64_t)billboard_world_z + off_z64);
+
+            geom_span_count = renderer_zone_clip_segment_to_dx_ranges(level,
+                                                                       draw_zone,
+                                                                       seg_x0,
+                                                                       seg_z0,
+                                                                       seg_x1,
+                                                                       seg_z1,
+                                                                       (int)sprite_w,
+                                                                       clip_dx_start,
+                                                                       clip_dx_end,
+                                                                       span_starts,
+                                                                       span_ends,
+                                                                       NULL,
+                                                                       NULL,
+                                                                       RENDERER_GEOM_CLIP_MAX_SPANS);
+            if (geom_span_count <= 0)
+                return 0;
+
+            for (int i = 0; i < geom_span_count; i++) {
+                int w = span_ends[i] - span_starts[i];
+                if (w > 0)
+                    geom_cover_px += w;
+            }
+
+            clip_cover_px = clip_dx_end - clip_dx_start;
+            /* Deep backward spill that only owns a tiny sliver of the
+             * destination zone is a strong smear signal. */
+            if (clip_cover_px > 0 && geom_cover_px * 6 < clip_cover_px)
+                return 0;
         }
     }
 
