@@ -9589,7 +9589,7 @@ static int renderer_spill_zone_order_allows(const GameState *state,
      * backward tolerance for lateral continuity while still rejecting clearly
      * far-behind spill that causes smear artifacts. */
     if (order_delta > 0) return 1;
-    if (order_delta >= -5) return 1;
+    if (order_delta >= -7) return 1;
     return 0;
 }
 
