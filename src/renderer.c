@@ -8254,17 +8254,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
         if (draw_top < (int)clip_top_sy) draw_top = (int)clip_top_sy;
         if (draw_bot > (int)clip_bot_sy) draw_bot = (int)clip_bot_sy;
     }
-    /* For spill sprites, world-space clip_bot_sy is projected with the sprite's Z,
-     * but the step face wall between zones is at a shorter Z (closer to camera).
-     * This causes clip_bot_sy to land too low on screen, letting the sprite bleed
-     * through the step face.  The draw zone's ctx->bot_clip is computed from the
-     * actual wall geometry during zone rendering and is always correct.  Apply it
-     * as an additional hard cap so the spill can never exceed the draw zone's
-     * screen bounds.  Apply the ceiling cap symmetrically. */
-    if (is_spill) {
-        if (draw_top < (int)ctx->top_clip) draw_top = (int)ctx->top_clip;
-        if (draw_bot > (int)ctx->bot_clip) draw_bot = (int)ctx->bot_clip;
-    }
     if (draw_top > draw_bot) return;
     const int draw_row_count = draw_bot - draw_top + 1;
     if (draw_row_count <= 0 || draw_row_count > RENDER_INTERNAL_MAX_DIM) return;
@@ -8592,6 +8581,21 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                 }
                 seg_count = 0;
                 int cur = draw_top;
+
+                /* For spill sprites the floor clip is projected at sprite Z, but
+                 * the step-face wall separating the zones is at a shorter column Z.
+                 * Re-project clip_bot_sy at the actual column wall Z so the sprite
+                 * cannot extend below the floor as seen from the step face. */
+                if (have_plane_clip && cc->z && screen_col >= 0 && screen_col < rw) {
+                    int32_t col_wz = cc->z[screen_col];
+                    if (col_wz > 0 && col_wz < (int32_t)z) {
+                        int center_y_v = rh / 2;
+                        int32_t C = (int32_t)clip_bot_sy - center_y_v;
+                        int floor_sy = center_y_v + (int)(((int64_t)C * (int32_t)z) / col_wz);
+                        if (floor_sy < draw_bot) draw_bot = floor_sy;
+                    }
+                }
+
                 for (int oi = 0; oi < occ_count; oi++) {
                     if (cur < occ_top[oi] && seg_count < 3) {
                         seg_top[seg_count] = cur;
@@ -9552,6 +9556,29 @@ static int renderer_zone_order_index(const GameState *state, int16_t zone_id)
         if (state->zone_order_zones[i] == zone_id) return i;
     }
     return -1;
+}
+
+static int renderer_spill_zone_order_allows(const GameState *state,
+                                            int16_t source_zone,
+                                            int16_t draw_zone)
+{
+    int src_order;
+    int draw_order;
+
+    if (!state || source_zone < 0 || draw_zone < 0) return 1;
+    if (source_zone == draw_zone) return 1;
+
+    src_order = renderer_zone_order_index(state, source_zone);
+    draw_order = renderer_zone_order_index(state, draw_zone);
+    if (src_order < 0 || draw_order < 0) {
+        /* Missing zone-order info: fail open to avoid suppressing valid spill. */
+        return 1;
+    }
+
+    /* Zone list is rendered back-to-front. Spill into zones drawn earlier
+     * (farther, behind the source sprite) creates ghost/smear artifacts at
+     * stepped boundaries, so only allow spill towards nearer zones. */
+    return (draw_order > src_order) ? 1 : 0;
 }
 
 static int renderer_lookup_zone_prepass_clip_span(const RenderSliceContext *ctx,
@@ -10908,6 +10935,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int32_t half_h = renderer_billboard_half_height_world_fp(spill_world_h);
             if (!renderer_zone_list_contains(adjacent_source_zones, adjacent_source_count, obj_zone))
                 continue;
+            if (!renderer_spill_zone_order_allows(state, obj_zone, zone_id))
+                continue;
             if (!renderer_world_span_overlaps_room(obj_world_y,
                                                   half_h,
                                                   top_of_room,
@@ -11024,6 +11053,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 int32_t half_h = renderer_billboard_half_height_world_fp(spill_world_h);
                 if (!renderer_zone_list_contains(adjacent_source_zones, adjacent_source_count, shot_zone))
                     continue;
+                if (!renderer_spill_zone_order_allows(state, shot_zone, zone_id))
+                    continue;
                 if (!renderer_world_span_overlaps_room(shot_world_y,
                                                       half_h,
                                                       top_of_room,
@@ -11122,6 +11153,8 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             half_h = renderer_billboard_half_height_world_fp(expl_h_est);
             if (!in_this_zone) {
                 if (!renderer_zone_list_contains(adjacent_source_zones, adjacent_source_count, expl_zone))
+                    continue;
+                if (!renderer_spill_zone_order_allows(state, expl_zone, zone_id))
                     continue;
                 if (!renderer_world_span_overlaps_room(state->explosions[ei].y_floor,
                                                       half_h,
