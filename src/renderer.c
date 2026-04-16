@@ -9697,75 +9697,96 @@ static int renderer_spill_draw_still_valid(const GameState *state,
             }
         }
 
-        if (strict_order && deep_backward_order && sprite_w > 0) {
-            int clip_dx_start = (int)draw_clip_left - spr_l;
-            int clip_dx_end = (int)draw_clip_right - spr_l;
-            int span_starts[RENDERER_GEOM_CLIP_MAX_SPANS];
-            int span_ends[RENDERER_GEOM_CLIP_MAX_SPANS];
-            int32_t seg_x0;
-            int32_t seg_z0;
-            int32_t seg_x1;
-            int32_t seg_z1;
-            int64_t off_x64;
-            int64_t off_z64;
-            int geom_span_count;
-            int geom_cover_px = 0;
-            int clip_cover_px;
-
-            if (clip_dx_start < 0) clip_dx_start = 0;
-            if (clip_dx_end > (int)sprite_w) clip_dx_end = (int)sprite_w;
-            if (clip_dx_end <= clip_dx_start)
-                return 0;
-
-            off_x64 = ((int64_t)billboard_view_right_x * (int64_t)half_w) / 16384;
-            off_z64 = ((int64_t)billboard_view_right_z * (int64_t)half_w) / 16384;
-            if (off_x64 == 0 && off_z64 == 0) {
-                if (billboard_view_right_x != 0) {
-                    off_x64 = (billboard_view_right_x > 0) ? 1 : -1;
-                } else if (billboard_view_right_z != 0) {
-                    off_z64 = (billboard_view_right_z > 0) ? 1 : -1;
-                } else {
-                    off_x64 = 1;
-                }
-            }
-
-            seg_x0 = (int32_t)((int64_t)billboard_world_x - off_x64);
-            seg_z0 = (int32_t)((int64_t)billboard_world_z - off_z64);
-            seg_x1 = (int32_t)((int64_t)billboard_world_x + off_x64);
-            seg_z1 = (int32_t)((int64_t)billboard_world_z + off_z64);
-
-            geom_span_count = renderer_zone_clip_segment_to_dx_ranges(level,
-                                                                       draw_zone,
-                                                                       seg_x0,
-                                                                       seg_z0,
-                                                                       seg_x1,
-                                                                       seg_z1,
-                                                                       (int)sprite_w,
-                                                                       clip_dx_start,
-                                                                       clip_dx_end,
-                                                                       span_starts,
-                                                                       span_ends,
-                                                                       NULL,
-                                                                       NULL,
-                                                                       RENDERER_GEOM_CLIP_MAX_SPANS);
-            if (geom_span_count <= 0)
-                return 0;
-
-            for (int i = 0; i < geom_span_count; i++) {
-                int w = span_ends[i] - span_starts[i];
-                if (w > 0)
-                    geom_cover_px += w;
-            }
-
-            clip_cover_px = clip_dx_end - clip_dx_start;
-            /* Deep backward spill that only owns a tiny sliver of the
-             * destination zone is a strong smear signal. */
-            if (clip_cover_px > 0 && geom_cover_px * 6 < clip_cover_px)
-                return 0;
-        }
     }
 
     return 1;
+}
+
+/* Narrow spill draw clip bounds to only the screen columns where the billboard
+ * lateral segment geometrically overlaps the destination zone polygon. This is
+ * the definitive smear prevention: no matter what heuristic gates the spill
+ * passes, the sprite can only draw in columns where its world footprint
+ * actually lies inside the destination zone. */
+static void renderer_spill_narrow_clip_to_zone_geometry(
+    const LevelState *level,
+    int16_t draw_zone,
+    int32_t billboard_world_x,
+    int32_t billboard_world_z,
+    int32_t billboard_world_w,
+    int16_t billboard_view_right_x,
+    int16_t billboard_view_right_z,
+    int32_t sprite_w,
+    int32_t scr_x,
+    int16_t *io_clip_left,
+    int16_t *io_clip_right)
+{
+    int32_t half_w;
+    int64_t off_x64, off_z64;
+    int32_t seg_x0, seg_z0, seg_x1, seg_z1;
+    int spr_l;
+    int clip_dx_start, clip_dx_end;
+    int span_starts[RENDERER_GEOM_CLIP_MAX_SPANS];
+    int span_ends[RENDERER_GEOM_CLIP_MAX_SPANS];
+    int geom_span_count;
+    int geom_left, geom_right;
+
+    if (!level || !io_clip_left || !io_clip_right || sprite_w <= 0)
+        return;
+    if (*io_clip_left >= *io_clip_right)
+        return;
+
+    half_w = billboard_world_w / 2;
+    if (half_w < 1) half_w = 1;
+
+    off_x64 = ((int64_t)billboard_view_right_x * (int64_t)half_w) / 16384;
+    off_z64 = ((int64_t)billboard_view_right_z * (int64_t)half_w) / 16384;
+    if (off_x64 == 0 && off_z64 == 0) {
+        if (billboard_view_right_x != 0)
+            off_x64 = (billboard_view_right_x > 0) ? 1 : -1;
+        else if (billboard_view_right_z != 0)
+            off_z64 = (billboard_view_right_z > 0) ? 1 : -1;
+        else
+            off_x64 = 1;
+    }
+
+    seg_x0 = (int32_t)((int64_t)billboard_world_x - off_x64);
+    seg_z0 = (int32_t)((int64_t)billboard_world_z - off_z64);
+    seg_x1 = (int32_t)((int64_t)billboard_world_x + off_x64);
+    seg_z1 = (int32_t)((int64_t)billboard_world_z + off_z64);
+
+    spr_l = (int)scr_x - (int)sprite_w / 2;
+    clip_dx_start = (int)*io_clip_left - spr_l;
+    clip_dx_end = (int)*io_clip_right - spr_l;
+    if (clip_dx_start < 0) clip_dx_start = 0;
+    if (clip_dx_end > (int)sprite_w) clip_dx_end = (int)sprite_w;
+    if (clip_dx_end <= clip_dx_start) {
+        *io_clip_right = *io_clip_left;
+        return;
+    }
+
+    geom_span_count = renderer_zone_clip_segment_to_dx_ranges(level,
+                                                               draw_zone,
+                                                               seg_x0, seg_z0,
+                                                               seg_x1, seg_z1,
+                                                               (int)sprite_w,
+                                                               clip_dx_start,
+                                                               clip_dx_end,
+                                                               span_starts,
+                                                               span_ends,
+                                                               NULL, NULL,
+                                                               RENDERER_GEOM_CLIP_MAX_SPANS);
+    if (geom_span_count <= 0) {
+        *io_clip_right = *io_clip_left;
+        return;
+    }
+
+    geom_left = span_starts[0] + spr_l;
+    geom_right = span_ends[geom_span_count - 1] + spr_l;
+
+    if ((int16_t)geom_left > *io_clip_left)
+        *io_clip_left = (int16_t)geom_left;
+    if ((int16_t)geom_right < *io_clip_right)
+        *io_clip_right = (int16_t)geom_right;
 }
 
 static int renderer_lookup_zone_prepass_clip_span(const RenderSliceContext *ctx,
@@ -11620,6 +11641,16 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                                      sprite_w)) {
                     continue;
                 }
+                renderer_spill_narrow_clip_to_zone_geometry(
+                    level, zone_id,
+                    (int32_t)state->explosions[ei].x,
+                    (int32_t)state->explosions[ei].z,
+                    expl_world_w,
+                    billboard_view_right_x,
+                    billboard_view_right_z,
+                    sprite_w, scr_x,
+                    &draw_clip_left, &draw_clip_right);
+                if (draw_clip_left >= draw_clip_right) continue;
             }
             {
                 int32_t orp_z_i16 = ROT_Z_INT(orp_z);
@@ -11868,6 +11899,16 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                                                      sprite_w)) {
                     continue;
                 }
+                renderer_spill_narrow_clip_to_zone_geometry(
+                    level, zone_id,
+                    billboard_world_x,
+                    billboard_world_z,
+                    world_w,
+                    billboard_view_right_x,
+                    billboard_view_right_z,
+                    sprite_w, scr_x,
+                    &draw_clip_left, &draw_clip_right);
+                if (draw_clip_left >= draw_clip_right) continue;
             }
 
             renderer_f2_pick_note_sprite_draw(level,
