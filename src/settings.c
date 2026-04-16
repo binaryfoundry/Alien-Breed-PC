@@ -168,6 +168,13 @@ static void apply_line(GameState *state, char *line)
         } else {
             printf("[SETTINGS] volume ignored (use 0..100): %s\n", val);
         }
+    } else if (strcmp(key, "audio_buffer_samples") == 0) {
+        int n = atoi(val);
+        if (n == 0 || (n >= 256 && n <= 4096)) {
+            state->cfg_audio_buffer_samples = (int16_t)n;
+        } else {
+            printf("[SETTINGS] audio_buffer_samples ignored (use 0 or 256..4096): %s\n", val);
+        }
     } else if (strcmp(key, "y_proj_scale") == 0) {
         int n = atoi(val);
         if (n >= 25 && n <= 1000) {
@@ -207,7 +214,7 @@ static void apply_runtime_constraints(GameState *state)
 static void log_effective_settings(const GameState *state, const char *source_label)
 {
     if (state->cfg_start_level >= 0) {
-        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
+        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d audio_buffer_samples=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
                source_label,
                (int)state->cfg_start_level + 1,
                state->infinite_health ? 1 : 0,
@@ -221,6 +228,7 @@ static void log_effective_settings(const GameState *state, const char *source_la
                state->cfg_render_threads ? 1 : 0,
                (int)state->cfg_render_threads_max,
                (int)state->cfg_volume,
+             (int)state->cfg_audio_buffer_samples,
                (int)state->cfg_y_proj_scale,
                state->cfg_billboard_sprite_rendering_enhancement ? 1 : 0,
                state->cfg_weapon_draw ? 1 : 0,
@@ -228,7 +236,7 @@ static void log_effective_settings(const GameState *state, const char *source_la
                state->cfg_weapon_post_gl ? 1 : 0,
                state->cfg_show_fps ? 1 : 0);
     } else {
-        printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
+         printf("[SETTINGS] %s: start_level=default infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d audio_buffer_samples=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
                source_label,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
@@ -241,6 +249,7 @@ static void log_effective_settings(const GameState *state, const char *source_la
                state->cfg_render_threads ? 1 : 0,
                (int)state->cfg_render_threads_max,
                (int)state->cfg_volume,
+               (int)state->cfg_audio_buffer_samples,
                (int)state->cfg_y_proj_scale,
                state->cfg_billboard_sprite_rendering_enhancement ? 1 : 0,
                state->cfg_weapon_draw ? 1 : 0,

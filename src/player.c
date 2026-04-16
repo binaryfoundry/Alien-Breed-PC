@@ -1731,6 +1731,7 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
     bool    ini_cfg_render_threads = state->cfg_render_threads;
     int16_t ini_cfg_render_threads_max = state->cfg_render_threads_max;
     int16_t ini_cfg_volume = state->cfg_volume;
+    int16_t ini_cfg_audio_buffer_samples = state->cfg_audio_buffer_samples;
     int16_t ini_cfg_y_proj_scale = state->cfg_y_proj_scale;
     bool    ini_cfg_billboard_sprite_rendering_enhancement = state->cfg_billboard_sprite_rendering_enhancement;
     bool    ini_cfg_weapon_draw = state->cfg_weapon_draw;
@@ -1753,6 +1754,7 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
     state->cfg_render_threads = ini_cfg_render_threads;
     state->cfg_render_threads_max = ini_cfg_render_threads_max;
     state->cfg_volume = ini_cfg_volume;
+    state->cfg_audio_buffer_samples = ini_cfg_audio_buffer_samples;
     state->cfg_y_proj_scale = ini_cfg_y_proj_scale;
     state->cfg_billboard_sprite_rendering_enhancement = ini_cfg_billboard_sprite_rendering_enhancement;
     state->cfg_weapon_draw = ini_cfg_weapon_draw;

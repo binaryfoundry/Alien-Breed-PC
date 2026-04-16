@@ -28,6 +28,12 @@ display_mode=fullscreen
 # Master sound effects volume: 0 = silent, 100 = full (linear scale).
 volume=100
 
+# SDL audio callback buffer size in sample frames.
+# 0 = engine default (desktop 512, web 1024 at a 48 kHz device request).
+# Higher = safer against underruns, lower = less latency.
+# Suggested web tuning range: 512..2048.
+audio_buffer_samples=0
+
 # Vertical projection scale (affects wall/floor/sprite vertical size vs depth).
 # 100 = default engine behavior; lower = flatter / wider vertical FOV feel, higher = taller.
 # Allowed range: 25..1000 (percent of engine default vertical scale).

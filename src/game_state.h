@@ -251,6 +251,7 @@ typedef struct {
     bool            cfg_render_threads; /* 1 = enable threaded renderer path (if compiled in) */
     int16_t         cfg_render_threads_max; /* 0 = max available worker strips, otherwise cap to (1..64) */
     int16_t         cfg_volume;           /* ab3d.ini: master SFX volume 0..100 (percent) */
+    int16_t         cfg_audio_buffer_samples; /* ab3d.ini: SDL callback buffer size in sample frames (0 = backend default) */
     int16_t         cfg_y_proj_scale;     /* ab3d.ini: vertical projection scale 25..1000 (100 = default proj_y_scale) */
     bool            cfg_billboard_sprite_rendering_enhancement; /* 1 = enhanced cross-zone billboard spill gating */
 

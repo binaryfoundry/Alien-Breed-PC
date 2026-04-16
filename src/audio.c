@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "logging.h"
+#include "game_state.h"
 #define printf ab3d_log_printf
 
 #define MAX_SAMPLES      64
@@ -25,12 +26,20 @@
 #define AMIGA_SFX_PERIOD 443
 #define AMIGA_PAULA_PAL_CLOCK 3546895
 #define AMIGA_SFX_RATE ((AMIGA_PAULA_PAL_CLOCK + (AMIGA_SFX_PERIOD / 2)) / AMIGA_SFX_PERIOD) /* ~= 8007 Hz */
+#if defined(__EMSCRIPTEN__)
+/* Browser backends behave much better when the device runs at a common Web Audio
+ * rate instead of the original ~8 kHz Paula rate. We still preserve pitch by
+ * converting assets to the opened device format at load time. */
+#define DEFAULT_FREQ     48000
+#else
 #define DEFAULT_FREQ     AMIGA_SFX_RATE
+#endif
 #define DEFAULT_FORMAT  AUDIO_S16SYS
 #define DEFAULT_CHANNELS 1
 #define PLAYBACK_SPEED_DIV 1
 #if defined(__EMSCRIPTEN__)
-/* Web: slightly larger buffer than desktop to reduce underruns; 2048 was too much latency. */
+/* Web: 1024 @ 48 kHz is about 21 ms, much lower latency than 1024 @ 8 kHz while
+ * still giving the browser enough headroom to avoid underruns on heavier frames. */
 #define AUDIO_SAMPLES_DESIRED 1024
 #else
 #define AUDIO_SAMPLES_DESIRED 512
@@ -469,6 +478,9 @@ static void free_samples(void)
 
 void audio_init(void)
 {
+    SDL_AudioSpec want;
+    int desired_samples = AUDIO_SAMPLES_DESIRED;
+
     printf("[AUDIO] init\n");
     memset(g_samples, 0, sizeof(g_samples));
     memset(g_channels, 0, sizeof(g_channels));
@@ -488,19 +500,27 @@ void audio_init(void)
         return;
     }
 
-    g_spec.freq = DEFAULT_FREQ;
-    g_spec.format = DEFAULT_FORMAT;
-    g_spec.channels = (Uint8)DEFAULT_CHANNELS;
-    g_spec.samples = AUDIO_SAMPLES_DESIRED;
-    g_spec.callback = audio_callback;
-    g_spec.userdata = NULL;
+    if (g_state.cfg_audio_buffer_samples > 0)
+        desired_samples = (int)g_state.cfg_audio_buffer_samples;
 
-    g_device = SDL_OpenAudioDevice(NULL, 0, &g_spec, &g_spec, 0);
+    SDL_zero(want);
+    want.freq = DEFAULT_FREQ;
+    want.format = DEFAULT_FORMAT;
+    want.channels = (Uint8)DEFAULT_CHANNELS;
+    want.samples = (Uint16)desired_samples;
+    want.callback = audio_callback;
+    want.userdata = NULL;
+
+    g_device = SDL_OpenAudioDevice(NULL, 0, &want, &g_spec, 0);
     if (g_device == 0) {
         printf("[AUDIO] SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return;
     }
+
+    printf("[AUDIO] opened device: freq=%d format=0x%x channels=%u samples=%u (requested freq=%d samples=%d)\n",
+           g_spec.freq, (unsigned)g_spec.format, (unsigned)g_spec.channels, (unsigned)g_spec.samples,
+           want.freq, desired_samples);
 
     /* Load samples: prefer Amiga originals (sounds/<name> no extension), else sounds/<name>.wav */
     {
