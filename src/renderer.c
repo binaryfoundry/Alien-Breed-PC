@@ -8458,7 +8458,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     for (int dx = dx_start; dx < dx_end; dx++) {
         const int screen_col = sx + dx;
         int src_col;
-
         if (have_geometric_zone_clip) {
             while (geom_dx_idx < geom_dx_count && dx >= geom_dx_ends[geom_dx_idx]) {
                 geom_dx_idx++;
@@ -9564,6 +9563,7 @@ static int renderer_spill_zone_order_allows(const GameState *state,
 {
     int src_order;
     int draw_order;
+    int order_delta;
 
     if (!state || source_zone < 0 || draw_zone < 0) return 1;
     if (source_zone == draw_zone) return 1;
@@ -9575,10 +9575,69 @@ static int renderer_spill_zone_order_allows(const GameState *state,
         return 1;
     }
 
-    /* Zone list is rendered back-to-front. Spill into zones drawn earlier
-     * (farther, behind the source sprite) creates ghost/smear artifacts at
-     * stepped boundaries, so only allow spill towards nearer zones. */
-    return (draw_order > src_order) ? 1 : 0;
+    order_delta = draw_order - src_order;
+
+    /* Zone list is rendered back-to-front. Most spill should go towards
+     * nearer zones (positive delta), but tight stair/portal layouts can place
+     * direct neighbors a few slots earlier in the frame order. Allow a small
+     * backward tolerance for lateral continuity while still rejecting clearly
+     * far-behind spill that causes smear artifacts. */
+    if (order_delta > 0) return 1;
+    if (order_delta >= -5) return 1;
+    return 0;
+}
+
+static int renderer_spill_draw_still_valid(const GameState *state,
+                                           int16_t source_zone,
+                                           int16_t draw_zone,
+                                           int32_t billboard_world_x,
+                                           int32_t billboard_world_z,
+                                           int32_t billboard_world_w,
+                                           int16_t billboard_view_right_x,
+                                           int16_t billboard_view_right_z,
+                                           int16_t draw_clip_left,
+                                           int16_t draw_clip_right,
+                                           int32_t scr_x,
+                                           int32_t sprite_w)
+{
+    int allow_ambiguous = 1;
+
+    if (draw_clip_left >= draw_clip_right) return 0;
+
+    {
+        int spr_l = (int)scr_x - (int)sprite_w / 2;
+        int spr_r = spr_l + (int)sprite_w;
+        if (spr_r <= (int)draw_clip_left || spr_l >= (int)draw_clip_right)
+            return 0;
+    }
+
+    if (source_zone >= 0 && draw_zone >= 0 && source_zone != draw_zone && state) {
+        const LevelState *level = &state->level;
+        int src_order = renderer_zone_order_index(state, source_zone);
+        int draw_order = renderer_zone_order_index(state, draw_zone);
+        int32_t half_w = billboard_world_w / 2;
+
+        if (src_order >= 0 && draw_order >= 0 && draw_order <= src_order) {
+            /* Backward/in-order spills are where rare smear artifacts occur.
+             * Require concrete shared-boundary data here (no fail-open). */
+            allow_ambiguous = 0;
+        }
+
+        if (half_w < 1) half_w = 1;
+        if (!renderer_billboard_crosses_zone_portal_mode(level,
+                                                         source_zone,
+                                                         draw_zone,
+                                                         billboard_world_x,
+                                                         billboard_world_z,
+                                                         half_w,
+                                                         billboard_view_right_x,
+                                                         billboard_view_right_z,
+                                                         allow_ambiguous)) {
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 static int renderer_lookup_zone_prepass_clip_span(const RenderSliceContext *ctx,
@@ -9717,23 +9776,24 @@ static int renderer_billboard_lateral_hits_adj_lines(const LevelState *level,
 
 /* Returns 1 if the billboard lateral segment crosses any boundary line shared
  * between from_zone and to_zone (portals in either direction).
- * Returns 1 (allow) if no shared boundary lines are found — ambiguous data. */
-static int renderer_billboard_crosses_zone_portal(const LevelState *level,
-                                                  int16_t from_zone,
-                                                  int16_t to_zone,
-                                                  int32_t world_x,
-                                                  int32_t world_z,
-                                                  int32_t half_span_world,
-                                                  int16_t view_right_x,
-                                                  int16_t view_right_z)
+ * If allow_ambiguous is non-zero, missing boundary data is treated as allow. */
+static int renderer_billboard_crosses_zone_portal_mode(const LevelState *level,
+                                                       int16_t from_zone,
+                                                       int16_t to_zone,
+                                                       int32_t world_x,
+                                                       int32_t world_z,
+                                                       int32_t half_span_world,
+                                                       int16_t view_right_x,
+                                                       int16_t view_right_z,
+                                                       int allow_ambiguous)
 {
     int16_t lines[16];
     int line_count = 0;
     int zone_slots;
-    if (!level || !level->floor_lines) return 1;
+    if (!level || !level->floor_lines) return allow_ambiguous ? 1 : 0;
     zone_slots = level_zone_slot_count(level);
-    if (from_zone < 0 || from_zone >= zone_slots) return 1;
-    if (to_zone   < 0 || to_zone   >= zone_slots) return 1;
+    if (from_zone < 0 || from_zone >= zone_slots) return allow_ambiguous ? 1 : 0;
+    if (to_zone   < 0 || to_zone   >= zone_slots) return allow_ambiguous ? 1 : 0;
 
     /* Walk from_zone exit list for lines connecting to to_zone. */
     {
@@ -9781,12 +9841,33 @@ static int renderer_billboard_crosses_zone_portal(const LevelState *level,
         }
     }
 
-    if (line_count == 0) return 1; /* no boundary data — allow spill */
+    if (line_count == 0) return allow_ambiguous ? 1 : 0;
     return renderer_billboard_lateral_hits_adj_lines(level,
                                                       world_x, world_z,
                                                       half_span_world,
                                                       view_right_x, view_right_z,
                                                       lines, line_count);
+}
+
+/* Default spill admission path: fail-open on ambiguous boundary data. */
+static int renderer_billboard_crosses_zone_portal(const LevelState *level,
+                                                  int16_t from_zone,
+                                                  int16_t to_zone,
+                                                  int32_t world_x,
+                                                  int32_t world_z,
+                                                  int32_t half_span_world,
+                                                  int16_t view_right_x,
+                                                  int16_t view_right_z)
+{
+    return renderer_billboard_crosses_zone_portal_mode(level,
+                                                       from_zone,
+                                                       to_zone,
+                                                       world_x,
+                                                       world_z,
+                                                       half_span_world,
+                                                       view_right_x,
+                                                       view_right_z,
+                                                       1);
 }
 
 static const uint8_t *renderer_zone_exit_list_ptr(const LevelState *level, int16_t zone_id)
@@ -11341,6 +11422,22 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int32_t expl_world_w = expl_w * EXPLOSION_SIZE_CORRECTION;
             const int entry_is_spill = (entry->source_zone != zone_id) ? 1 : 0;
             if (expl_world_w < 1) expl_world_w = 1;
+            if (entry_is_spill) {
+                if (!renderer_spill_draw_still_valid(state,
+                                                     entry->source_zone,
+                                                     zone_id,
+                                                     (int32_t)state->explosions[ei].x,
+                                                     (int32_t)state->explosions[ei].z,
+                                                     expl_world_w,
+                                                     billboard_view_right_x,
+                                                     billboard_view_right_z,
+                                                     draw_clip_left,
+                                                     draw_clip_right,
+                                                     scr_x,
+                                                     sprite_w)) {
+                    continue;
+                }
+            }
             {
                 int32_t orp_z_i16 = ROT_Z_INT(orp_z);
                 if (orp_z_i16 > 32767) orp_z_i16 = 32767;
@@ -11571,6 +11668,23 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
                 const uint8_t *pt_ptr = level->object_points + (size_t)(uint16_t)pt_num * 8u;
                 billboard_world_x = (int32_t)rd16(pt_ptr + 0);
                 billboard_world_z = (int32_t)rd16(pt_ptr + 4);
+            }
+
+            if (entry_is_spill) {
+                if (!renderer_spill_draw_still_valid(state,
+                                                     entry->source_zone,
+                                                     zone_id,
+                                                     billboard_world_x,
+                                                     billboard_world_z,
+                                                     world_w,
+                                                     billboard_view_right_x,
+                                                     billboard_view_right_z,
+                                                     draw_clip_left,
+                                                     draw_clip_right,
+                                                     scr_x,
+                                                     sprite_w)) {
+                    continue;
+                }
             }
 
             renderer_f2_pick_note_sprite_draw(level,
