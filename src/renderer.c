@@ -8380,46 +8380,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
             return;
         }
 
-        /* Post-clip margin expansion: apply after geometric clipping so
-         * ownership is geometry-derived while keeping texcoords unchanged
-         * (src_col mapping still uses original dx range). */
-        if (geom_dx_count > 0) {
-            const int spill_margin_percent = 15;
-            int merged_count = 0;
-
-            for (int gi = 0; gi < geom_dx_count; gi++) {
-                int s = geom_dx_starts[gi];
-                int e = geom_dx_ends[gi];
-                int run = e - s;
-                int extra;
-
-                if (run <= 0) continue;
-
-                extra = (run * spill_margin_percent + 99) / 100;
-                if (extra < 1) extra = 1;
-
-                s -= extra;
-                e += extra;
-                if (s < dx_start) s = dx_start;
-                if (e > dx_end) e = dx_end;
-                if (e <= s) continue;
-
-                if (merged_count > 0 && s <= geom_dx_ends[merged_count - 1]) {
-                    if (e > geom_dx_ends[merged_count - 1]) {
-                        geom_dx_ends[merged_count - 1] = e;
-                    }
-                } else if (merged_count < RENDERER_GEOM_CLIP_MAX_SPANS) {
-                    geom_dx_starts[merged_count] = s;
-                    geom_dx_ends[merged_count] = e;
-                    merged_count++;
-                }
-            }
-
-            if (merged_count > 0) {
-                geom_dx_count = merged_count;
-            }
-        }
-
         /* Intersect geometric ranges with this worker slice after all geometric
          * adjustments so threaded and single-thread paths produce identical
          * ownership at slice boundaries. */
