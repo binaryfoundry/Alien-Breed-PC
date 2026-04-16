@@ -1798,10 +1798,30 @@ static void io_apply_sprite_asset_fixes(int slot, uint8_t *wad, size_t wad_size,
 {
     if (!wad || !ptr_data) return;
 
+    if (slot == 0) {
+        /* ALIEN2 gib subframes (16..31) are sampled as 16x16 cells using frame-table
+         * ptr offsets + down_strip. Clear tiny detached texels that can appear as
+         * distant floating red dots. */
+        io_sprite_clear_texel(wad, wad_size, ptr_data, ptr_size,
+                              (uint32_t)(4 * (64 * 16) + 0 * 4), 2);      /* frame 16, (0,2) */
+        io_sprite_clear_texel(wad, wad_size, ptr_data, ptr_size,
+                              (uint32_t)(4 * (64 * 16 + 48) + 1 * 4), 0); /* frame 19, (1,0) */
+        io_sprite_clear_texel(wad, wad_size, ptr_data, ptr_size,
+                              (uint32_t)(4 * (64 * 16 + 48) + 0 * 4), 1); /* frame 19, (0,1) */
+
+        /* ALIEN2 frame 32 (death pose) has three detached single-pixel artifacts. */
+        io_sprite_clear_texel(wad, wad_size, ptr_data, ptr_size,
+                              (uint32_t)(4 * (64 * 17) + 0 * 4), 3);      /* frame 32, (0,3) */
+        io_sprite_clear_texel(wad, wad_size, ptr_data, ptr_size,
+                              (uint32_t)(4 * (64 * 17) + 0 * 4), 7);      /* frame 32, (0,7) */
+        io_sprite_clear_texel(wad, wad_size, ptr_data, ptr_size,
+                              (uint32_t)(4 * (64 * 17) + 63 * 4), 50);    /* frame 32, (63,50) */
+    }
+
     if (slot == 14) {
-        /* bigclaws frame 0: clear the lone red texel that protrudes at the top-left
-         * of the small red enemy death animation. */
-        io_sprite_clear_texel(wad, wad_size, ptr_data, ptr_size, (uint32_t)(20 * 4), 0);
+        /* BigClaws death frame 3 has a detached texel at frame origin. */
+        io_sprite_clear_texel(wad, wad_size, ptr_data, ptr_size,
+                              (uint32_t)(3 * 128 * 4), 0);
     }
 }
 
