@@ -172,6 +172,8 @@ static SDL_Rect g_present_dst_rect;
 static int g_internal_w = RENDER_WIDTH;
 static int g_internal_h = RENDER_HEIGHT;
 static int g_release_borderless_desktop = 0;
+static int g_debug_window_title = 0;
+static int g_framebuffer_mipmap_enabled = 0;
 static int g_screen_tint_enabled = 0;
 static Uint8 g_screen_tint_r = 0;
 static Uint8 g_screen_tint_g = 0;
@@ -217,6 +219,7 @@ static void display_load_gl_mipmap_procs(void)
  * Resolves GL entry points after the renderer's context exists (lazy first frame). */
 static void display_regenerate_framebuffer_mipmaps_if_downscaled(int tex_w, int tex_h)
 {
+    if (!g_framebuffer_mipmap_enabled) return;
     if (g_gl_unpack_ok) return;
     if (!g_texture || !g_sdl_ren) return;
     if (g_present_dst_rect.w >= tex_w && g_present_dst_rect.h >= tex_h)
@@ -1757,11 +1760,21 @@ void display_init(GameState *state)
     const char *driver_override = SDL_getenv("AB3D_RENDER_DRIVER");
     /* Set AB3D_DISABLE_GL_UNPACK=1 to force D3D + SDL texture (CPU blit path). Otherwise prefer GL_R16UI. */
     const char *disable_gl_unpack = SDL_getenv("AB3D_DISABLE_GL_UNPACK");
+    const char *debug_window_title = SDL_getenv("AB3D_DEBUG_WINDOW_TITLE");
+    const char *framebuffer_mipmap = SDL_getenv("AB3D_FRAMEBUFFER_MIPMAPS");
     int prefer_gpu_unpack = 1;
     if (disable_gl_unpack && disable_gl_unpack[0] != '\0') {
         if (disable_gl_unpack[0] == '1' || disable_gl_unpack[0] == 'y' || disable_gl_unpack[0] == 'Y')
             prefer_gpu_unpack = 0;
     }
+    g_debug_window_title = (debug_window_title &&
+                            (debug_window_title[0] == '1' ||
+                             debug_window_title[0] == 'y' ||
+                             debug_window_title[0] == 'Y')) ? 1 : 0;
+    g_framebuffer_mipmap_enabled = (framebuffer_mipmap &&
+                                    (framebuffer_mipmap[0] == '1' ||
+                                     framebuffer_mipmap[0] == 'y' ||
+                                     framebuffer_mipmap[0] == 'Y')) ? 1 : 0;
     int window_w = base_rw;
     int window_h = base_rh;
     Uint32 window_flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
@@ -2962,7 +2975,7 @@ static void display_present_cw_frame(GameState *state)
     SDL_RenderPresent(g_sdl_ren);
 
     /* Debug: show player position in window title (throttled) */
-    if (state && g_window) {
+    if (g_debug_window_title && state && g_window) {
         static int title_frame = 0;
         if ((++title_frame % 30) == 0) {
             PlayerState *dbg_plr = &state->plr1;

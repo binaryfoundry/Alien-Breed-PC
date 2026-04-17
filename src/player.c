@@ -1886,7 +1886,7 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
             }
             state->level.automap_seen_hash_cap = want;
 
-            /* Same seen-wall key as renderer.c. */
+            /* Same seen-wall key as renderer.c; hash stores wall index+1 for O(1) metadata refresh. */
             for (uint32_t i = 0; i < count; i++) {
                 const AutomapSeenWall *w = &state->level.automap_seen_walls[i];
                 uint32_t keyp1 = renderer_automap_seen_key_plus1(
@@ -1899,8 +1899,18 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
                 h *= 0x846CA68Bu;
                 h ^= h >> 16;
                 h &= mask;
-                while (state->level.automap_seen_hash[h] != 0u) h = (h + 1u) & mask;
-                state->level.automap_seen_hash[h] = keyp1;
+                while (state->level.automap_seen_hash[h] != 0u) {
+                    uint32_t ex_idx = state->level.automap_seen_hash[h] - 1u;
+                    if (ex_idx < count) {
+                        const AutomapSeenWall *ew = &state->level.automap_seen_walls[ex_idx];
+                        uint32_t ex_key = renderer_automap_seen_key_plus1(
+                            ew->gfx_off, ew->x1, ew->z1, ew->x2, ew->z2);
+                        if (ex_key == keyp1) break;
+                    }
+                    h = (h + 1u) & mask;
+                }
+                if (state->level.automap_seen_hash[h] == 0u)
+                    state->level.automap_seen_hash[h] = i + 1u;
             }
         }
         renderer_automap_unlock();

@@ -488,6 +488,7 @@ static void renderer_draw_world_slice(GameState *state,
                                       const RendererWorldZonePrepass *zone_prepass,
                                       int16_t col_start, int16_t col_end,
                                       uint32_t frame_idx, int trace_clip,
+                                      int automap_stage_slot,
                                       int8_t *out_fill_screen_water,
                                       RendererWorkloadStats *out_workload_stats);
 static void renderer_build_zone_section_clips(GameState *state, int16_t zone_id,
@@ -656,11 +657,42 @@ static const uint16_t k_automap_key_frame_default_c12[4] = {
     0x0FC2u, 0x0F44u, 0x04D6u, 0x048Fu
 };
 
-/* Overlay used to refresh door colors every frame (O(seen * doors)); throttle to ~4 Hz. */
+/* Overlay used to refresh door colors every frame; expensive door lookups are cached. */
 static uint32_t g_automap_last_door_refresh_ms = 0;
 
 /* Workers run renderer_draw_world_slice in parallel; automap updates must be serialized. */
 static SDL_mutex *g_automap_mutex;
+
+/* Door metadata lookup cache (zone_id + wall gfx_off -> raw door flags). */
+static uint64_t *g_automap_door_lookup_keys;
+static uint16_t *g_automap_door_lookup_flags;
+static uint32_t g_automap_door_lookup_cap;
+static const LevelState *g_automap_door_lookup_level;
+static const uint8_t *g_automap_door_lookup_list_ptr;
+static const uint32_t *g_automap_door_lookup_offsets_ptr;
+static const uint8_t *g_automap_door_lookup_data_ptr;
+static int g_automap_door_lookup_num_doors;
+
+/* Key-mask cache: refreshed once per rendered frame, read in hot wall paths. */
+static const LevelState *g_automap_key_mask_level;
+static uint8_t g_automap_key_mask_cached;
+static uint32_t g_automap_key_mask_frame_idx = UINT32_MAX;
+
+#define RENDERER_AUTOMAP_STAGE_SLOT_COUNT 65
+#define RENDERER_AUTOMAP_STAGE_MAIN_SLOT 64
+
+typedef struct {
+    uint32_t gfx_off;
+    int16_t zone_id;
+    int16_t x1;
+    int16_t z1;
+    int16_t x2;
+    int16_t z2;
+} AutomapStagedWall;
+
+static AutomapStagedWall *g_automap_stage_walls[RENDERER_AUTOMAP_STAGE_SLOT_COUNT];
+static uint32_t g_automap_stage_counts[RENDERER_AUTOMAP_STAGE_SLOT_COUNT];
+static uint32_t g_automap_stage_caps[RENDERER_AUTOMAP_STAGE_SLOT_COUNT];
 
 /* Synthesized backdrop sky-hole polygons, built once per level load. */
 typedef struct {
@@ -694,10 +726,25 @@ static int renderer_poly_col_ensure_w(int w);
 static int16_t *renderer_viewer_floor_occlude_get_scratch(int width);
 static int renderer_floor_fast_ensure_rows_capacity(int row_count);
 static int renderer_floor_fast_ensure_cols_capacity(int col_count);
+static uint8_t automap_level_key_mask(const LevelState *level);
+static void automap_stage_release(void);
+static void automap_stage_reset_frame(void);
+static void automap_stage_seen_wall(int stage_slot,
+                                    uint32_t gfx_off,
+                                    int16_t zone_id,
+                                    int16_t x1, int16_t z1,
+                                    int16_t x2, int16_t z2);
+static void automap_commit_staged_walls(LevelState *level);
 
 static void automap_lock(void)
 {
     if (g_automap_mutex) SDL_LockMutex(g_automap_mutex);
+}
+
+static int automap_try_lock(void)
+{
+    if (!g_automap_mutex) return 1;
+    return (SDL_TryLockMutex(g_automap_mutex) == 0) ? 1 : 0;
 }
 
 static void automap_unlock(void)
@@ -714,6 +761,255 @@ static uint32_t automap_hash_u32(uint32_t x)
     x *= 0x846CA68Bu;
     x ^= x >> 16;
     return x;
+}
+
+static uint32_t automap_hash_u64(uint64_t x)
+{
+    /* 64-bit mix, then fold to 32 bits for open-addressing table indexing. */
+    x ^= x >> 33;
+    x *= 0xFF51AFD7ED558CCDULL;
+    x ^= x >> 33;
+    x *= 0xC4CEB9FE1A85EC53ULL;
+    x ^= x >> 33;
+    return (uint32_t)x ^ (uint32_t)(x >> 32);
+}
+
+static void automap_stage_release(void)
+{
+    for (int i = 0; i < RENDERER_AUTOMAP_STAGE_SLOT_COUNT; i++) {
+        free(g_automap_stage_walls[i]);
+        g_automap_stage_walls[i] = NULL;
+        g_automap_stage_counts[i] = 0;
+        g_automap_stage_caps[i] = 0;
+    }
+}
+
+static void automap_stage_reset_frame(void)
+{
+    memset(g_automap_stage_counts, 0, sizeof(g_automap_stage_counts));
+}
+
+static int automap_stage_ensure_slot_capacity(int stage_slot, uint32_t need_count)
+{
+    uint32_t cap;
+    AutomapStagedWall *nw;
+
+    if (stage_slot < 0 || stage_slot >= RENDERER_AUTOMAP_STAGE_SLOT_COUNT) return 0;
+    if (need_count == 0u) return 1;
+    if (g_automap_stage_walls[stage_slot] && g_automap_stage_caps[stage_slot] >= need_count) return 1;
+
+    cap = (g_automap_stage_caps[stage_slot] > 0u) ? g_automap_stage_caps[stage_slot] : 1024u;
+    while (cap < need_count) {
+        if (cap > UINT32_MAX / 2u) {
+            cap = need_count;
+            break;
+        }
+        cap <<= 1u;
+    }
+
+    nw = (AutomapStagedWall *)realloc(g_automap_stage_walls[stage_slot],
+                                      (size_t)cap * sizeof(*nw));
+    if (!nw) return 0;
+
+    g_automap_stage_walls[stage_slot] = nw;
+    g_automap_stage_caps[stage_slot] = cap;
+    return 1;
+}
+
+static void automap_stage_seen_wall(int stage_slot,
+                                    uint32_t gfx_off,
+                                    int16_t zone_id,
+                                    int16_t x1, int16_t z1,
+                                    int16_t x2, int16_t z2)
+{
+    uint32_t idx;
+    AutomapStagedWall *w;
+
+    if (stage_slot < 0 || stage_slot >= RENDERER_AUTOMAP_STAGE_SLOT_COUNT) return;
+
+    idx = g_automap_stage_counts[stage_slot];
+    if (!automap_stage_ensure_slot_capacity(stage_slot, idx + 1u)) return;
+
+    w = &g_automap_stage_walls[stage_slot][idx];
+    w->gfx_off = gfx_off;
+    w->zone_id = zone_id;
+    w->x1 = x1;
+    w->z1 = z1;
+    w->x2 = x2;
+    w->z2 = z2;
+    g_automap_stage_counts[stage_slot] = idx + 1u;
+}
+
+static uint64_t automap_door_lookup_key_plus1(int16_t zone_id, uint32_t gfx_off)
+{
+    uint64_t key = ((uint64_t)(uint16_t)zone_id << 32) | (uint64_t)gfx_off;
+    key += 1u; /* 0 means empty slot */
+    if (key == 0u) key = 1u;
+    return key;
+}
+
+static void automap_door_lookup_release(void)
+{
+    free(g_automap_door_lookup_keys);
+    g_automap_door_lookup_keys = NULL;
+    free(g_automap_door_lookup_flags);
+    g_automap_door_lookup_flags = NULL;
+    g_automap_door_lookup_cap = 0;
+    g_automap_door_lookup_level = NULL;
+    g_automap_door_lookup_list_ptr = NULL;
+    g_automap_door_lookup_offsets_ptr = NULL;
+    g_automap_door_lookup_data_ptr = NULL;
+    g_automap_door_lookup_num_doors = 0;
+}
+
+static int automap_door_lookup_matches_level(const LevelState *level)
+{
+    if (!level) return 0;
+    return level == g_automap_door_lookup_level &&
+           level->door_wall_list == g_automap_door_lookup_list_ptr &&
+           level->door_wall_list_offsets == g_automap_door_lookup_offsets_ptr &&
+           level->door_data == g_automap_door_lookup_data_ptr &&
+           level->num_doors == g_automap_door_lookup_num_doors;
+}
+
+static int automap_door_lookup_rebuild_locked(const LevelState *level)
+{
+    uint32_t total_entries;
+    uint32_t cap;
+    uint64_t *keys;
+    uint16_t *flags;
+    uint32_t mask;
+
+    automap_door_lookup_release();
+
+    if (!level || !level->door_wall_list || !level->door_wall_list_offsets || !level->door_data || level->num_doors <= 0) {
+        g_automap_door_lookup_level = level;
+        if (level) {
+            g_automap_door_lookup_list_ptr = level->door_wall_list;
+            g_automap_door_lookup_offsets_ptr = level->door_wall_list_offsets;
+            g_automap_door_lookup_data_ptr = level->door_data;
+            g_automap_door_lookup_num_doors = level->num_doors;
+        }
+        return 1;
+    }
+
+    total_entries = level->door_wall_list_offsets[level->num_doors];
+    if (total_entries == 0u) {
+        g_automap_door_lookup_level = level;
+        g_automap_door_lookup_list_ptr = level->door_wall_list;
+        g_automap_door_lookup_offsets_ptr = level->door_wall_list_offsets;
+        g_automap_door_lookup_data_ptr = level->door_data;
+        g_automap_door_lookup_num_doors = level->num_doors;
+        return 1;
+    }
+
+    cap = 1024u;
+    while (cap < total_entries || ((uint64_t)cap * 6u) < ((uint64_t)total_entries * 10u)) {
+        if (cap > UINT32_MAX / 2u) {
+            cap = 1u << 31;
+            break;
+        }
+        cap <<= 1u;
+    }
+
+    keys = (uint64_t *)calloc((size_t)cap, sizeof(uint64_t));
+    if (!keys) return 0;
+    flags = (uint16_t *)calloc((size_t)cap, sizeof(uint16_t));
+    if (!flags) {
+        free(keys);
+        return 0;
+    }
+    mask = cap - 1u;
+
+    for (int di = 0; di < level->num_doors; di++) {
+        int16_t door_zone = rd16(level->door_data + (size_t)di * 22u + 0u);
+        uint16_t door_flags = (uint16_t)rd16(level->door_data + (size_t)di * 22u + 20u);
+        uint32_t start = level->door_wall_list_offsets[di];
+        uint32_t end = level->door_wall_list_offsets[di + 1];
+        for (uint32_t j = start; j < end; j++) {
+            const uint8_t *ent = level->door_wall_list + (size_t)j * 10u;
+            uint32_t gfx_off = (uint32_t)rd32(ent + 2);
+            uint64_t key_plus1 = automap_door_lookup_key_plus1(door_zone, gfx_off);
+            uint32_t h = automap_hash_u64(key_plus1) & mask;
+            while (keys[h] != 0u && keys[h] != key_plus1)
+                h = (h + 1u) & mask;
+            if (keys[h] == 0u) {
+                keys[h] = key_plus1;
+                flags[h] = door_flags;
+            } else {
+                /* Multiple entries can map to the same wall gfx in a zone; merge condition bits. */
+                flags[h] = (uint16_t)(flags[h] | door_flags);
+            }
+        }
+    }
+
+    g_automap_door_lookup_keys = keys;
+    g_automap_door_lookup_flags = flags;
+    g_automap_door_lookup_cap = cap;
+    g_automap_door_lookup_level = level;
+    g_automap_door_lookup_list_ptr = level->door_wall_list;
+    g_automap_door_lookup_offsets_ptr = level->door_wall_list_offsets;
+    g_automap_door_lookup_data_ptr = level->door_data;
+    g_automap_door_lookup_num_doors = level->num_doors;
+    return 1;
+}
+
+static int automap_door_lookup_get_flags_fast(const LevelState *level,
+                                              int16_t zone_id,
+                                              uint32_t gfx_off,
+                                              uint16_t *out_flags)
+{
+    uint64_t key_plus1;
+    uint32_t cap;
+    uint32_t mask;
+    uint32_t h;
+
+    if (!out_flags || zone_id < 0) return 0;
+    if (!automap_door_lookup_matches_level(level)) return 0;
+
+    cap = g_automap_door_lookup_cap;
+    if (!g_automap_door_lookup_keys || !g_automap_door_lookup_flags || cap == 0u) return 0;
+
+    key_plus1 = automap_door_lookup_key_plus1(zone_id, gfx_off);
+    mask = cap - 1u;
+    h = automap_hash_u64(key_plus1) & mask;
+    for (uint32_t probe = 0; probe < cap; probe++) {
+        uint64_t k = g_automap_door_lookup_keys[h];
+        if (k == 0u) return 0;
+        if (k == key_plus1) {
+            *out_flags = g_automap_door_lookup_flags[h];
+            return 1;
+        }
+        h = (h + 1u) & mask;
+    }
+    return 0;
+}
+
+static void automap_key_mask_cache_reset(void)
+{
+    g_automap_key_mask_level = NULL;
+    g_automap_key_mask_cached = 0;
+    g_automap_key_mask_frame_idx = UINT32_MAX;
+}
+
+static void automap_refresh_key_mask_cache_for_frame(const LevelState *level, uint32_t frame_idx)
+{
+    if (!level) {
+        automap_key_mask_cache_reset();
+        return;
+    }
+    if (g_automap_key_mask_level != level || g_automap_key_mask_frame_idx != frame_idx) {
+        g_automap_key_mask_level = level;
+        g_automap_key_mask_cached = automap_level_key_mask(level);
+        g_automap_key_mask_frame_idx = frame_idx;
+    }
+}
+
+static uint8_t automap_get_cached_key_mask(const LevelState *level)
+{
+    if (level && level == g_automap_key_mask_level)
+        return g_automap_key_mask_cached;
+    return automap_level_key_mask(level);
 }
 
 uint32_t renderer_automap_seen_key_plus1(uint32_t gfx_off,
@@ -734,7 +1030,7 @@ uint32_t renderer_automap_seen_key_plus1(uint32_t gfx_off,
     k = automap_hash_u32(k ^ ep0);
     k = automap_hash_u32(k ^ (ep1 * 0x85EBCA6Bu));
 
-    /* Hash table stores key+1; 0 means empty slot. */
+    /* Return key+1 so 0 remains reserved for "empty" sentinels. */
     k += 1u;
     if (k == 0u) k = 1u;
     return k;
@@ -766,18 +1062,28 @@ static int automap_ensure_hash(LevelState *level, uint32_t want_cap_pow2)
     uint32_t *new_tab = (uint32_t *)calloc((size_t)want_cap_pow2, sizeof(uint32_t));
     if (!new_tab) return 0;
 
-    /* Rehash existing entries if any. Table stores seen-wall key+1, 0 = empty. */
-    if (level->automap_seen_hash && level->automap_seen_hash_cap) {
-        for (uint32_t i = 0; i < level->automap_seen_hash_cap; i++) {
-            uint32_t v = level->automap_seen_hash[i];
-            if (v == AUTOMAP_HASH_EMPTY) continue;
-            uint32_t key_plus1 = v;
-            uint32_t cap = want_cap_pow2;
-            uint32_t mask = cap - 1u;
+    /* Rehash existing entries if any. Table stores wall index + 1, 0 = empty. */
+    if (level->automap_seen_walls && level->automap_seen_count > 0) {
+        uint32_t mask = want_cap_pow2 - 1u;
+        for (uint32_t i = 0; i < level->automap_seen_count; i++) {
+            const AutomapSeenWall *w = &level->automap_seen_walls[i];
+            uint32_t key_plus1 = renderer_automap_seen_key_plus1(w->gfx_off, w->x1, w->z1, w->x2, w->z2);
             uint32_t h = automap_hash_u32(key_plus1) & mask;
-            while (new_tab[h] != AUTOMAP_HASH_EMPTY) h = (h + 1u) & mask;
-            new_tab[h] = key_plus1;
+            while (new_tab[h] != AUTOMAP_HASH_EMPTY) {
+                uint32_t existing_idx = new_tab[h] - 1u;
+                if (existing_idx < level->automap_seen_count) {
+                    const AutomapSeenWall *ew = &level->automap_seen_walls[existing_idx];
+                    uint32_t existing_key = renderer_automap_seen_key_plus1(ew->gfx_off, ew->x1, ew->z1, ew->x2, ew->z2);
+                    if (existing_key == key_plus1) break;
+                }
+                h = (h + 1u) & mask;
+            }
+            if (new_tab[h] == AUTOMAP_HASH_EMPTY)
+                new_tab[h] = i + 1u;
         }
+    }
+
+    if (level->automap_seen_hash && level->automap_seen_hash_cap) {
         free(level->automap_seen_hash);
     }
 
@@ -1086,11 +1392,19 @@ static uint8_t automap_door_key_for_wall_gfx_off(const LevelState *level, uint32
                                                   int16_t zone_hint,
                                                   int *out_is_door)
 {
+    uint8_t key_mask;
+    uint16_t cached_flags = 0;
+
     if (out_is_door) *out_is_door = 0;
     if (!level || !level->door_wall_list || !level->door_wall_list_offsets || level->num_doors <= 0)
         return 0;
 
-    uint8_t key_mask = automap_level_key_mask(level);
+    key_mask = automap_get_cached_key_mask(level);
+    if (automap_door_lookup_get_flags_fast(level, zone_hint, gfx_off, &cached_flags)) {
+        if (out_is_door) *out_is_door = 1;
+        return automap_key_id_from_door_flags_masked(cached_flags, key_mask);
+    }
+
     int matched_door = -1;
     int matched_score = -1;
 
@@ -1134,28 +1448,24 @@ static uint8_t automap_door_key_for_wall_gfx_off(const LevelState *level, uint32
     }
 }
 
-static void automap_mark_seen(LevelState *level,
-                              uint32_t gfx_off,
-                              int16_t zone_id,
-                              int16_t x1, int16_t z1, int16_t x2, int16_t z2,
-                              uint8_t is_door, uint8_t door_key_id)
+static void automap_mark_seen_locked(LevelState *level,
+                                     uint32_t gfx_off,
+                                     int16_t zone_id,
+                                     int16_t x1, int16_t z1, int16_t x2, int16_t z2,
+                                     uint8_t is_door, uint8_t door_key_id)
 {
     if (!level) return;
     if (!level->graphics || level->graphics_byte_count == 0) return;
     if (gfx_off == 0 || gfx_off >= level->graphics_byte_count) return;
 
-    automap_lock();
-
     /* Lazy init structures. */
     if (!automap_ensure_hash(level, 2048u)) {
-        automap_unlock();
         return;
     }
 
     /* Maintain load factor <= ~0.6 */
     if (level->automap_seen_hash_cap && level->automap_seen_count * 10u >= level->automap_seen_hash_cap * 6u) {
         if (!automap_ensure_hash(level, level->automap_seen_hash_cap * 2u)) {
-            automap_unlock();
             return;
         }
     }
@@ -1167,37 +1477,36 @@ static void automap_mark_seen(LevelState *level,
     while (1) {
         uint32_t v = level->automap_seen_hash[h];
         if (v == AUTOMAP_HASH_EMPTY) break;
-        if (v == key_plus1) {
-            /* Existing entry: refresh metadata so stale color assignments self-heal. */
-            for (uint32_t i = 0; i < level->automap_seen_count; i++) {
-                AutomapSeenWall *ew = &level->automap_seen_walls[i];
+        {
+            uint32_t idx = v - 1u;
+            if (idx < level->automap_seen_count) {
+                AutomapSeenWall *ew = &level->automap_seen_walls[idx];
                 uint32_t ek = renderer_automap_seen_key_plus1(ew->gfx_off, ew->x1, ew->z1, ew->x2, ew->z2);
-                if (ek != key_plus1) continue;
-                if (is_door) {
-                    ew->is_door = 1;
-                    ew->door_key_id = door_key_id;
-                }
-                {
-                    uint16_t meta = ew->reserved;
-                    if (zone_id >= 0) meta = automap_meta_set_zone_hint(meta, zone_id);
-                    if (!automap_meta_internal_known(meta)) {
-                        int is_internal = automap_segment_is_internal_connected(level,
-                                                                               ew->x1, ew->z1,
-                                                                               ew->x2, ew->z2);
-                        meta = automap_meta_set_internal(meta, is_internal);
+                if (ek == key_plus1) {
+                    /* Existing entry: refresh metadata so stale color assignments self-heal. */
+                    if (is_door) {
+                        ew->is_door = 1;
+                        ew->door_key_id = door_key_id;
                     }
-                    ew->reserved = meta;
+                    {
+                        uint16_t meta = ew->reserved;
+                        if (zone_id >= 0) meta = automap_meta_set_zone_hint(meta, zone_id);
+                        if (!automap_meta_internal_known(meta)) {
+                            int is_internal = automap_segment_is_internal_connected(level,
+                                                                                   ew->x1, ew->z1,
+                                                                                   ew->x2, ew->z2);
+                            meta = automap_meta_set_internal(meta, is_internal);
+                        }
+                        ew->reserved = meta;
+                    }
+                    return; /* already seen */
                 }
-                break;
             }
-            automap_unlock();
-            return; /* already seen */
         }
         h = (h + 1u) & mask;
     }
 
     if (!automap_ensure_walls(level, level->automap_seen_count + 1u)) {
-        automap_unlock();
         return;
     }
 
@@ -1213,7 +1522,51 @@ static void automap_mark_seen(LevelState *level,
         w->reserved = automap_meta_set_internal(meta, is_internal);
     }
 
-    level->automap_seen_hash[h] = key_plus1;
+    level->automap_seen_hash[h] = level->automap_seen_count;
+}
+
+static AB3D_ATTR_UNUSED void automap_mark_seen(LevelState *level,
+                                               uint32_t gfx_off,
+                                               int16_t zone_id,
+                                               int16_t x1, int16_t z1, int16_t x2, int16_t z2,
+                                               uint8_t is_door, uint8_t door_key_id)
+{
+    if (!automap_try_lock()) return;
+    automap_mark_seen_locked(level, gfx_off, zone_id, x1, z1, x2, z2, is_door, door_key_id);
+    automap_unlock();
+}
+
+static void automap_commit_staged_walls(LevelState *level)
+{
+    uint32_t total_staged = 0;
+
+    if (!level) return;
+    for (int slot = 0; slot < RENDERER_AUTOMAP_STAGE_SLOT_COUNT; slot++) {
+        total_staged += g_automap_stage_counts[slot];
+    }
+    if (total_staged == 0u) return;
+
+    automap_lock();
+    if (!automap_door_lookup_matches_level(level)) {
+        (void)automap_door_lookup_rebuild_locked(level);
+    }
+
+    for (int slot = 0; slot < RENDERER_AUTOMAP_STAGE_SLOT_COUNT; slot++) {
+        AutomapStagedWall *walls = g_automap_stage_walls[slot];
+        uint32_t count = g_automap_stage_counts[slot];
+        if (!walls || count == 0u) continue;
+        for (uint32_t i = 0; i < count; i++) {
+            const AutomapStagedWall *w = &walls[i];
+            int is_door = 0;
+            uint8_t key_id = automap_door_key_for_wall_gfx_off(level, w->gfx_off,
+                                                                w->x1, w->z1, w->x2, w->z2,
+                                                                w->zone_id,
+                                                                &is_door);
+            automap_mark_seen_locked(level, w->gfx_off, w->zone_id,
+                                     w->x1, w->z1, w->x2, w->z2,
+                                     (uint8_t)(is_door ? 1 : 0), key_id);
+        }
+    }
     automap_unlock();
 }
 
@@ -1358,7 +1711,11 @@ void renderer_automap_preallocate_for_level(LevelState *level)
     automap_lock();
     (void)automap_ensure_walls(level, want_walls);
     (void)automap_ensure_hash(level, want_hash);
+    (void)automap_door_lookup_rebuild_locked(level);
     automap_unlock();
+
+    /* Force a fresh per-frame recompute when the first frame for this level renders. */
+    automap_key_mask_cache_reset();
 }
 
 int renderer_automap_collect_line_segments(GameState *state,
@@ -1528,6 +1885,7 @@ typedef AB3D_CACHELINE_ALIGN struct {
     RendererZoneTraceFloorStats *active_floor_trace_stats;
     int16_t slice_left;
     int16_t slice_right;
+    int16_t automap_stage_slot;
     int16_t pick_zone_id;
     uint8_t pick_player_id;
     int8_t  fill_screen_water;
@@ -1564,6 +1922,7 @@ static void render_slice_context_reset(RenderSliceContext *ctx,
     ctx->active_floor_trace_stats = NULL;
     ctx->slice_left = left;
     ctx->slice_right = right;
+    /* Preserve caller-assigned stage slot (worker slot vs main slot). */
     ctx->pick_zone_id = -1;
     ctx->pick_player_id = 0;
     ctx->cur_wall_pal = NULL;
@@ -1592,6 +1951,7 @@ static void render_slice_context_init(RenderSliceContext *ctx,
     memset(ctx->floor_pal_rgb_levels, 0, sizeof(ctx->floor_pal_rgb_levels));
     ctx->strip_left = left;
     ctx->strip_right = right;
+    ctx->automap_stage_slot = RENDERER_AUTOMAP_STAGE_MAIN_SLOT;
     render_slice_context_reset(ctx, left, right, top, bot);
     ctx->wall_cache_block_off = 0xFFFFu;
     ctx->update_column_clip = 1;
@@ -1790,6 +2150,7 @@ static int renderer_thread_worker_main(void *userdata)
                 renderer_draw_world_slice(state, world_zone_prepass,
                                           col_start, col_end,
                                           frame_idx, trace_clip,
+                                          worker->index,
                                           &fill_screen_water, &world_stats);
                 if (state->cfg_weapon_draw)
                     renderer_draw_gun_columns(state, col_start, col_end);
@@ -2933,9 +3294,13 @@ static void renderer_consume_zone_trace_slot(void)
 
 static int renderer_profile_env_enabled(void)
 {
-    const char *env = SDL_getenv("AB3D_PROFILE_RENDER");
-    if (!env || !*env) return 0;
-    return (atoi(env) > 0) ? 1 : 0;
+    static int s_cached = -1;
+    if (s_cached < 0) {
+        const char *env = SDL_getenv("AB3D_PROFILE_RENDER");
+        if (!env || !*env) s_cached = 0;
+        else s_cached = (atoi(env) > 0) ? 1 : 0;
+    }
+    return s_cached;
 }
 
 /* Optional trace-area filters shared by CLIP and ZONEVIS traces.
@@ -3943,6 +4308,9 @@ void renderer_init(void)
 {
     build_amiga12_lut();
     memset(&g_renderer, 0, sizeof(g_renderer));
+    automap_stage_release();
+    automap_door_lookup_release();
+    automap_key_mask_cache_reset();
     allocate_buffers(RENDER_WIDTH, RENDER_HEIGHT);
     g_automap_mutex = SDL_CreateMutex();
     if (!g_automap_mutex) {
@@ -3968,6 +4336,9 @@ void renderer_shutdown(void)
     renderer_reset_level_sky_cache_internal();
     renderer_floor_fast_release_scratch();
     renderer_zone_trace_floor_stats_release_scratch();
+    automap_stage_release();
+    automap_door_lookup_release();
+    automap_key_mask_cache_reset();
     if (g_automap_mutex) {
         SDL_DestroyMutex(g_automap_mutex);
         g_automap_mutex = NULL;
@@ -12392,10 +12763,15 @@ static int renderer_wall_gfx_off_matches_door_zone(const LevelState *level,
                                                     uint32_t gfx_off,
                                                     int16_t door_zone_id)
 {
+    uint16_t dummy_flags = 0;
+
     if (!level || !level->door_wall_list || !level->door_wall_list_offsets || !level->door_data)
         return 0;
     if (level->num_doors <= 0)
         return 0;
+
+    if (automap_door_lookup_get_flags_fast(level, door_zone_id, gfx_off, &dummy_flags))
+        return 1;
 
     const uint8_t *lst = level->door_wall_list;
     for (int di = 0; di < level->num_doors; di++) {
@@ -13551,18 +13927,16 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
                 /* Amiga seethru path (type 13) clamps d6 to 32; normal walls clamp to 64. */
                 int16_t wall_d6_max = (entry_type == 13) ? 32 : 64;
                 if (!skip_this_wall) {
-                    /* Automap: tag this wall as seen (serialized via g_automap_mutex). */
+                    /* Automap: stage this wall as visible; main thread commits after world pass. */
                     if (level->points && level->graphics) {
                         /* door_wall_list gfx_off points to the wall record starting at the type word. */
                         int16_t wx1 = rd16(level->points + (size_t)p1 * 4u + 0u);
                         int16_t wz1 = rd16(level->points + (size_t)p1 * 4u + 2u);
                         int16_t wx2 = rd16(level->points + (size_t)p2 * 4u + 0u);
                         int16_t wz2 = rd16(level->points + (size_t)p2 * 4u + 2u);
-                        int is_door = 0;
-                        uint8_t key_id = automap_door_key_for_wall_gfx_off(level, wall_gfx_off,
-                                                                            wx1, wz1, wx2, wz2, zone_id, &is_door);
-                        automap_mark_seen(level, wall_gfx_off, zone_id, wx1, wz1, wx2, wz2,
-                                          (uint8_t)(is_door ? 1 : 0), key_id);
+                        automap_stage_seen_wall((int)ctx->automap_stage_slot,
+                                                wall_gfx_off, zone_id,
+                                                wx1, wz1, wx2, wz2);
                     }
                     {
                         /* See-through/sky wall polys should not occlude billboards. */
@@ -14587,6 +14961,7 @@ static void renderer_draw_world_slice(GameState *state,
                                       const RendererWorldZonePrepass *zone_prepass,
                                       int16_t col_start, int16_t col_end,
                                       uint32_t frame_idx, int trace_clip,
+                                      int automap_stage_slot,
                                       int8_t *out_fill_screen_water,
                                       RendererWorkloadStats *out_workload_stats)
 {
@@ -14619,6 +14994,7 @@ static void renderer_draw_world_slice(GameState *state,
     int16_t strip_bot = (int16_t)(h - 1);
 
     render_slice_context_init(&frame_ctx, (int16_t)cs, (int16_t)ce, strip_top, strip_bot);
+    frame_ctx.automap_stage_slot = (int16_t)automap_stage_slot;
     frame_ctx.zone_prepass = zone_prepass;
     /* Column strips assign disjoint x ranges to workers; single-threaded full-width is one worker. */
     frame_ctx.update_column_clip = 1;
@@ -14837,6 +15213,7 @@ void renderer_draw_display(GameState *state)
     uint32_t frame_idx = g_render_frame_counter++;
     g_renderer_zone_trace_active = 0;
     g_renderer_profile_collect_stats = (prof_on || pick_this_frame) ? 1 : 0;
+    automap_refresh_key_mask_cache_for_frame(&state->level, frame_idx);
 
     /* 1. Projection setup.
      * Horizontal projection uses a normalized logical width so supersampling changes
@@ -14987,6 +15364,8 @@ void renderer_draw_display(GameState *state)
     }
     if (prof_on) t_after_setup = SDL_GetPerformanceCounter();
 
+    automap_stage_reset_frame();
+
     int8_t fill_screen_water = 0;
     int used_threaded_world = 0;
 #ifndef AB3D_NO_THREADS
@@ -15015,9 +15394,11 @@ void renderer_draw_display(GameState *state)
         renderer_draw_world_slice(state, &world_zone_prepass,
                                   0, (int16_t)g_renderer.width,
                                   frame_idx, trace_clip,
+                                  RENDERER_AUTOMAP_STAGE_MAIN_SLOT,
                                   &fill_screen_water, &world_workload_stats);
         world_workers = 1;
     }
+    automap_commit_staged_walls(&state->level);
     if (prof_on) t_after_world = SDL_GetPerformanceCounter();
 
     int8_t tint_water = fill_screen_water;
