@@ -79,11 +79,15 @@ static int16_t robot_frame_counter = 0;
  * so small diagonal moves survived integer truncation. With a true 50Hz tick,
  * TempFrames is usually 1 and those same per-tick divisions can collapse to zero,
  * leaving enemies snagged until a debug stall produces a larger TempFrames lump.
- * Carry the per-slot X/Z remainder forward so total movement over time matches the
- * coarse Amiga cadence without giving up 50Hz simulation or render interpolation. */
+ * Carry per-slot X/Z motion forward in fixed-point world units so total movement
+ * over time matches the coarse Amiga cadence without giving up 50Hz simulation or
+ * render interpolation. Keeping the pending world-space delta also lets us restore
+ * blocked movement after wall/object collision instead of losing that pressure on
+ * the tick where collision resolution returns the enemy to its old position. */
+#define ENEMY_MOTION_FP_SCALE 16384
 static const uint8_t *g_enemy_motion_slots_base = NULL;
-static int32_t g_enemy_motion_frac_x[MAX_OBJECTS];
-static int32_t g_enemy_motion_frac_z[MAX_OBJECTS];
+static int32_t g_enemy_motion_fp_x[MAX_OBJECTS];
+static int32_t g_enemy_motion_fp_z[MAX_OBJECTS];
 static uint32_t g_enemy_motion_stamp[MAX_OBJECTS];
 
 /* Gib floor/wall splat (sample 13): only one per objects_update — many gibs can time out together. */
@@ -141,8 +145,8 @@ static void enemy_motion_sync_slots(const GameState *state)
     if (g_enemy_motion_slots_base == object_data)
         return;
 
-    memset(g_enemy_motion_frac_x, 0, sizeof(g_enemy_motion_frac_x));
-    memset(g_enemy_motion_frac_z, 0, sizeof(g_enemy_motion_frac_z));
+    memset(g_enemy_motion_fp_x, 0, sizeof(g_enemy_motion_fp_x));
+    memset(g_enemy_motion_fp_z, 0, sizeof(g_enemy_motion_fp_z));
     memset(g_enemy_motion_stamp, 0, sizeof(g_enemy_motion_stamp));
     g_enemy_motion_slots_base = object_data;
 }
@@ -169,8 +173,8 @@ static int enemy_motion_slot_index(const GameState *state, const GameObject *obj
     stamp = ((uint32_t)(uint8_t)obj->obj.number << 16) |
             (uint32_t)(uint16_t)OBJ_CID((GameObject *)obj);
     if (g_enemy_motion_stamp[slot] != stamp) {
-        g_enemy_motion_frac_x[slot] = 0;
-        g_enemy_motion_frac_z[slot] = 0;
+        g_enemy_motion_fp_x[slot] = 0;
+        g_enemy_motion_fp_z[slot] = 0;
         g_enemy_motion_stamp[slot] = stamp;
     }
 
@@ -181,34 +185,118 @@ static void enemy_motion_zero_slot(int slot)
 {
     if (slot < 0 || slot >= MAX_OBJECTS)
         return;
-    g_enemy_motion_frac_x[slot] = 0;
-    g_enemy_motion_frac_z[slot] = 0;
+    g_enemy_motion_fp_x[slot] = 0;
+    g_enemy_motion_fp_z[slot] = 0;
 }
 
-static int32_t enemy_motion_apply_axis(int slot, int axis, int64_t numer, int32_t denom)
+static void enemy_motion_align_pending(int slot,
+                                       int64_t desired_x_fp,
+                                       int64_t desired_z_fp)
+{
+    int64_t pending_x;
+    int64_t pending_z;
+    int64_t dot;
+
+    if (slot < 0 || slot >= MAX_OBJECTS)
+        return;
+    if ((desired_x_fp == 0) && (desired_z_fp == 0))
+        return;
+
+    pending_x = g_enemy_motion_fp_x[slot];
+    pending_z = g_enemy_motion_fp_z[slot];
+    if ((pending_x == 0) && (pending_z == 0))
+        return;
+
+    dot = pending_x * desired_x_fp + pending_z * desired_z_fp;
+    if (dot <= 0) {
+        enemy_motion_zero_slot(slot);
+        return;
+    }
+
+    if ((pending_x < 0 && desired_x_fp > 0) ||
+        (pending_x > 0 && desired_x_fp < 0)) {
+        g_enemy_motion_fp_x[slot] = 0;
+    }
+    if ((pending_z < 0 && desired_z_fp > 0) ||
+        (pending_z > 0 && desired_z_fp < 0)) {
+        g_enemy_motion_fp_z[slot] = 0;
+    }
+}
+
+static int32_t enemy_motion_apply_axis_fp(int slot, int axis, int64_t delta_fp)
 {
     int64_t accum;
     int32_t delta;
-    int32_t rem;
-    int32_t *frac;
+    int32_t *pending_fp;
 
-    if (denom <= 0)
-        return 0;
     if (slot < 0 || slot >= MAX_OBJECTS)
-        return (int32_t)(numer / denom);
+        return (int32_t)(delta_fp / ENEMY_MOTION_FP_SCALE);
 
-    frac = (axis == 0) ? &g_enemy_motion_frac_x[slot] : &g_enemy_motion_frac_z[slot];
-    accum = (int64_t)(*frac) + numer;
-    delta = (int32_t)(accum / denom);
-    rem = (int32_t)(accum % denom);
-    *frac = rem;
+    pending_fp = (axis == 0) ? &g_enemy_motion_fp_x[slot] : &g_enemy_motion_fp_z[slot];
+    accum = (int64_t)(*pending_fp) + delta_fp;
+    delta = (int32_t)(accum / ENEMY_MOTION_FP_SCALE);
+    *pending_fp = (int32_t)(accum - (int64_t)delta * ENEMY_MOTION_FP_SCALE);
     return delta;
+}
+
+static void enemy_motion_restore_blocked_step(const GameState *state,
+                                              const GameObject *obj,
+                                              int32_t wanted_dx,
+                                              int32_t wanted_dz,
+                                              int32_t actual_dx,
+                                              int32_t actual_dz)
+{
+    int slot = enemy_motion_slot_index(state, obj);
+
+    if (slot < 0 || slot >= MAX_OBJECTS)
+        return;
+
+    g_enemy_motion_fp_x[slot] += (wanted_dx - actual_dx) * ENEMY_MOTION_FP_SCALE;
+    g_enemy_motion_fp_z[slot] += (wanted_dz - actual_dz) * ENEMY_MOTION_FP_SCALE;
 }
 
 static int32_t enemy_motion_distance(int32_t dx, int32_t dz)
 {
     double dist_sq = (double)dx * (double)dx + (double)dz * (double)dz;
     return (int32_t)sqrt(dist_sq);
+}
+
+static void enemy_motion_turn_towards_target(int16_t *facing,
+                                             int32_t target_x,
+                                             int32_t target_z,
+                                             int32_t origin_x,
+                                             int32_t origin_z,
+                                             int16_t turn_speed)
+{
+    int32_t dx;
+    int32_t dz;
+    double angle_rad;
+    int16_t target_angle;
+    int16_t current;
+    int16_t diff;
+
+    if (!facing)
+        return;
+
+    dx = target_x - origin_x;
+    dz = target_z - origin_z;
+    if ((dx == 0 && dz == 0) || turn_speed <= 0)
+        return;
+
+    angle_rad = atan2((double)-dx, (double)-dz);
+    target_angle = (int16_t)(angle_rad * (4096.0 / (2.0 * 3.14159265)));
+    target_angle = (target_angle * 2) & ANGLE_MASK;
+
+    current = *facing;
+    diff = target_angle - current;
+
+    while (diff > 4096) diff -= 8192;
+    while (diff < -4096) diff += 8192;
+
+    if (diff > turn_speed) diff = turn_speed;
+    if (diff < -turn_speed) diff = -turn_speed;
+
+    *facing = (int16_t)((current + diff) & ANGLE_MASK);
 }
 
 static void enemy_motion_step_in_facing(const GameObject *obj,
@@ -220,13 +308,13 @@ static void enemy_motion_step_in_facing(const GameObject *obj,
     int slot = enemy_motion_slot_index(state, obj);
     int16_t s = sin_lookup(angle);
     int16_t c = cos_lookup(angle);
+    int64_t step_x_fp = -((int64_t)s * speed_units);
+    int64_t step_z_fp = -((int64_t)c * speed_units);
 
-    ctx->newx = ctx->oldx + enemy_motion_apply_axis(slot, 0,
-                                                    -((int64_t)s * speed_units),
-                                                    16384);
-    ctx->newz = ctx->oldz + enemy_motion_apply_axis(slot, 1,
-                                                    -((int64_t)c * speed_units),
-                                                    16384);
+    enemy_motion_align_pending(slot, step_x_fp, step_z_fp);
+
+    ctx->newx = ctx->oldx + enemy_motion_apply_axis_fp(slot, 0, step_x_fp);
+    ctx->newz = ctx->oldz + enemy_motion_apply_axis_fp(slot, 1, step_z_fp);
 }
 
 static void enemy_motion_step_towards_point(const GameObject *obj,
@@ -240,6 +328,8 @@ static void enemy_motion_step_towards_point(const GameObject *obj,
     int32_t dx = target_x - ctx->oldx;
     int32_t dz = target_z - ctx->oldz;
     int32_t dist = enemy_motion_distance(dx, dz);
+    int64_t step_x_fp;
+    int64_t step_z_fp;
 
     if (dist <= 0) {
         ctx->newx = ctx->oldx;
@@ -258,12 +348,13 @@ static void enemy_motion_step_towards_point(const GameObject *obj,
         return;
     }
 
-    ctx->newx = ctx->oldx + enemy_motion_apply_axis(slot, 0,
-                                                    (int64_t)dx * speed_units,
-                                                    dist);
-    ctx->newz = ctx->oldz + enemy_motion_apply_axis(slot, 1,
-                                                    (int64_t)dz * speed_units,
-                                                    dist);
+    step_x_fp = ((int64_t)dx * speed_units * ENEMY_MOTION_FP_SCALE) / dist;
+    step_z_fp = ((int64_t)dz * speed_units * ENEMY_MOTION_FP_SCALE) / dist;
+
+    enemy_motion_align_pending(slot, step_x_fp, step_z_fp);
+
+    ctx->newx = ctx->oldx + enemy_motion_apply_axis_fp(slot, 0, step_x_fp);
+    ctx->newz = ctx->oldz + enemy_motion_apply_axis_fp(slot, 1, step_z_fp);
 }
 
 static void enemy_motion_step_towards_angle(const GameObject *obj,
@@ -293,25 +384,9 @@ static void enemy_motion_step_towards_angle(const GameObject *obj,
     if (move_dist > dist)
         move_dist = dist;
 
-    {
-        double angle_rad = atan2((double)-dx, (double)-dz);
-        int16_t target_angle = (int16_t)(angle_rad * (4096.0 / (2.0 * 3.14159265)));
-        int16_t current = *facing;
-        int16_t diff;
-
-        target_angle = (target_angle * 2) & ANGLE_MASK;
-        diff = target_angle - current;
-
-        while (diff > 4096) diff -= 8192;
-        while (diff < -4096) diff += 8192;
-
-        if (diff > turn_speed) diff = turn_speed;
-        if (diff < -turn_speed) diff = -turn_speed;
-
-        current = (int16_t)((current + diff) & ANGLE_MASK);
-        *facing = current;
-        enemy_motion_step_in_facing(obj, state, ctx, current, move_dist);
-    }
+    enemy_motion_turn_towards_target(facing, target_x, target_z,
+                                     ctx->oldx, ctx->oldz, turn_speed);
+    enemy_motion_step_in_facing(obj, state, ctx, *facing, move_dist);
 }
 
 static int object_resolve_zone_index(const LevelState *level, int16_t zone_word)
@@ -1174,11 +1249,15 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
     }
 
     MoveContext ctx;
+    int32_t intended_dx;
+    int32_t intended_dz;
     move_context_init(&ctx);
     ctx.oldx = obj_x;
     ctx.oldz = obj_z;
     enemy_motion_step_in_facing(obj, state, &ctx, move_facing,
                                 (int32_t)speed * (int32_t)state->temp_frames);
+    intended_dx = ctx.newx - ctx.oldx;
+    intended_dz = ctx.newz - ctx.oldz;
     ctx.thing_height = params->thing_height;
     int zone_slots = level_zone_slot_count(&state->level);
     {
@@ -1239,6 +1318,11 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
         ctx.newx = contact_x;
         ctx.newz = contact_z;
     }
+
+    enemy_motion_restore_blocked_step(state, obj,
+                                      intended_dx, intended_dz,
+                                      ctx.newx - ctx.oldx,
+                                      ctx.newz - ctx.oldz);
 
     if (state->level.object_points) {
         uint8_t *pts = state->level.object_points + cid * 8;
@@ -2455,6 +2539,8 @@ static int32_t robot_track_target(GameObject *obj, const EnemyParams *params,
         ctx.stood_in_top = obj->obj.in_top;
 
         {
+            int32_t intended_dx = 0;
+            int32_t intended_dz = 0;
             int32_t move_dist = (int32_t)speed * (int32_t)state->temp_frames;
             int32_t toward_dist = dist - 300; /* Robot.s attack standoff range. */
             if (toward_dist < 0) toward_dist = 0;
@@ -2463,13 +2549,20 @@ static int32_t robot_track_target(GameObject *obj, const EnemyParams *params,
             if (move_dist > 0) {
                 enemy_motion_step_towards_point(obj, state, &ctx,
                                                 target_x, target_z, move_dist);
+                intended_dx = ctx.newx - ctx.oldx;
+                intended_dz = ctx.newz - ctx.oldz;
             } else {
                 ctx.newx = ctx.oldx;
                 ctx.newz = ctx.oldz;
             }
-        }
 
-        move_object_substepped(&ctx, &state->level);
+            move_object_substepped(&ctx, &state->level);
+
+            enemy_motion_restore_blocked_step(state, obj,
+                                              intended_dx, intended_dz,
+                                              ctx.newx - ctx.oldx,
+                                              ctx.newz - ctx.oldz);
+        }
 
         if (state->level.object_points) {
             int cid = (int)OBJ_CID(obj);
@@ -2580,6 +2673,8 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
     }
 
     MoveContext ctx;
+    int32_t intended_dx = 0;
+    int32_t intended_dz = 0;
     move_context_init(&ctx);
     ctx.oldx = obj_x;
     ctx.oldz = obj_z;
@@ -2614,16 +2709,32 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
         /* head_towards_angle uses the shared reversed-facing convention.
          * Convert robot facing in/out so gameplay-facing remains Amiga-parity. */
         int16_t work_facing = (int16_t)((facing + ANGLE_180) & ANGLE_MASK);
-        enemy_motion_step_towards_angle(obj, state, &ctx, &work_facing,
-                                        target_x, target_z,
-                                        (int32_t)speed * (int32_t)state->temp_frames,
-                                        turn_speed);
+        enemy_motion_turn_towards_target(&work_facing, target_x, target_z,
+                                         ctx.oldx, ctx.oldz, turn_speed);
+        if (apply_translation) {
+            enemy_motion_step_in_facing(obj, state, &ctx, work_facing,
+                                        (int32_t)speed * (int32_t)state->temp_frames);
+            intended_dx = ctx.newx - ctx.oldx;
+            intended_dz = ctx.newz - ctx.oldz;
+        } else {
+            ctx.newx = ctx.oldx;
+            ctx.newz = ctx.oldz;
+            enemy_motion_zero_slot(enemy_motion_slot_index(state, obj));
+        }
         facing = (int16_t)((work_facing - ANGLE_180) & ANGLE_MASK);
     } else {
-        enemy_motion_step_towards_angle(obj, state, &ctx, &facing,
-                                        target_x, target_z,
-                                        (int32_t)speed * (int32_t)state->temp_frames,
-                                        turn_speed);
+        enemy_motion_turn_towards_target(&facing, target_x, target_z,
+                                         ctx.oldx, ctx.oldz, turn_speed);
+        if (apply_translation) {
+            enemy_motion_step_in_facing(obj, state, &ctx, facing,
+                                        (int32_t)speed * (int32_t)state->temp_frames);
+            intended_dx = ctx.newx - ctx.oldx;
+            intended_dz = ctx.newz - ctx.oldz;
+        } else {
+            ctx.newx = ctx.oldx;
+            ctx.newz = ctx.oldz;
+            enemy_motion_zero_slot(enemy_motion_slot_index(state, obj));
+        }
     }
     NASTY_SET_FACING(*obj, facing);
 
@@ -2636,11 +2747,6 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
     } else {
         /* Match original enemy chase movement (single MoveObject call). */
         move_object(&ctx, &state->level);
-    }
-
-    if (!apply_translation) {
-        ctx.newx = ctx.oldx;
-        ctx.newz = ctx.oldz;
     }
 
     /* Keep the anti-jump clamp for ground chasers only. */
@@ -2660,6 +2766,11 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
         ctx.newx = contact_x;
         ctx.newz = contact_z;
     }
+
+    enemy_motion_restore_blocked_step(state, obj,
+                                      intended_dx, intended_dz,
+                                      ctx.newx - ctx.oldx,
+                                      ctx.newz - ctx.oldz);
 
     if (state->level.object_points) {
         int cid = (int)OBJ_CID(obj);
