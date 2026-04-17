@@ -1125,9 +1125,6 @@ static void enemy_prevent_deeper_player_overlap(const GameObject *obj, const Gam
 #define ENEMY_STEP_UP_MIN_DEFAULT     (40 * 256)
 #define ENEMY_STEP_DOWN_MIN_DEFAULT   (40 * 256)
 
-#define ENEMY_STEP_UP_MIN_SMALL_RED   (15 * 256)
-#define ENEMY_STEP_DOWN_MIN_SMALL_RED (15 * 256)
-
 static void enemy_apply_step_limits(const GameObject *obj,
                                     const EnemyParams *params,
                                     MoveContext *ctx)
@@ -1144,8 +1141,10 @@ static void enemy_apply_step_limits(const GameObject *obj,
 
     if (obj) {
         if (obj->obj.number == OBJ_NBR_SMALL_RED_THING) {
-            step_up_min = ENEMY_STEP_UP_MIN_SMALL_RED;
-            step_down_min = ENEMY_STEP_DOWN_MIN_SMALL_RED;
+            /* BigClaws.s writes StepUpVal/StepDownVal directly every tick. */
+            ctx->step_up_val = params ? params->step_up : (20 * 256);
+            ctx->step_down_val = params ? params->step_down : (20 * 256);
+            return;
         }
         flying = (obj->obj.number == OBJ_NBR_FLYING_NASTY ||
                   obj->obj.number == OBJ_NBR_EYEBALL);
@@ -1154,10 +1153,6 @@ static void enemy_apply_step_limits(const GameObject *obj,
     if (!flying) {
         if (step_up < step_up_min) step_up = step_up_min;
         if (step_down < step_down_min) step_down = step_down_min;
-
-        if (obj && obj->obj.number == OBJ_NBR_SMALL_RED_THING && step_up > step_down) {
-            step_up = step_down;
-        }
     }
 
     ctx->step_up_val = step_up;
