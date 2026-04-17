@@ -143,6 +143,8 @@ typedef void (APIENTRY *DisplayGlGenMipmapFn)(GLenum target);
 typedef void (APIENTRY *DisplayGlTexParameteriFn)(GLenum target, GLenum pname, GLint param);
 #endif
 
+#define DISPLAY_AUTOMAP_MAX_SEGS 4096
+
 /* -----------------------------------------------------------------------
  * SDL2 state
  * ----------------------------------------------------------------------- */
@@ -175,6 +177,9 @@ static Uint8 g_screen_tint_r = 0;
 static Uint8 g_screen_tint_g = 0;
 static Uint8 g_screen_tint_b = 0;
 static Uint8 g_screen_tint_a = 0;
+/* Reused for GL automap line NDC conversion (avoid per-frame malloc/free). */
+static float *g_gl_lines_ndc_scratch = NULL;
+static size_t g_gl_lines_ndc_scratch_cap = 0;
 
 #if SDL_VERSION_ATLEAST(2, 0, 12)
 static DisplayGlGenMipmapFn     g_gl_generate_mipmap;
@@ -1064,6 +1069,40 @@ static void display_gl_line(int x0, int y0, int x1, int y1, Uint8 r, Uint8 g, Ui
     g_gl_draw_arrays(GL_LINES, 0, 2);
 }
 
+static int display_gl_lines_ensure_scratch(int nverts)
+{
+    size_t need_floats;
+    size_t new_cap;
+    float *new_buf;
+
+    if (nverts <= 0) return 0;
+    need_floats = (size_t)nverts * 2u;
+    if (g_gl_lines_ndc_scratch && need_floats <= g_gl_lines_ndc_scratch_cap)
+        return 1;
+
+    new_cap = (g_gl_lines_ndc_scratch_cap > 0) ? g_gl_lines_ndc_scratch_cap : 1024u;
+    while (new_cap < need_floats) {
+        if (new_cap > SIZE_MAX / 2u) {
+            new_cap = need_floats;
+            break;
+        }
+        new_cap *= 2u;
+    }
+
+    new_buf = (float *)realloc(g_gl_lines_ndc_scratch, new_cap * sizeof(*new_buf));
+    if (!new_buf) return 0;
+    g_gl_lines_ndc_scratch = new_buf;
+    g_gl_lines_ndc_scratch_cap = new_cap;
+    return 1;
+}
+
+static void display_gl_lines_release_scratch(void)
+{
+    free(g_gl_lines_ndc_scratch);
+    g_gl_lines_ndc_scratch = NULL;
+    g_gl_lines_ndc_scratch_cap = 0;
+}
+
 static void display_gl_lines_xy(const float *xy, int nverts, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 {
     if (!g_gl_hud_ok || g_gl_overlay_win_w < 1 || !xy || nverts < 2 || (nverts & 1) != 0) return;
@@ -1074,8 +1113,9 @@ static void display_gl_lines_xy(const float *xy, int nverts, Uint8 r, Uint8 g, U
     float fg = g / 255.0f;
     float fb = b / 255.0f;
     float fa = a / 255.0f;
-    float *buf = (float *)malloc((size_t)nverts * 2u * sizeof(float));
-    if (!buf) return;
+    float *buf;
+    if (!display_gl_lines_ensure_scratch(nverts)) return;
+    buf = g_gl_lines_ndc_scratch;
 
     for (int i = 0; i < nverts; i++) {
         float nx, ny;
@@ -1090,7 +1130,6 @@ static void display_gl_lines_xy(const float *xy, int nverts, Uint8 r, Uint8 g, U
     g_gl_bind_buffer(0x8892, g_gl_hud_vbo);
     g_gl_buffer_data(0x8892, (ptrdiff_t)((size_t)nverts * 2u * sizeof(float)), buf, GL_STREAM_DRAW);
     g_gl_draw_arrays(GL_LINES, 0, nverts);
-    free(buf);
 }
 
 typedef struct DisplayAutomapGlLineBucket {
@@ -1875,6 +1914,7 @@ void display_init(GameState *state)
            g_present_dst_rect.w, g_present_dst_rect.h,
            g_present_dst_rect.x, g_present_dst_rect.y);
     display_log_display_mode_snapshot("startup-after-window");
+    (void)display_gl_lines_ensure_scratch(DISPLAY_AUTOMAP_MAX_SEGS * 14);
 #if defined(__EMSCRIPTEN__)
     /* Canvas backing store may settle after layout; refresh letterbox once. */
     SDL_PumpEvents();
@@ -1961,6 +2001,7 @@ void display_shutdown(void)
 {
     display_hud_digits_free();
     display_key_hud_free_textures();
+    display_gl_lines_release_scratch();
     g_key_hud_tex_tag = 0;
     renderer_shutdown();
     display_gl_shutdown_unpack();
@@ -1992,8 +2033,6 @@ void display_fade_down_title(int amount)    { (void)amount; }
 void display_clear_title_palette(void)      { }
 
 void display_init_copper_screen(void)       { }
-
-#define DISPLAY_AUTOMAP_MAX_SEGS 4096
 
 static void display_automap_amiga12_to_rgb(uint16_t cw, Uint8 *r, Uint8 *g, Uint8 *b)
 {

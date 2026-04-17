@@ -407,6 +407,8 @@ void play_the_game_prepare_level(GameState *state, bool *copper_screen_ready)
                (int)state->current_level);
     }
 
+    renderer_automap_preallocate_for_level(&state->level);
+
     game_rebuild_level_conditions(state);
 
     printf("[GAME] Entering main loop...\n");

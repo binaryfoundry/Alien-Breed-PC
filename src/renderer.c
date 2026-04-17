@@ -430,6 +430,56 @@ typedef struct {
     int before_ready;
 } RendererZoneTraceFloorStats;
 
+static AB3D_THREAD_LOCAL uint8_t *g_zone_trace_floor_before_tags_scratch = NULL;
+static AB3D_THREAD_LOCAL uint16_t *g_zone_trace_floor_before_cw_scratch = NULL;
+static AB3D_THREAD_LOCAL size_t g_zone_trace_floor_before_scratch_cap = 0;
+
+static int renderer_zone_trace_floor_stats_ensure_scratch(size_t need_count)
+{
+    size_t new_cap;
+    uint8_t *new_tags;
+    uint16_t *new_cw;
+
+    if (need_count == 0) return 1;
+    if (g_zone_trace_floor_before_tags_scratch &&
+        g_zone_trace_floor_before_cw_scratch &&
+        need_count <= g_zone_trace_floor_before_scratch_cap) {
+        return 1;
+    }
+
+    new_cap = (g_zone_trace_floor_before_scratch_cap > 0)
+        ? g_zone_trace_floor_before_scratch_cap : 1024u;
+    while (new_cap < need_count) {
+        if (new_cap > SIZE_MAX / 2u) {
+            new_cap = need_count;
+            break;
+        }
+        new_cap *= 2u;
+    }
+
+    new_tags = (uint8_t *)realloc(g_zone_trace_floor_before_tags_scratch,
+                                  new_cap * sizeof(*new_tags));
+    if (!new_tags) return 0;
+    g_zone_trace_floor_before_tags_scratch = new_tags;
+
+    new_cw = (uint16_t *)realloc(g_zone_trace_floor_before_cw_scratch,
+                                 new_cap * sizeof(*new_cw));
+    if (!new_cw) return 0;
+    g_zone_trace_floor_before_cw_scratch = new_cw;
+
+    g_zone_trace_floor_before_scratch_cap = new_cap;
+    return 1;
+}
+
+static void renderer_zone_trace_floor_stats_release_scratch(void)
+{
+    free(g_zone_trace_floor_before_tags_scratch);
+    g_zone_trace_floor_before_tags_scratch = NULL;
+    free(g_zone_trace_floor_before_cw_scratch);
+    g_zone_trace_floor_before_cw_scratch = NULL;
+    g_zone_trace_floor_before_scratch_cap = 0;
+}
+
 static void renderer_workload_stats_reset(RendererWorkloadStats *stats);
 static void renderer_workload_stats_add(RendererWorkloadStats *dst, const RendererWorkloadStats *src);
 static uint64_t renderer_workload_estimated_writes(const RendererWorkloadStats *stats);
@@ -639,6 +689,11 @@ static int g_level_sky_cache_zone_slots;
 
 static void renderer_reset_level_sky_cache_internal(void);
 static void renderer_floor_fast_release_scratch(void);
+static int renderer_poly_edge_ensure_h(int h);
+static int renderer_poly_col_ensure_w(int w);
+static int16_t *renderer_viewer_floor_occlude_get_scratch(int width);
+static int renderer_floor_fast_ensure_rows_capacity(int row_count);
+static int renderer_floor_fast_ensure_cols_capacity(int col_count);
 
 static void automap_lock(void)
 {
@@ -1269,6 +1324,43 @@ void renderer_automap_unlock(void)
     automap_unlock();
 }
 
+static uint32_t automap_prealloc_estimate_walls(const LevelState *level)
+{
+    (void)level;
+    /* Deliberately over-allocate to keep automap inserts allocation-free during
+     * gameplay. 262,144 walls ~= 4 MiB for wall entries (+ hash table). */
+    return 262144u;
+}
+
+void renderer_automap_preallocate_for_level(LevelState *level)
+{
+    uint32_t want_walls;
+    uint32_t want_hash;
+
+    if (!level) return;
+
+    want_walls = automap_prealloc_estimate_walls(level);
+    if (want_walls < level->automap_seen_count)
+        want_walls = level->automap_seen_count;
+    if (want_walls == 0) return;
+
+    /* Keep hash load factor <= ~0.6 to match runtime insert policy. */
+    want_hash = 1024u;
+    while (want_hash < want_walls ||
+           ((uint64_t)want_hash * 6u) < ((uint64_t)want_walls * 10u)) {
+        if (want_hash > UINT32_MAX / 2u) {
+            want_hash = (1u << 31);
+            break;
+        }
+        want_hash <<= 1u;
+    }
+
+    automap_lock();
+    (void)automap_ensure_walls(level, want_walls);
+    (void)automap_ensure_hash(level, want_hash);
+    automap_unlock();
+}
+
 int renderer_automap_collect_line_segments(GameState *state,
                                            int *x0, int *y0, int *x1, int *y1,
                                            uint16_t *c12, int max_lines)
@@ -1657,6 +1749,7 @@ static int renderer_thread_worker_main(void *userdata)
 
         if (SDL_AtomicGet(&pool->stop)) {
             renderer_floor_fast_release_scratch();
+            renderer_zone_trace_floor_stats_release_scratch();
             return 0;
         }
 
@@ -1679,6 +1772,21 @@ static int renderer_thread_worker_main(void *userdata)
         renderer_workload_stats_reset(&world_stats);
         if (active && col_start < col_end) {
             if (job_type == RENDERER_THREAD_JOB_WORLD && state) {
+                /* Pre-size thread-local scratch once at the start of this worker
+                 * job so we avoid first-use reallocs inside hot zone loops. */
+                {
+                    int w = g_renderer.width;
+                    int h = g_renderer.height;
+                    if (h > 0) {
+                        (void)renderer_poly_edge_ensure_h(h);
+                        (void)renderer_floor_fast_ensure_rows_capacity(h);
+                    }
+                    if (w > 0) {
+                        (void)renderer_poly_col_ensure_w(w);
+                        (void)renderer_viewer_floor_occlude_get_scratch(w);
+                        (void)renderer_floor_fast_ensure_cols_capacity(w);
+                    }
+                }
                 renderer_draw_world_slice(state, world_zone_prepass,
                                           col_start, col_end,
                                           frame_idx, trace_clip,
@@ -3820,6 +3928,15 @@ static void allocate_buffers(int w, int h)
     /* Safe defaults before first renderer_draw_display sets y_proj_scale-based caps. */
     g_renderer.floor_uv_dist_max = 30000;
     g_renderer.floor_uv_dist_near = 32000;
+
+    /* Pre-size main-thread scratch to current render dimensions so normal frame
+     * rendering does not need first-use allocations. Worker-thread scratch is
+     * still grown lazily on each worker thread. */
+    (void)renderer_poly_edge_ensure_h(h);
+    (void)renderer_poly_col_ensure_w(w);
+    (void)renderer_viewer_floor_occlude_get_scratch(w);
+    (void)renderer_floor_fast_ensure_rows_capacity(h);
+    (void)renderer_floor_fast_ensure_cols_capacity(w);
 }
 
 void renderer_init(void)
@@ -3850,6 +3967,7 @@ void renderer_shutdown(void)
     renderer_threads_shutdown();
     renderer_reset_level_sky_cache_internal();
     renderer_floor_fast_release_scratch();
+    renderer_zone_trace_floor_stats_release_scratch();
     if (g_automap_mutex) {
         SDL_DestroyMutex(g_automap_mutex);
         g_automap_mutex = NULL;
@@ -5098,15 +5216,13 @@ static void renderer_zone_trace_floor_stats_accumulate_edges(RendererZoneTraceFl
 
     if (!cw || stats->submitted_pixels == 0) return;
 
-    stats->before_tags = (uint8_t *)malloc((size_t)stats->submitted_pixels * sizeof(*stats->before_tags));
-    stats->before_cw = (uint16_t *)malloc((size_t)stats->submitted_pixels * sizeof(*stats->before_cw));
-    if (!stats->before_tags || !stats->before_cw) {
-        free(stats->before_tags);
-        free(stats->before_cw);
+    if (!renderer_zone_trace_floor_stats_ensure_scratch((size_t)stats->submitted_pixels)) {
         stats->before_tags = NULL;
         stats->before_cw = NULL;
         return;
     }
+    stats->before_tags = g_zone_trace_floor_before_tags_scratch;
+    stats->before_cw = g_zone_trace_floor_before_cw_scratch;
 
     {
         size_t idx = 0;
@@ -5134,8 +5250,6 @@ static void renderer_zone_trace_floor_stats_accumulate_edges(RendererZoneTraceFl
         stats->before_count = idx;
         stats->before_ready = (idx == (size_t)stats->submitted_pixels) ? 1 : 0;
         if (!stats->before_ready) {
-            free(stats->before_tags);
-            free(stats->before_cw);
             stats->before_tags = NULL;
             stats->before_cw = NULL;
             stats->before_count = 0;
@@ -5187,8 +5301,6 @@ static void renderer_zone_trace_floor_stats_finalize(RendererZoneTraceFloorStats
         }
     }
 
-    free(stats->before_tags);
-    free(stats->before_cw);
     stats->before_tags = NULL;
     stats->before_cw = NULL;
     stats->before_count = 0;
