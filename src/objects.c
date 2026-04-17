@@ -85,6 +85,11 @@ static int16_t robot_frame_counter = 0;
  * blocked movement after wall/object collision instead of losing that pressure on
  * the tick where collision resolution returns the enemy to its old position. */
 #define ENEMY_MOTION_FP_SCALE 16384
+/* Keep carry bounded so long wall pressure cannot build a large release jump. */
+#define ENEMY_MOTION_PENDING_MAX_UNITS 64
+#define ENEMY_MOTION_PENDING_MAX_FP ((int32_t)(ENEMY_MOTION_PENDING_MAX_UNITS * ENEMY_MOTION_FP_SCALE))
+/* Restore only tiny per-tick losses (rounding/slide trim), not full blocked intent. */
+#define ENEMY_MOTION_RESTORE_MAX_UNITS 4
 static const uint8_t *g_enemy_motion_slots_base = NULL;
 static int32_t g_enemy_motion_fp_x[MAX_OBJECTS];
 static int32_t g_enemy_motion_fp_z[MAX_OBJECTS];
@@ -189,6 +194,22 @@ static void enemy_motion_zero_slot(int slot)
     g_enemy_motion_fp_z[slot] = 0;
 }
 
+static void enemy_motion_clamp_pending_slot(int slot)
+{
+    if (slot < 0 || slot >= MAX_OBJECTS)
+        return;
+
+    if (g_enemy_motion_fp_x[slot] > ENEMY_MOTION_PENDING_MAX_FP)
+        g_enemy_motion_fp_x[slot] = ENEMY_MOTION_PENDING_MAX_FP;
+    else if (g_enemy_motion_fp_x[slot] < -ENEMY_MOTION_PENDING_MAX_FP)
+        g_enemy_motion_fp_x[slot] = -ENEMY_MOTION_PENDING_MAX_FP;
+
+    if (g_enemy_motion_fp_z[slot] > ENEMY_MOTION_PENDING_MAX_FP)
+        g_enemy_motion_fp_z[slot] = ENEMY_MOTION_PENDING_MAX_FP;
+    else if (g_enemy_motion_fp_z[slot] < -ENEMY_MOTION_PENDING_MAX_FP)
+        g_enemy_motion_fp_z[slot] = -ENEMY_MOTION_PENDING_MAX_FP;
+}
+
 static void enemy_motion_align_pending(int slot,
                                        int64_t desired_x_fp,
                                        int64_t desired_z_fp)
@@ -236,6 +257,7 @@ static int32_t enemy_motion_apply_axis_fp(int slot, int axis, int64_t delta_fp)
     accum = (int64_t)(*pending_fp) + delta_fp;
     delta = (int32_t)(accum / ENEMY_MOTION_FP_SCALE);
     *pending_fp = (int32_t)(accum - (int64_t)delta * ENEMY_MOTION_FP_SCALE);
+    enemy_motion_clamp_pending_slot(slot);
     return delta;
 }
 
@@ -247,12 +269,23 @@ static void enemy_motion_restore_blocked_step(const GameState *state,
                                               int32_t actual_dz)
 {
     int slot = enemy_motion_slot_index(state, obj);
+    int32_t miss_x;
+    int32_t miss_z;
 
     if (slot < 0 || slot >= MAX_OBJECTS)
         return;
 
-    g_enemy_motion_fp_x[slot] += (wanted_dx - actual_dx) * ENEMY_MOTION_FP_SCALE;
-    g_enemy_motion_fp_z[slot] += (wanted_dz - actual_dz) * ENEMY_MOTION_FP_SCALE;
+    miss_x = wanted_dx - actual_dx;
+    miss_z = wanted_dz - actual_dz;
+
+    if (miss_x > ENEMY_MOTION_RESTORE_MAX_UNITS) miss_x = ENEMY_MOTION_RESTORE_MAX_UNITS;
+    if (miss_x < -ENEMY_MOTION_RESTORE_MAX_UNITS) miss_x = -ENEMY_MOTION_RESTORE_MAX_UNITS;
+    if (miss_z > ENEMY_MOTION_RESTORE_MAX_UNITS) miss_z = ENEMY_MOTION_RESTORE_MAX_UNITS;
+    if (miss_z < -ENEMY_MOTION_RESTORE_MAX_UNITS) miss_z = -ENEMY_MOTION_RESTORE_MAX_UNITS;
+
+    g_enemy_motion_fp_x[slot] += miss_x * ENEMY_MOTION_FP_SCALE;
+    g_enemy_motion_fp_z[slot] += miss_z * ENEMY_MOTION_FP_SCALE;
+    enemy_motion_clamp_pending_slot(slot);
 }
 
 static int32_t enemy_motion_distance(int32_t dx, int32_t dz)
@@ -1124,6 +1157,10 @@ static void enemy_prevent_deeper_player_overlap(const GameObject *obj, const Gam
  */
 #define ENEMY_STEP_UP_MIN_DEFAULT     (40 * 256)
 #define ENEMY_STEP_DOWN_MIN_DEFAULT   (40 * 256)
+/* Clamp ground-enemy MoveObject correction against a fixed amortized tick budget.
+ * Using speed*temp_frames makes movement acceptance depend on frame dips/lumps,
+ * which can create "stuck at 120fps, released at 15fps" behavior. */
+#define ENEMY_STEP_CLAMP_TICKS 3
 
 static void enemy_apply_step_limits(const GameObject *obj,
                                     const EnemyParams *params,
@@ -1297,7 +1334,7 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
      * freeze flyers against corners when MoveObject returns a legal wall-contact
      * correction larger than their nominal per-tick speed. */
     if (obj->obj.number != OBJ_NBR_ROBOT && !flying_hover) {
-        if (!enemy_step_within_limit(&ctx, (int32_t)speed * (int32_t)state->temp_frames)) {
+        if (!enemy_step_within_limit(&ctx, (int32_t)speed * ENEMY_STEP_CLAMP_TICKS)) {
             ctx.newx = ctx.oldx;
             ctx.newz = ctx.oldz;
         }
@@ -2746,7 +2783,7 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
 
     /* Keep the anti-jump clamp for ground chasers only. */
     if (!flying_hover &&
-        !enemy_step_within_limit(&ctx, (int32_t)speed * (int32_t)state->temp_frames)) {
+        !enemy_step_within_limit(&ctx, (int32_t)speed * ENEMY_STEP_CLAMP_TICKS)) {
         ctx.newx = ctx.oldx;
         ctx.newz = ctx.oldz;
     }
